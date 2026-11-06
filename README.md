@@ -1,10 +1,10 @@
-**Human Ramble:**
+# **Meatbag ramble:**
 
 Hello all, I'm James, and I am a AV Tech that wants to make thing work.
 
 While I'm ok with computer stuff, I'm not much of a coder, but I also needed a tool that could do what I need to make my business work, and all the options I could find were really expensive, and I wanted a local verison, so as such I coded this. Well, Vibe-coded, so I guess I coded this in the same way I cook a burger at the drive through at McDonalds. 
 
-While I have spent many hours trying to make this work, I cannot in good conscience make this a product I attempt to profit from, so as such I have decided to make this open source for anyone to use. If for whatever reason you use this software and read this and for some reason you're wanting to chuck me some coppers, that would be greatly appreciated and that can be done at buymeacoffee.com/HoranAV.
+While I have spent many hours trying to make this work, I cannot in good conscience make this a product I attempt to profit from, so as such I have decided to make this open source for anyone to use. If for whatever reason you use this software and read this and for some reason you're wanting to chuck me some coppers, that would be greatly appreciated [via this link](buymeacoffee.com/HoranAV).
 
 The purpose of this software is to keep track of AV equipment rentals using a self hosted server. It has other features which I think are pretty neat, such as a power draw calculator (please take this with a pinch of salt, it is a guess, not a promise) and stage deck calculators, as well as standard invoice and prep features. It is designed as a local network software, but you can use something like Tailscale to make it accessible via the internet to make it useful on site or on the go. I may attempt to get this to function natively in the app.
 
