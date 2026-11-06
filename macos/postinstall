@@ -1,0 +1,27 @@
+#!/bin/bash
+# Runs (as root) at the end of the Horan Event Tracking installer.
+# Removes any copy installed the old way (via Terminal) and opens the app for the person who's logged in.
+
+APP="/Applications/Horan Event Tracking.app"
+USER_NAME="$(/usr/bin/stat -f%Su /dev/console 2>/dev/null)"
+if [ -z "$USER_NAME" ] || [ "$USER_NAME" = "root" ] || [ "$USER_NAME" = "loginwindow" ]; then
+  exit 0
+fi
+USER_ID="$(/usr/bin/id -u "$USER_NAME" 2>/dev/null)"
+HOME_DIR="$(/usr/bin/dscl . -read "/Users/$USER_NAME" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+
+# An older copy in the person's own Applications folder would be confusing - remove it (their data is untouched).
+if [ -n "$HOME_DIR" ] && [ -d "$HOME_DIR/Applications/Horan Event Tracking.app" ]; then
+  /bin/rm -rf "$HOME_DIR/Applications/Horan Event Tracking.app"
+fi
+
+# Let the person own the app (as with an app dragged into Applications), so it can use their custom icon.
+if [ -d "$APP" ]; then
+  /usr/sbin/chown -R "$USER_NAME" "$APP" >/dev/null 2>&1
+fi
+
+# Open the app as the logged-in person (sets up their background helper and opens the browser).
+if [ -n "$USER_ID" ] && [ -d "$APP" ]; then
+  /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/open "$APP" >/dev/null 2>&1 &
+fi
+exit 0

@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+
+# Your data never belongs in the repository
+*.db
+*.db-wal
+*.db-shm
+data/
+backups/
+
+# Build output
+dist/
+build/
+*.zip
+*.pkg
+
+# OS clutter
+.DS_Store
+Thumbs.db

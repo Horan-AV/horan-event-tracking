@@ -1,0 +1,164 @@
+#!/bin/bash
+# Horan Event Tracking — Mac app launcher (Contents/MacOS/launcher inside "Horan Event Tracking.app").
+#
+# Opening the app:  makes sure Python is available, copies the app's files into your Library,
+#                   sets up the background service, then opens Horan Event Tracking in your browser.
+# --serve:          used by the background service to run the server.
+#
+# Publisher: Horan AV (James Horan)
+
+BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
+RES="$BUNDLE/Contents/Resources/app"
+BASE="$HOME/Library/Application Support/Horan Event Tracking"
+APP="$BASE/app"
+LABEL="com.horanav.eventtracking"
+AGENT="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG="$HOME/Library/Logs/Horan Event Tracking.log"
+PORT="${HORAN_RMS_PORT:-8765}"
+URL="http://127.0.0.1:${PORT}/"
+GUI="gui/$(id -u)"
+
+alert() {  # alert "title" "message"
+  /usr/bin/osascript - "$1" "$2" >/dev/null 2>&1 <<'EOF'
+on run argv
+  display alert (item 1 of argv) message (item 2 of argv)
+end run
+EOF
+}
+
+good_python() {
+  [ -x "$1" ] && "$1" -c 'import sys, sqlite3; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1
+}
+
+find_python() {
+  for p in /opt/homebrew/bin/python3 /usr/local/bin/python3 \
+           /Library/Frameworks/Python.framework/Versions/Current/bin/python3; do
+    good_python "$p" && { echo "$p"; return 0; }
+  done
+  # Apple's python3 is only real once the Command Line Tools are installed (otherwise it pops up a prompt).
+  if /usr/bin/xcode-select -p >/dev/null 2>&1 && good_python /usr/bin/python3; then
+    echo /usr/bin/python3; return 0
+  fi
+  return 1
+}
+
+version_of() {  # version_of path/to/server.py
+  [ -f "$1" ] && sed -n 's/^VERSION = "\(.*\)"/\1/p' "$1" | head -1
+}
+
+newer() {  # newer A B  -> true if version A > B
+  "$PY" -c 'import sys,re
+v=lambda s: tuple(int(x) for x in re.findall(r"\d+", s)[:3])
+sys.exit(0 if v(sys.argv[1]) > v(sys.argv[2]) else 1)' "$1" "${2:-0}"
+}
+
+sync_app() {
+  # Copy the app's files out of the bundle when this bundle is a version we haven't set up yet.
+  # (Updates installed from inside the app live in the Library copy, so don't overwrite those.)
+  local bundle_v installed_v marker
+  bundle_v="$(version_of "$RES/server.py")"
+  installed_v="$(version_of "$APP/server.py")"
+  marker="$(cat "$BASE/.bundle-version" 2>/dev/null)"
+  UPDATED=0
+  if [ -z "$installed_v" ] || { [ "$bundle_v" != "$marker" ] && newer "$bundle_v" "$installed_v"; }; then
+    mkdir -p "$BASE/data"
+    rm -rf "$APP.new" && mkdir -p "$APP.new" && cp -R "$RES/." "$APP.new/" || return 1
+    rm -rf "$APP.old"
+    [ -d "$APP" ] && mv "$APP" "$APP.old"
+    mv "$APP.new" "$APP" && rm -rf "$APP.old"
+    UPDATED=1
+  fi
+  echo "$bundle_v" > "$BASE/.bundle-version"
+  return 0
+}
+
+is_up() {
+  "$PY" -c "import urllib.request; urllib.request.urlopen('${URL}api/meta', timeout=1)" >/dev/null 2>&1
+}
+
+write_agent() {
+  # The service runs this launcher with --serve. If the app has been moved to the Bin, it tidies itself away.
+  local me="$BUNDLE/Contents/MacOS/launcher" tmp
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>if [ -x "\$0" ]; then exec "\$0" --serve; fi; rm -f "$AGENT"; launchctl bootout $GUI/$LABEL; exit 0</string>
+    <string>$me</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+</dict>
+</plist>
+EOF
+  if ! cmp -s "$tmp" "$AGENT"; then
+    mkdir -p "$(dirname "$AGENT")"
+    launchctl bootout "$GUI/$LABEL" >/dev/null 2>&1
+    mv "$tmp" "$AGENT"
+    AGENT_CHANGED=1
+  else
+    rm -f "$tmp"
+  fi
+}
+
+mkdir -p "$(dirname "$LOG")"
+
+# ------------------------------------------------------------ background service mode
+if [ "${1:-}" = "--serve" ]; then
+  PY="$(find_python)" || { echo "$(date): Python 3.9+ not found — open Horan Event Tracking to set it up"; exit 0; }
+  sync_app || exit 1
+  export HET_BUNDLE="$BUNDLE"  # lets the app give itself a custom Finder / Dock icon
+  exec "$PY" "$APP/server.py" --port "$PORT"
+fi
+
+# ------------------------------------------------------------ opening the app
+if ! PY="$(find_python)"; then
+  answer="$(/usr/bin/osascript <<'EOF' 2>/dev/null
+display dialog "Horan Event Tracking needs Apple's free Command Line Tools to run. It's a one-off download from Apple that takes about 5-10 minutes.
+
+Click Install Tools and follow Apple's steps. When it has finished, open Horan Event Tracking again." with title "One more step" buttons {"Not now", "Install Tools"} default button "Install Tools" with icon note
+button returned of result
+EOF
+)"
+  [ "$answer" = "Install Tools" ] && /usr/bin/xcode-select --install >/dev/null 2>&1
+  exit 0
+fi
+
+UPDATED=0
+AGENT_CHANGED=0
+if ! sync_app; then
+  alert "Horan Event Tracking couldn't be set up" "It couldn't copy its files into your Library folder. Details: $LOG"
+  exit 1
+fi
+write_agent
+
+if [ "$AGENT_CHANGED" = 1 ] || ! launchctl print "$GUI/$LABEL" >/dev/null 2>&1; then
+  launchctl bootstrap "$GUI" "$AGENT" >/dev/null 2>&1 || launchctl load -w "$AGENT" >/dev/null 2>&1
+elif [ "$UPDATED" = 1 ]; then
+  launchctl kickstart -k "$GUI/$LABEL" >/dev/null 2>&1  # restart on the new version
+fi
+
+for _ in $(jot 60 2>/dev/null || seq 60); do
+  is_up && break
+  sleep 0.25
+done
+if ! is_up; then  # service didn't come up - run it directly as a fallback
+  HET_BUNDLE="$BUNDLE" nohup "$PY" "$APP/server.py" --port "$PORT" >>"$LOG" 2>&1 &
+  for _ in $(jot 40 2>/dev/null || seq 40); do is_up && break; sleep 0.25; done
+fi
+if ! is_up; then
+  alert "Horan Event Tracking couldn't start" "Details are in the log: ~/Library/Logs/Horan Event Tracking.log"
+  exit 1
+fi
+
+open "$URL"

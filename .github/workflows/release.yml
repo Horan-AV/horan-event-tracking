@@ -1,0 +1,85 @@
+# Builds and publishes a release when you push a version tag, e.g.
+#   git tag v1.21.1 && git push --tags
+# Every installed copy's "Check for updates" (Settings > Software update) then offers it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches VERSION in server.py
+        run: |
+          V=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' server.py)
+          if [ "v$V" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::server.py says VERSION = \"$V\" but the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Check the code (Python 3.9 and JavaScript)
+        run: |
+          python -m py_compile server.py
+          node --check static/app.js
+          python -c "import json; json.load(open('static/changelog.json'))"
+
+      - name: Build the zip
+        run: |
+          mkdir -p build/horan-event-tracking
+          cp -r server.py static macos install.sh uninstall.sh horan-rms README.md LICENSE AI_DISCLOSURE.md build/horan-event-tracking/
+          chmod +x build/horan-event-tracking/server.py build/horan-event-tracking/install.sh \
+                   build/horan-event-tracking/uninstall.sh build/horan-event-tracking/horan-rms
+          (cd build && zip -qr "../horan-event-tracking-$VERSION.zip" horan-event-tracking)
+
+      - name: Release notes from the change log
+        run: |
+          python - <<'EOF'
+          import json, os
+          v = os.environ["VERSION"]
+          e = next((x for x in json.load(open("static/changelog.json"))["versions"] if x["version"] == v), None)
+          lines = []
+          if e:
+              if e.get("title"):
+                  lines.append(f"**{e['title']}**\n")
+              for c in e.get("changes", []):
+                  t = c if isinstance(c, str) else c.get("text", "")
+                  cr = "" if isinstance(c, str) or not c.get("credit") else f" (idea from {c['credit']})"
+                  lines.append(f"- {t}{cr}")
+              if e.get("ai"):
+                  lines.append(f"\n🤖 {e['ai']}. See AI_DISCLOSURE.md.")
+          else:
+              lines.append("See static/changelog.json.")
+          lines.append("\n**Install:** download `horan-event-tracking-%s.zip`, or in the app use Settings → Software update → Check for updates. "
+                       "On a Mac you can use the `.pkg` instead." % v)
+          open("notes.md", "w").write("\n".join(lines) + "\n")
+          EOF
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ env.VERSION }}
+          body_path: notes.md
+          files: horan-event-tracking-${{ env.VERSION }}.zip
+
+  mac-installer:
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Mac .pkg (unsigned)
+        run: python3 macos/build_pkg.py --out dist
+      - name: Add it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.pkg --clobber

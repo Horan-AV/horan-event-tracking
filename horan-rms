@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Horan Event Tracking — launcher and server admin (Linux).
+# Publisher: Horan AV (James Horan)
+#
+#   horan-rms                 open it in your browser (starts the server if needed)
+#   horan-rms status          version, data folder, network addresses
+#   horan-rms passcode        set the passcode other devices sign in with
+#   horan-rms network on|off  let other devices on the network connect (or not)
+#   horan-rms restart         restart the background service
+#   horan-rms logs            show the server log
+#   horan-rms url             print the address(es) to open
+#   horan-rms users           list the people who can sign in
+#   horan-rms reset-pin NAME  give someone a new PIN (add --admin to make them an admin too)
+#   horan-rms headless on|off server mode: admins can install updates from any device
+
+APP_DIR="${HORAN_RMS_HOME:-$HOME/.local/share/horan-rms/app}"
+PORT="${HORAN_RMS_PORT:-8765}"
+URL="http://127.0.0.1:${PORT}/"
+LOG_DIR="$HOME/.local/share/horan-rms"
+LOG="$LOG_DIR/server.log"
+PY="${HORAN_RMS_PYTHON:-python3}"
+SYSTEM_UNIT=/etc/systemd/system/horan-rms.service
+
+is_up() {
+  "$PY" -c "import urllib.request,sys; urllib.request.urlopen('${URL}api/meta', timeout=1)" >/dev/null 2>&1
+}
+
+notify() {
+  if [ -n "${DISPLAY}${WAYLAND_DISPLAY}" ] && command -v notify-send >/dev/null 2>&1; then
+    notify-send -i "$APP_DIR/static/icon-512.png" "Horan Event Tracking" "$1"
+  fi
+  echo "$1" >&2
+}
+
+# Run systemctl against whichever service is installed: the system one (headless servers) or the per-user one.
+svc() {
+  if [ -f "$SYSTEM_UNIT" ]; then
+    if [ "$(id -u)" = 0 ]; then systemctl "$@" horan-rms.service; else sudo systemctl "$@" horan-rms.service; fi
+  elif systemctl --user cat horan-rms.service >/dev/null 2>&1; then
+    systemctl --user "$@" horan-rms.service
+  else
+    return 3
+  fi
+}
+
+admin() { "$PY" "$APP_DIR/server.py" --port "$PORT" "$@"; }
+
+restart_server() {
+  if svc restart 2>/dev/null; then
+    echo "Restarted."
+  elif pkill -f "$APP_DIR/server.py" 2>/dev/null; then
+    sleep 1
+    mkdir -p "$LOG_DIR"
+    nohup "$PY" "$APP_DIR/server.py" --port "$PORT" >>"$LOG" 2>&1 &
+    echo "Restarted."
+  else
+    echo "Horan Event Tracking isn't running - it'll use the new settings when it starts."
+  fi
+}
+
+start_server() {
+  is_up && return 0
+  if ! svc start 2>/dev/null; then
+    mkdir -p "$LOG_DIR"
+    nohup "$PY" "$APP_DIR/server.py" --port "$PORT" >>"$LOG" 2>&1 &
+  fi
+  for _ in $(seq 1 40); do
+    is_up && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+case "${1:-open}" in
+  status)
+    admin --status
+    if is_up; then echo "Server:          running on port $PORT"; else echo "Server:          not running"; fi
+    ;;
+  url)
+    admin --status | sed -n 's/^Open on other devices:  //p'
+    echo "$URL  (on this computer)"
+    ;;
+  passcode)
+    admin --set-passcode && restart_server
+    ;;
+  network)
+    case "${2:-}" in
+      on|off) admin --network "$2" && restart_server && admin --status | grep -E "Network|Open on" ;;
+      *) echo "Usage: horan-rms network on|off" >&2; exit 2 ;;
+    esac
+    ;;
+  restart)
+    restart_server
+    ;;
+  users)
+    admin --list-users
+    ;;
+  headless)
+    case "${2:-}" in
+      on|off) admin --headless-mode "$2" && restart_server ;;
+      *) echo "Usage: horan-rms headless on|off" >&2; exit 2 ;;
+    esac
+    ;;
+  reset-pin)
+    [ -n "${2:-}" ] || { echo "Usage: horan-rms reset-pin NAME [--admin]" >&2; exit 2; }
+    admin --reset-pin "$2" ${3:+"$3"}
+    ;;
+  stop)
+    svc stop 2>/dev/null || pkill -f "$APP_DIR/server.py"
+    ;;
+  logs)
+    if [ -f "$SYSTEM_UNIT" ]; then journalctl -u horan-rms -n 100 --no-pager
+    elif systemctl --user cat horan-rms.service >/dev/null 2>&1; then journalctl --user -u horan-rms -n 100 --no-pager
+    else tail -n 100 "$LOG"; fi
+    ;;
+  open)
+    if ! start_server; then
+      notify "Couldn't start Horan Event Tracking. Run: horan-rms logs"
+      exit 1
+    fi
+    if [ -n "$HORAN_RMS_BROWSER" ]; then
+      exec $HORAN_RMS_BROWSER "$URL"
+    fi
+    if [ -z "${DISPLAY}${WAYLAND_DISPLAY}" ] || ! command -v xdg-open >/dev/null 2>&1; then
+      # No screen here (e.g. a server over SSH): say where to open it instead.
+      echo "Horan Event Tracking is running."
+      admin --status | grep -E "^Open on|Network"
+      exit 0
+    fi
+    exec xdg-open "$URL"
+    ;;
+  -h|--help|help)
+    sed -n '4,14p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    echo "Unknown command: $1  (try: horan-rms help)" >&2
+    exit 2
+    ;;
+esac
