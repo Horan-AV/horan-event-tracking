@@ -218,6 +218,7 @@ def main():
         os.makedirs(a.bundle_to, exist_ok=True)
         print(build_bundle(a.bundle_to, ver))
         return
+    os.makedirs(a.out, exist_ok=True)
     out = os.path.join(a.out, f"Horan-Event-Tracking-{ver}.pkg")
     if sys.platform == "darwin" and shutil.which("pkgbuild"):
         build_mac(ver, out, a.sign)

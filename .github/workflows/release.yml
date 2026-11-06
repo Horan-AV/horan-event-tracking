@@ -14,7 +14,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check the tag matches VERSION in server.py
         run: |
@@ -25,7 +25,7 @@ jobs:
           fi
           echo "VERSION=$V" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.9"
 
@@ -76,7 +76,7 @@ jobs:
     needs: release
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build the Mac .pkg (unsigned)
         run: python3 macos/build_pkg.py --out dist
       - name: Add it to the release
