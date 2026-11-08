@@ -1780,7 +1780,7 @@ function runSuggestion() {
   const q = ($('#pick-q').value || '').trim();
   const st = q.match(/(\d+(?:\.\d+)?)\s*m?\s*[x×*]\s*(\d+(?:\.\d+)?)\s*m?/i);
   if (st && /stage|deck|riser/i.test(q)) {
-    return `<button type="button" class="pick-row run" data-stage-pick="${st[1]}x${st[2]}">
+    return `<button type="button" class="pick-row run" data-stage-pick="${esc(st[1])}x${esc(st[2])}">
       <span class="pn">Build a ${esc(st[1])} × ${esc(st[2])}m stage</span><span class="pr"></span>
       <span class="pa"><span class="badge ok">Stage</span></span>
       <span class="pc">Works out the decks (and legs) from what's free</span></button>`;
@@ -1791,7 +1791,7 @@ function runSuggestion() {
   const types = S.cableTypes.map((t) => t.type);
   const hit = types.find((t) => rest.includes(t.toLowerCase())) || (types.length === 1 ? types[0] : null);
   const opts = hit ? [hit] : types;
-  return opts.map((t) => `<button type="button" class="pick-row run" data-run="${esc(t)}|${m[1]}">
+  return opts.map((t) => `<button type="button" class="pick-row run" data-run="${esc(t)}|${esc(m[1])}">
     <span class="pn">Make a ${esc(m[1])}m ${esc(t)} run</span><span class="pr"></span>
     <span class="pa"><span class="badge ok">Cable run</span></span>
     <span class="pc">Uses your preferred split (less excess or fewer joins)</span></button>`).join('');
@@ -4548,9 +4548,9 @@ async function renderSettings(view) {
       if (e.target.matches('[data-z="region"]')) {
         const custom = e.target.value === 'other';
         $('[data-z="custom"]', view).hidden = !custom;
-        const url = custom ? '' : e.target.value;
+        const url = custom ? '' : safeHttpsURL(e.target.value.replace('://accounts.', '://api-console.'));
         const link = $('[data-z-console]', view);
-        if (link && url) link.href = url.replace('://accounts.', '://api-console.');
+        if (link && url) link.href = url;
         return;
       }
       if (e.target.matches('[data-z="org"]')) { zohoSave(view, true); return; }
@@ -4977,10 +4977,34 @@ function loadImage(file) {
   });
 }
 /** SVG logos: make the drawing area fit everything that's drawn, so nothing outside it gets cut off. */
+/** Only http(s) links may be used as an href (blocks javascript:, data: and the like). */
+function safeHttpsURL(value) {
+  try {
+    const u = new URL(String(value), location.href);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : '';
+  } catch { return ''; }
+}
+/** Strip anything from a parsed SVG that could run script or pull in other content
+ *  (scripts, embedded HTML, event handlers, javascript:/external links). */
+function sanitizeSVG(svg) {
+  const BAD_TAGS = new Set(['script', 'foreignobject', 'iframe', 'object', 'embed', 'audio', 'video', 'animate', 'set', 'animatemotion', 'animatetransform', 'handler', 'listener']);
+  for (const el of [svg, ...svg.querySelectorAll('*')]) {
+    if (el !== svg && BAD_TAGS.has(el.localName.toLowerCase())) { el.remove(); continue; }
+    for (const a of [...el.attributes]) {
+      const name = a.name.toLowerCase();
+      const val = a.value.replace(/[\s\u0000-\u001f]+/g, '').toLowerCase();
+      if (name.startsWith('on')) el.removeAttribute(a.name);
+      else if ((name === 'href' || name.endsWith(':href') || name === 'src') && !val.startsWith('#') && !/^data:image\/(png|jpe?g|gif|webp);/.test(val)) el.removeAttribute(a.name);
+      else if (/javascript:|vbscript:/.test(val)) el.removeAttribute(a.name);
+    }
+  }
+  return svg;
+}
 async function fitSVG(text) {
   const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
   const svg = doc.documentElement;
   if (!svg || svg.nodeName.toLowerCase() !== 'svg' || doc.querySelector('parsererror')) throw new Error('That SVG file couldn’t be read');
+  sanitizeSVG(svg);
   const host = document.createElement('div');
   host.style.cssText = 'position:absolute;left:-10000px;top:0;width:4000px;height:4000px;visibility:hidden;overflow:hidden';
   const live = document.importNode(svg, true);
@@ -4990,7 +5014,7 @@ async function fitSVG(text) {
   host.appendChild(live); document.body.appendChild(host);
   let box;
   try { box = live.getBBox(); } finally { host.remove(); }
-  if (!box || !(box.width > 0 && box.height > 0)) return { text, width: 0, height: 0 };
+  if (!box || !(box.width > 0 && box.height > 0)) return { text: new XMLSerializer().serializeToString(svg), width: 0, height: 0 };
   const pad = Math.max(box.width, box.height) * 0.02;
   const vb = [box.x - pad, box.y - pad, box.width + pad * 2, box.height + pad * 2].map((v) => +v.toFixed(3));
   svg.setAttribute('viewBox', vb.join(' '));
