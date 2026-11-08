@@ -156,6 +156,8 @@ If the app is off at that time, it runs when it's next started that day. If GitH
 
 Everything here is saved with your data, so it's in every backup and shows the same on every device.
 
+**The app's own logo and icon.** Until you add your own, the sidebar and sign-in page show the app's logo (a flight case, in light and dark mode versions), and the app uses the matching flight case icon. These are temporary, and better designs are welcome: open an issue or pull request with your logo. Quotes, invoices and prep lists only ever show a logo you've uploaded; otherwise they show your company name.
+
 **Logos** (Settings → Logo & app icon). Add a **light mode logo**, and optionally a **dark mode logo** that reads well on dark backgrounds. PNG, JPG, WebP or SVG all work.
 - **Best size:** a wide logo about 3 : 1, e.g. **1200 × 400 px** (at least 600 px wide), or an SVG.
 - It's shown up to 200 × 96 px in the sidebar, 220 × 64 px on documents and 160 × 40 px on phones. Settings shows the size of the logo you saved.
@@ -219,7 +221,13 @@ How the lines are built:
 
 ## Renaming the app
 
-**Settings → Company → App name** changes what the app is called in the sidebar, the browser tab, the sign-in page and on phones' home screens, e.g. "Horan Hire Desk". Documents use your company name. The installed launcher keeps its original name.
+**Settings → Company → App name** changes what the app is called everywhere you see it, e.g. "Smith Hire Desk":
+- the sidebar, the browser tab, the sign-in page and phones' home screens;
+- messages in the app (updates, network access, restarting);
+- the app-menu entry on Bazzite/Linux (changed when you save on the computer running the app);
+- the "made by" details inside PDF quotes and invoices.
+
+Once renamed, the app's own "Event Tracker" logo and the "Horan AV" credit under the version are hidden too. Upload your own logo to show one. Documents use your company name. On a Mac, the app in Finder and the Dock keeps its original name.
 
 ## Invoicing with Zoho Books
 

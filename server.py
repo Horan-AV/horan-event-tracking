@@ -1193,7 +1193,26 @@ def api_settings_put(req, conn):
         conn.execute("INSERT INTO settings(key, value) VALUES(?, ?) "
                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (k, v))
     conn.commit()
+    if "app_name" in data and not req.remote:
+        rename_desktop_entry(app_name(conn))
     return get_settings(conn)
+
+
+def rename_desktop_entry(name):
+    """Best effort (Linux): the app-menu entry takes the app's name too."""
+    try:
+        desk = os.path.join(os.path.expanduser("~"), ".local", "share", "applications", "horan-rms.desktop")
+        if not sys.platform.startswith("linux") or not os.path.exists(desk):
+            return
+        clean_name = re.sub(r"[\r\n]+", " ", name).strip()
+        with open(desk, encoding="utf-8") as f:
+            text = f.read()
+        new = re.sub(r"(?m)^Name=.*$", lambda m: "Name=" + clean_name, text, count=1)
+        if new != text:
+            with open(desk, "w", encoding="utf-8") as f:
+                f.write(new)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------- network access (other devices)
@@ -1289,7 +1308,7 @@ def local_only(req, headless_ok=False):
     """Some things can only be done on the computer running the app. A headless server has no screen of its own,
     so there (headless_ok) an admin can do them from any signed-in device instead."""
     if req.remote and not (headless_ok and HEADLESS):
-        raise ApiError(403, "That can only be done on the computer running Horan Event Tracking")
+        raise ApiError(403, "That can only be done on the computer running this app")
 
 
 @route("GET", "/api/network")
@@ -1588,11 +1607,17 @@ def api_user_put(req, conn, uid):
 @route("GET", "/api/login-options")
 def api_login_options(req, conn):
     """What the sign-in page should ask for. Public: lists first names only, no other details."""
-    name = get_settings(conn).get("app_name") or DEFAULT_SETTINGS["app_name"]
+    name = app_name(conn)
+    extra = {"app_name": name, "default_name": name == DEFAULT_SETTINGS["app_name"], "has_logo": file_has(conn, "logo_light")}
     if users_exist(conn):
-        return {"mode": "users", "app_name": name, "users": rows(conn.execute(
+        return {"mode": "users", **extra, "users": rows(conn.execute(
             "SELECT id, name FROM users WHERE active = 1 ORDER BY name COLLATE NOCASE"))}
-    return {"mode": "passcode", "app_name": name}
+    return {"mode": "passcode", **extra}
+
+
+def app_name(conn):
+    """What the app is called on screen (Settings → app name)."""
+    return (get_settings(conn).get("app_name") or "").strip() or DEFAULT_SETTINGS["app_name"]
 
 
 ACTIVITY_KINDS = ("job", "item", "scan", "stock", "contact", "vendor", "settings", "user")
@@ -1969,7 +1994,9 @@ def logo(req, conn):
     v = logo_variant(req)
     f = file_get(conn, f"logo_{v}") or (file_get(conn, "logo_light") if v == "dark" else None)
     if not f:
-        raise ApiError(404, "No logo uploaded")
+        # Nothing uploaded: the app's own logo (for the sidebar and sign-in page; documents only use an uploaded one).
+        with open(os.path.join(STATIC_DIR, f"logo-default-{v}.png"), "rb") as fh:
+            return Raw(fh.read(), "image/png")
     return Raw(f["data"], f["ctype"], extra_headers={
         "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"})
 
@@ -2061,8 +2088,8 @@ def favicon(req, conn):
     f = file_get(conn, "icon_32")
     if f:
         return Raw(f["data"], "image/png")
-    with open(os.path.join(STATIC_DIR, "favicon.svg"), "rb") as fh:
-        return Raw(fh.read(), "image/svg+xml")
+    with open(os.path.join(STATIC_DIR, "favicon-64.png"), "rb") as fh:
+        return Raw(fh.read(), "image/png")
 
 
 @route("GET", "/apple-touch-icon.png")
@@ -2188,7 +2215,7 @@ def read_update_bytes(body):
     roots = [n[:-len("server.py")] for n in names if n.endswith("server.py")
              and (n[:-len("server.py")] + "static/index.html") in names]
     if not roots:
-        raise ApiError(400, "This zip doesn't look like a Horan Event Tracking update "
+        raise ApiError(400, "This zip doesn't look like an update for this app "
                             "(no server.py and static/index.html found)")
     root = min(roots, key=len)
     files = {}
@@ -2208,7 +2235,7 @@ def read_update_bytes(body):
     src = files["server.py"].decode("utf-8", "replace")
     m = re.search(r'^VERSION = "([^"]+)"', src, re.M)
     if not m or "Horan Event Tracking" not in src:
-        raise ApiError(400, "This zip isn't a Horan Event Tracking release")
+        raise ApiError(400, "This zip isn't a release of this app")
     try:
         compile(src, "server.py", "exec")
     except SyntaxError as e:
@@ -2522,7 +2549,7 @@ def api_restore(req, conn):
     except Exception:
         raise ApiError(400, "That file couldn't be read")
     if not body.startswith(b"SQLite format 3\x00"):
-        raise ApiError(400, "That isn't a Horan Event Tracking backup (.db) file")
+        raise ApiError(400, "That isn't a backup (.db) file from this app")
     tmp = os.path.join(DATA_DIR, ".restore-upload.db")
     with open(tmp, "wb") as f:
         f.write(body)
@@ -2531,7 +2558,7 @@ def api_restore(req, conn):
         try:
             tables = {r[0] for r in chk.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             if not {"products", "jobs", "settings", "contacts"} <= tables:
-                raise ApiError(400, "That database isn't a Horan Event Tracking backup")
+                raise ApiError(400, "That database isn't a backup from this app")
             if chk.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ApiError(400, "That backup file is damaged")
             counts = {t: chk.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("products", "jobs", "contacts")}
@@ -3150,7 +3177,8 @@ def _hex_rgb(h, default=(0.12, 0.36, 0.24)):
 
 
 class PdfDoc:
-    def __init__(self):
+    def __init__(self, producer="Horan Event Tracking"):
+        self.producer = producer
         self.pages = []
         self.images = []
         self.ops = None
@@ -3206,7 +3234,7 @@ class PdfDoc:
                             % (pages_id, PDF_W, PDF_H, res, cs)))
         objs[pages_id - 1] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(b"%d 0 R" % k for k in kids), len(kids))
         objs[cat - 1] = b"<< /Type /Catalog /Pages %d 0 R >>" % pages_id
-        info = add(b"<< /Title (" + self._esc(title) + b") /Producer (Horan Event Tracking) >>")
+        info = add(b"<< /Title (" + self._esc(title) + b") /Producer (" + self._esc(self.producer) + b") >>")
         out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
         offs = []
         for n, o in enumerate(objs, 1):
@@ -3445,7 +3473,7 @@ def api_invoices_pdf(req, conn):
                 conn.execute("UPDATE jobs SET status = 'invoiced', updated_at = ? WHERE id = ?", (now_iso(), j["id"]))
         conn.commit()
     logo = decode_logo(d.get("logo"))
-    pdf = PdfDoc()
+    pdf = PdfDoc(app_name(conn))
     for j in jobs:
         render_invoice_pdf(pdf, j, s, doc, logo, vat_rate_of(conn))
     word = "Invoice" if doc == "invoice" else "Quotation"
@@ -6780,8 +6808,6 @@ class Handler(BaseHTTPRequestHandler):
             rel = "index.html"
         elif path.startswith("/static/"):
             rel = path[len("/static/"):]
-        elif path == "/favicon.svg":
-            rel = "favicon.svg"
         else:
             return False
         full = os.path.realpath(os.path.join(STATIC_DIR, rel))
@@ -6821,10 +6847,10 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
         if remote and not allowed:
-            return self._json(403, {"error": "Network access is turned off on the computer running Horan Event Tracking"})
+            return self._json(403, {"error": "Network access is turned off on the computer running this app"})
         need_login = (has_users and not user) or (remote and not session)
         if need_login:
-            public = (path in ("/api/login", "/api/login-options", "/api/meta", "/favicon.svg", "/favicon", "/apple-touch-icon.png",
+            public = (path in ("/api/login", "/api/login-options", "/api/meta", "/favicon", "/apple-touch-icon.png",
                                "/manifest.webmanifest", "/app-icon-192.png", "/app-icon-512.png", "/logo")
                       or path.startswith("/static/"))
             if not public:

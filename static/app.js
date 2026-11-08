@@ -4276,7 +4276,7 @@ async function drawMeCard(view) {
       so you can be credited in the change log when your idea is built. ${S.meta && S.meta.users_enabled ? `These are <strong>${esc(me.who)}</strong>’s details.` : ''}</p>
     <div class="form-grid" style="padding:0">
       <label class="field half"><span>Name / alias</span><input data-me-alias value="${esc(me.alias)}" maxlength="80" placeholder="e.g. Jess, or SoundGuy"></label>
-      <label class="field half"><span>Company</span><input data-me-company value="${esc(me.company)}" maxlength="120" placeholder="e.g. Horan AV"></label>
+      <label class="field half"><span>Company</span><input data-me-company value="${esc(me.company)}" maxlength="120" placeholder="e.g. Smith Events Ltd"></label>
     </div>
     <div class="actions" style="margin-top:10px"><button type="button" class="btn small" data-me-save>Save my details</button></div>`;
   $('[data-me-save]', card).onclick = async () => {
@@ -4515,11 +4515,11 @@ async function renderSettings(view) {
         <div class="card settings-section" id="users" data-users-card><header><h2>Users</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="network" data-net-card><header><h2>Network access</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="update"><header><h2>Software update</h2><span class="pill">Version ${esc(meta.version)}</span></header>
-          ${!meta.can_update ? `<div class="body"><p class="muted" style="margin:0">Updates are installed on the computer running Horan Event Tracking (${esc(meta.server_name)}).</p>
+          ${!meta.can_update ? `<div class="body"><p class="muted" style="margin:0">Updates are installed on the computer running ${esc(appName())} (${esc(meta.server_name)}).</p>
             <p class="muted small" style="margin:8px 0 0">If that’s a server with no screen, turn on server mode there once and admins can update it from here: run <code>horan-rms headless on</code>.</p></div>`
             : !meta.is_admin ? '<div class="body"><p class="muted" style="margin:0">Only an admin can install updates.</p></div>' : `<div class="body">
             ${meta.headless && meta.remote ? `<p class="small" style="margin-top:0"><span class="badge ok">Server</span> This installs the update on the server <strong>${esc(meta.server_name)}</strong>, so every device gets it.</p>` : ''}
-            <p class="muted" style="margin-top:0">Choose the new Horan Event Tracking <code>.zip</code> file. Your data and the
+            <p class="muted" style="margin-top:0">Choose the new ${esc(appName())} <code>.zip</code> file. Your data and the
               current version are backed up first, then the app restarts on the new version. Nothing needs to be re-installed.</p>
             <div class="actions">
               <label class="btn primary">Install update from file…<input type="file" accept=".zip,application/zip" data-update hidden></label>
@@ -4803,7 +4803,7 @@ async function drawUsersCard(view) {
   const canEdit = !users.length || (me && me.is_admin);
   const active = users.filter((u) => u.active);
   $('.body', card).innerHTML = !users.length
-    ? `<p style="margin-top:0">Add the people who use Horan Event Tracking. Each gets a <strong>PIN</strong>, and the app records who creates jobs, adds kit, and scans items out and in (see <a href="#/activity">Activity</a>).</p>
+    ? `<p style="margin-top:0">Add the people who use ${esc(appName())}. Each gets a <strong>PIN</strong>, and the app records who creates jobs, adds kit, and scans items out and in (see <a href="#/activity">Activity</a>).</p>
        <p class="muted small">Once there’s a user, everyone signs in with their name and PIN, on this computer too. Start with yourself. The first person is an admin, who can change settings and manage users.</p>
        <button type="button" class="btn primary" data-user-add>Add the first user (you)</button>`
     : `<ul class="user-list">${users.map((u) => `<li><span class="u"><span class="avatar" style="${u.active ? '' : 'opacity:.4'}">${esc(initials(u.name))}</span>
@@ -4819,7 +4819,7 @@ async function drawUsersCard(view) {
         const v = await formModal({
           title: first ? 'Add yourself' : 'Add user',
           fields: [
-            { name: 'name', label: 'Name', required: true, placeholder: first ? 'e.g. James Horan' : 'e.g. Sam' },
+            { name: 'name', label: 'Name', required: true, placeholder: first ? 'e.g. Alex Smith' : 'e.g. Sam' },
             { name: 'pin', label: 'PIN', type: 'password', required: true, half: true, placeholder: 'At least 4 characters' },
             ...(first ? [] : [{ name: 'is_admin', label: 'Admin — can change settings and manage users', type: 'checkbox' }]),
           ],
@@ -4892,7 +4892,7 @@ async function drawNetworkCard(view) {
         <ul><li>Make sure it's on the same Wi-Fi or network as this computer, not mobile data or a guest network.</li>
         <li><strong>Bazzite / Linux:</strong> allow the port through the firewall. Open a terminal and run<br><code>sudo firewall-cmd --permanent --add-port=${num(n.port)}/tcp &amp;&amp; sudo firewall-cmd --reload</code></li>
         <li><strong>Mac:</strong> if asked whether “python3” can accept incoming connections, click <strong>Allow</strong>. If you missed it, see System Settings → Network → Firewall → Options.</li>
-        <li>This computer needs to be on and awake, with Horan Event Tracking running.</li></ul></details>` : ''}
+        <li>This computer needs to be on and awake, with ${esc(appName())} running.</li></ul></details>` : ''}
       ${devices}`;
   }
   $('.body', card).innerHTML = body;
@@ -4908,7 +4908,7 @@ async function drawNetworkCard(view) {
         const res = await put('/network', { enabled, passcode });
         if (res.restarting) {
           waitForRestart(null, { title: enabled ? 'Turning on network access…' : 'Turning off network access…',
-            text: 'Restarting Horan Event Tracking. This takes a few seconds.', done: enabled ? 'Network access is on' : 'Network access is off' });
+            text: `Restarting ${appName()}. This takes a few seconds.`, done: enabled ? 'Network access is on' : 'Network access is off' });
           return;
         }
         toast(passcode ? 'Passcode saved — other devices need to sign in again' : 'Saved', 'ok');
@@ -5041,7 +5041,7 @@ function backupLabel(name) {
   return m ? `version ${m[6]} (replaced ${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]})` : name;
 }
 
-function waitForRestart(version, { title = 'Updating…', text = 'Installing and restarting Horan Event Tracking. This takes a few seconds.', done } = {}) {
+function waitForRestart(version, { title = 'Updating…', text = `Installing and restarting ${appName()}. This takes a few seconds.`, done } = {}) {
   openModal(`<header><h2>${esc(title)}</h2></header><div class="modal-body"><p data-msg>${esc(text)}</p></div><footer></footer>`);
   const started = Date.now();
   const tick = async () => {
@@ -5055,7 +5055,7 @@ function waitForRestart(version, { title = 'Updating…', text = 'Installing and
     } catch { /* server restarting */ }
     if (Date.now() - started > 40000) {
       const el = $('[data-msg]');
-      if (el) el.textContent = 'This is taking longer than expected. Close this window and re-open Horan Event Tracking from your app menu.';
+      if (el) el.textContent = `This is taking longer than expected. Close this window and re-open ${appName()} from your app menu.`;
       return;
     }
     setTimeout(tick, 1000);
@@ -5161,13 +5161,17 @@ function applyBrand(src = S.settings) {
   $('.brand-sub').hidden = custom && !s.has_logo;
   const wrap = $('#brand-logo-wrap');
   const v = S.logoVersion || (S.logoVersion = Date.now());
-  if (s.has_logo) {
+  // No uploaded logo and the app isn't renamed: show the app's own logo (it has a light and a dark version).
+  const builtIn = !s.has_logo && !custom;
+  if (s.has_logo || builtIn) {
     $('#brand-logo').src = `/logo?variant=light&v=${v}`;
-    $('#brand-logo-dark').src = s.has_logo_dark ? `/logo?variant=dark&v=${v}` : '';
-    wrap.classList.toggle('has-dark', !!s.has_logo_dark);
+    $('#brand-logo-dark').src = s.has_logo_dark || builtIn ? `/logo?variant=dark&v=${v}` : '';
+    wrap.classList.toggle('has-dark', !!s.has_logo_dark || builtIn);
     wrap.hidden = false;
   } else wrap.hidden = true;
-  $('#brand-name').hidden = !!s.has_logo;
+  for (const img of [$('#brand-logo'), $('#brand-logo-dark')]) img.alt = appName(s);
+  $('#brand-name').hidden = !!s.has_logo || builtIn;
+  if (builtIn) $('.brand-sub').hidden = true;
   if (s.has_icon !== undefined) {
     $('#fav').href = `/favicon?v=${v}`;
     $('#touch-icon').href = `/apple-touch-icon.png?v=${v}`;
@@ -5573,7 +5577,7 @@ async function boot() {
   }
   applyBrand();
   $('#theme-toggle').onclick = cycleTheme;
-  $('#version').innerHTML = `<a href="#/changelog" title="What’s changed">Version ${esc(S.meta.version)}</a> · Horan AV`;
+  $('#version').innerHTML = `<a href="#/changelog" title="What’s changed">Version ${esc(S.meta.version)}</a>${appName() === DEFAULT_APP_NAME ? ' · Horan AV' : ''}`;
   if (S.meta.user || S.meta.remote) {
     $('#version').insertAdjacentHTML('beforebegin', `<div class="whoami">${S.meta.user ? `<strong>${esc(S.meta.user.name)}</strong>${S.meta.user.is_admin ? ' <span class="muted">· admin</span>' : ''}<br>` : ''}
       ${S.meta.remote ? `<span title="Connected over the network">⇄ ${esc(S.meta.server_name)}</span> · ` : ''}<a href="#" id="sign-out">${S.meta.user ? 'Switch user' : 'Sign out'}</a></div>`);
