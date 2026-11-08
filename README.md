@@ -133,6 +133,13 @@ Re-running `./install.sh` from a newer zip also works.
 - Set the repository (`owner/name`) in the same card if yours isn't built in.
 - Only this check and the optional Zoho Books button go online.
 
+**Automatic updates.** In the same card, choose one of:
+- **None.** You check yourself (the default).
+- **Check at a set time, and ask me.** Once a day at the time you choose, it looks for a new release. If there is one, admins are asked to install it the next time they open a page.
+- **Install automatically at a set time.** Once a day at the time you choose, it installs any new release with the same backups, then restarts. Pick a time nobody is using it, e.g. 03:00.
+
+If the app is off at that time, it runs when it's next started that day. If GitHub can't be reached, it tries again an hour later. The result of the last run shows under the setting.
+
 ## Publishing a new version (for maintainers)
 
 1. Change `VERSION = "..."` at the top of `server.py`, e.g. `1.21.1`.
@@ -148,6 +155,8 @@ Re-running `./install.sh` from a newer zip also works.
 ## Your logo, icon, colours and fonts
 
 Everything here is saved with your data, so it's in every backup and shows the same on every device.
+
+**The app's own logo and icon.** Until you add your own, the sidebar and sign-in page show the app's logo (a flight case, in light and dark mode versions), and the app uses the matching flight case icon. These are temporary, and better designs are welcome: open an issue or pull request with your logo. Quotes, invoices and prep lists only ever show a logo you've uploaded; otherwise they show your company name.
 
 **Logos** (Settings → Logo & app icon). Add a **light mode logo**, and optionally a **dark mode logo** that reads well on dark backgrounds. PNG, JPG, WebP or SVG all work.
 - **Best size:** a wide logo about 3 : 1, e.g. **1200 × 400 px** (at least 600 px wide), or an SVG.
@@ -212,7 +221,13 @@ How the lines are built:
 
 ## Renaming the app
 
-**Settings → Company → App name** changes what the app is called in the sidebar, the browser tab, the sign-in page and on phones' home screens, e.g. "Horan Hire Desk". Documents use your company name. The installed launcher keeps its original name.
+**Settings → Company → App name** changes what the app is called everywhere you see it, e.g. "Smith Hire Desk":
+- the sidebar, the browser tab, the sign-in page and phones' home screens;
+- messages in the app (updates, network access, restarting);
+- the app-menu entry on Bazzite/Linux (changed when you save on the computer running the app);
+- the "made by" details inside PDF quotes and invoices.
+
+Once renamed, the app's own "Event Tracker" logo and the "Horan AV" credit under the version are hidden too. Upload your own logo to show one. Documents use your company name. On a Mac, the app in Finder and the Dock keeps its original name.
 
 ## Invoicing with Zoho Books
 
@@ -490,7 +505,23 @@ On a job, click **Check out** (or **Check in**):
 When everything is checked, you're offered **Mark job as On hire** (out) or **Returned** (in). Progress for both shows on the job page.
 
 - **Free scan.** Tick **Free scan** under the scan box (it's remembered on that device). Anything you scan that isn't on the job is then recorded in its own **Free scan — not on the job** section instead of being refused. There, **Add to job** puts it on the job's equipment list, and **Remove** deletes those scans.
+- **Flight cases.** See [Flight cases](#flight-cases) below.
 - **Notes.** Every item, including free-scanned ones, has **+ Add a note**, e.g. "lens scratched". Type the note and press Enter. Notes are saved separately for check out and check in, show who wrote them, and appear in Activity.
+
+## Flight cases
+
+Add them under **Stock → Flight cases**. Each case has an outside size, an inside size (so you know what fits) and an empty weight. Give each case its own barcode under **Units**.
+
+- **Made for an item** (e.g. an SQ5 case for the SQ5). The case becomes a free linked accessory of that item, so it goes on a job with it, shows under it on the prep list and is scanned like any other item.
+- **General** (a trunk, a cable case). At **check out**, scanning it asks **Load flight case?**. Everything you scan after that is recorded as packed in it. A banner shows the case being packed, with its item count and weight.
+- **Closing a case.** Press **Close case**, or scan the close code. One close code works for every case. It's `CLOSE-CASE` unless you change it under **Settings → Jobs**, where you can also print it as a barcode label.
+- **Identifier and room.** In the **Flight cases** card under check out, give each case an identifier (e.g. "Case 3") and a room. **Pack into it** carries on packing a closed case, and **Unload** forgets the case (its items stay checked out).
+- **Weight.** Each case shows its packed weight: the empty case plus everything in it.
+- **Prep list.** Packed cases are listed at the bottom, with identifier, room, contents and weight. The total weight adds the general cases' own weight.
+
+## Client job numbers
+
+A client can have their own job number prefix and count. Edit the client and fill in **Job number prefix** (e.g. `ACME-`) and, if you like, **Their next job number**. Their new jobs are then numbered ACME-1, ACME-2… and everyone else's keep your usual numbering. A job keeps its number if you change its client later.
 
 ## Room planner
 
@@ -659,4 +690,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.21.1 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.22.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)

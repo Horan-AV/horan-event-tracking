@@ -46,10 +46,12 @@ const SIZE_UNIT_KEY = 'het-size-unit';
 function sizeUnit() { try { return localStorage.getItem(SIZE_UNIT_KEY) === 'mm' ? 'mm' : 'cm'; } catch { return 'cm'; } }
 function setSizeUnit(u) { try { localStorage.setItem(SIZE_UNIT_KEY, u); } catch { /* not kept */ } }
 const sizeShown = (cm, u = sizeUnit()) => (cm == null || cm === '' ? '' : +(u === 'mm' ? Number(cm) * 10 : Number(cm)).toFixed(2));
-function sizeText(p) {
-  if (!p.size_w && !p.size_d && !p.size_h) return '';
+const SIZE_KEYS = ['size_w', 'size_d', 'size_h', 'inner_w', 'inner_d', 'inner_h'];
+function sizeText(p, pre = 'size') {
+  const [w, d, h] = pre === 'inner' ? [p.inner_w, p.inner_d, p.inner_h] : [p.size_w, p.size_d, p.size_h];
+  if (!w && !d && !h) return '';
   const u = sizeUnit();
-  return `${[p.size_w, p.size_d, p.size_h].map((v) => (v ? num(sizeShown(v, u)) : '?')).join(' × ')} ${u}`;
+  return `${[w, d, h].map((v) => (v ? num(sizeShown(v, u)) : '?')).join(' × ')} ${u}`;
 }
 
 const JOB_FILTERS = [
@@ -513,8 +515,8 @@ async function newJob(prefill = {}) {
 
 const PLUG_TYPES = ['UK 13A', '16A CEE', '32A CEE', 'IEC C13', 'IEC C19', 'powerCON', 'powerCON TRUE1', 'Schuko', '15A Round Pin'];
 
-const TYPE_LABEL = { equipment: 'Equipment', cable: 'Cables', power: 'Power distribution', package: 'Packages' };
-const TYPE_ONE = { equipment: 'equipment item', cable: 'cable', power: 'lead / distro', package: 'package' };
+const TYPE_LABEL = { equipment: 'Equipment', cable: 'Cables', power: 'Power distribution', package: 'Packages', case: 'Flight cases' };
+const TYPE_ONE = { equipment: 'equipment item', cable: 'cable', power: 'lead / distro', package: 'package', case: 'flight case' };
 const volts = () => Number(S.settings.mains_voltage) || 230;
 const ampsOf = (w) => (Number(w) || 0) / volts();
 
@@ -558,7 +560,7 @@ function standHeight(p) {
   return '';
 }
 
-function productFields(type, { cats, subcats = [], cableTypes, joinerOpts, tracked, units, isNew, brands = [], vendorOpts = [] }) {
+function productFields(type, { cats, subcats = [], cableTypes, joinerOpts, tracked, units, isNew, brands = [], vendorOpts = [], caseForOpts = [] }) {
   const u = sizeUnit();
   const base = [
     { name: 'name', label: type === 'cable' ? 'Cable name' : 'Name', required: true,
@@ -603,6 +605,31 @@ function productFields(type, { cats, subcats = [], cableTypes, joinerOpts, track
     { name: 'size_h', label: `Height (${u})`, type: 'number', min: 0, step: 'any', third: true, placeholder: u === 'mm' ? 'e.g. 680' : 'e.g. 68' },
     { name: 'plan_shape', label: 'Shape on plans', type: 'select', half: true, options: [['box', 'Box / rectangle'], ['round', 'Round']] },
   ];
+  if (type === 'case') {
+    return [
+      { name: 'name', label: 'Flight case name', required: true, placeholder: 'e.g. SQ5 Flight Case, or Cable Trunk' },
+      { name: 'brand', label: 'Brand', list: brands, half: true, placeholder: 'e.g. Flightcase Warehouse' },
+      { name: 'category', label: 'Category', list: cats, half: true, placeholder: 'e.g. Flight cases' },
+      { name: 'case_for_id', label: 'Made for', type: 'select', options: caseForOpts,
+        help: 'Link it to the item it carries, e.g. an SQ5 case to the SQ5. Leave it general (a trunk, a cable case) and scanning it at check-out offers to load it: everything scanned after goes in the case.' },
+      { name: 'sku', label: 'Code / barcode', half: true, placeholder: 'Type it or scan a barcode',
+        help: 'Give each case its own barcode under Units once it’s saved.' },
+      { name: 'quantity', label: 'How many you own', type: 'number', min: 0, step: 1, half: true, disabled: tracked,
+        help: tracked ? `Set by its unit list (${units} unit${units === 1 ? '' : 's'})` : '' },
+      { name: 'day_rate', label: 'Day rate', type: 'number', min: 0, step: '0.01', third: true },
+      { name: 'replacement_value', label: 'Replacement value', type: 'number', min: 0, step: '0.01', third: true },
+      { name: 'weight_kg', label: 'Empty weight (kg)', type: 'number', min: 0, step: 'any', third: true,
+        help: 'Packed weight adds what’s loaded in it.' },
+      { type: 'heading', label: 'Outside size', help: 'Width × depth × height of the case itself. Switch between cm and mm on the right.' },
+      { name: 'size_w', label: `Width (${u})`, type: 'number', min: 0, step: 'any', third: true },
+      { name: 'size_d', label: `Depth (${u})`, type: 'number', min: 0, step: 'any', third: true },
+      { name: 'size_h', label: `Height (${u})`, type: 'number', min: 0, step: 'any', third: true },
+      { type: 'heading', label: 'Inside size', help: 'The space inside, so you know what fits.' },
+      { name: 'inner_w', label: `Width (${u})`, type: 'number', min: 0, step: 'any', third: true },
+      { name: 'inner_d', label: `Depth (${u})`, type: 'number', min: 0, step: 'any', third: true },
+      { name: 'inner_h', label: `Height (${u})`, type: 'number', min: 0, step: 'any', third: true },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 }];
+  }
   if (type === 'package') {
     return [
       { name: 'name', label: 'Package name', required: true, placeholder: 'e.g. Sennheiser 4-way RF rack' },
@@ -685,8 +712,12 @@ async function productModal(product, type, preset = {}) {
   if (!v.vendor_id) v.vendor_id = '';
   if (!v.sub_hire_cost) v.sub_hire_cost = '';
   if (type === 'equipment' && !v.equip_kind) v.equip_kind = preset.equip_kind || 'powered';
-  for (const k of ['stand_h', 'stand_h_min', 'stand_h_max', 'stand_load_kg', 'size_w', 'size_d', 'size_h']) if (v[k] == null) v[k] = '';
-  for (const k of ['size_w', 'size_d', 'size_h']) v[k] = sizeShown(v[k], unit);
+  for (const k of ['stand_h', 'stand_h_min', 'stand_h_max', 'stand_load_kg', ...SIZE_KEYS]) if (v[k] == null) v[k] = '';
+  for (const k of SIZE_KEYS) v[k] = sizeShown(v[k], unit);
+  if (!v.case_for_id) v.case_for_id = '';
+  const caseForOpts = [['', 'Nothing — a general case (load it at check-out)'], ...flat
+    .filter((x) => !['case', 'package'].includes(x.item_type) && (!product || x.id !== product.id))
+    .map((x) => [x.id, [x.brand, x.name].filter(Boolean).join(' ')])];
   if (v.subcategory == null) v.subcategory = '';
   if (!v.plan_shape) v.plan_shape = 'box';
   if (!v.plugs_in && !product && v.equip_kind === 'powered') v.plugs_in = 1;
@@ -700,7 +731,7 @@ async function productModal(product, type, preset = {}) {
     if (sh) $$('.modal .grp-sh').forEach((x) => (x.hidden = !sh.checked));
     const fm = $('.modal form');
     if (fm) applyKindVisibility(fm);
-    const szh = $$('.modal .form-heading').find((h) => h.textContent.includes('Size (for the room planner)'));
+    const szh = $$('.modal .form-heading').find((h) => /Size \(for the room planner\)|Outside size/.test(h.textContent));
     if (szh && fm) {
       szh.classList.add('with-switch');
       szh.insertAdjacentHTML('beforeend', `<div class="seg" role="group" aria-label="Size units">
@@ -709,7 +740,7 @@ async function productModal(product, type, preset = {}) {
         const b = e.target.closest('[data-size-u]');
         if (!b || b.dataset.sizeU === unit) return;
         const to = b.dataset.sizeU;
-        for (const [k, lbl] of [['size_w', 'Width'], ['size_d', 'Depth'], ['size_h', 'Height']]) {
+        for (const [k, lbl] of [['size_w', 'Width'], ['size_d', 'Depth'], ['size_h', 'Height'], ['inner_w', 'Width'], ['inner_d', 'Depth'], ['inner_h', 'Height']]) {
           const el = fm.elements[k];
           if (!el) continue;
           if (el.value !== '') el.value = +(to === 'mm' ? Number(el.value) * 10 : Number(el.value) / 10).toFixed(2);
@@ -724,7 +755,7 @@ async function productModal(product, type, preset = {}) {
   }, 0);
   const res = await formModal({
     title: `${product ? 'Edit' : 'Add'} ${TYPE_ONE[type]}`, wide: true,
-    fields: productFields(type, { cats, subcats, cableTypes, joinerOpts, tracked: units > 0, units, isNew: !product, brands, vendorOpts }),
+    fields: productFields(type, { cats, subcats, cableTypes, joinerOpts, tracked: units > 0, units, isNew: !product, brands, vendorOpts, caseForOpts }),
     values: v,
     onInput: (e, form) => {
       if (e.target.name === 'power_cable') { $$('.grp-pc', form).forEach((x) => (x.hidden = !e.target.checked)); return; }
@@ -762,7 +793,9 @@ async function productModal(product, type, preset = {}) {
         if (k !== 'skirt') { for (const f of ['skirt_len', 'skirt_height', 'skirt_style', 'skirt_colour']) delete body[f]; }
         for (const f of ['stand_h', 'stand_h_min', 'stand_h_max', 'stand_load_kg', 'deck_w', 'deck_d', 'skirt_len', 'skirt_height']) if (body[f] === '') body[f] = null;
       }
-      for (const f of ['size_w', 'size_d', 'size_h']) {
+      if ('case_for_id' in body) body.case_for_id = body.case_for_id === '' ? null : Number(body.case_for_id);
+      for (const f of SIZE_KEYS) {
+        if (!(f in body)) continue;
         if (body[f] === '' || body[f] == null) body[f] = null;
         else if (unit === 'mm') body[f] = +(Number(body[f]) / 10).toFixed(3);
       }
@@ -791,6 +824,9 @@ const CONTACT_FIELDS = [
   { name: 'address', label: 'Address', type: 'textarea', rows: 3 },
   { name: 'account_ref', label: 'Accounts reference (optional)', half: true, placeholder: 'e.g. EXAMPLE01',
     help: 'Their customer account code in Sage 50. Other software matches by company name.' },
+  { type: 'heading', label: 'Job numbers (optional)', help: 'Give this client their own job number prefix and count, e.g. ACME-1, ACME-2. Leave blank to use your usual numbering.' },
+  { name: 'job_prefix', label: 'Job number prefix', half: true, placeholder: 'e.g. ACME-' },
+  { name: 'next_job_number', label: 'Their next job number', type: 'number', min: 1, step: 1, half: true, placeholder: '1' },
   { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 },
 ];
 
@@ -817,8 +853,11 @@ function contactModal(contact) {
   return formModal({
     title: contact ? 'Edit client' : 'New client',
     fields: CONTACT_FIELDS,
-    values: contact || {},
-    onSubmit: (v) => contact ? put(`/contacts/${contact.id}`, v) : post('/contacts', v),
+    values: { ...(contact || {}), next_job_number: (contact && contact.next_job_number) || '' },
+    onSubmit: (v) => {
+      const body = { ...v, next_job_number: v.next_job_number === '' || v.next_job_number == null ? null : Number(v.next_job_number) };
+      return contact ? put(`/contacts/${contact.id}`, body) : post('/contacts', body);
+    },
   });
 }
 
@@ -1093,7 +1132,7 @@ function lineRow(job, it, rental) {
   const cdays = job.totals.charge_days;
   return `<tr data-item="${it.id}" class="${it.parent_item_id ? 'acc' : ''}" style="--depth:${it._depth || 0}">
       <td class="desc">${it.parent_item_id ? '<span class="acc-mark" aria-hidden="true">↳</span>' : ''}<input data-f="description" value="${esc(it.description)}" aria-label="Description">
-        <small>${it.added_by && !it.parent_item_id ? `<span class="by-note" title="Added by ${esc(it.added_by)}">${esc(initials(it.added_by))}</span> ` : ''}${it.product_id ? `<a href="#/product/${it.product_id}">${esc(it.product_sku || 'View stock item')}</a>` : ''}${it.parent_item_id ? ` <span class="muted">· ${job.items.some((x) => x.id === it.parent_item_id && isRun(x)) ? `part of ${groupWord(job.items.find((x) => x.id === it.parent_item_id))}` : (metaOf(it).role === 'package' ? 'in package' : `linked accessory${isIncluded(it) ? ', included' : ''}`)}</span>` : ''}</small></td>
+        <small>${it.added_by && !it.parent_item_id ? `<span class="by-note" title="Added by ${esc(it.added_by)}">${esc(initials(it.added_by))}</span> ` : ''}${it.product_brand ? `<span class="line-brand">${esc(it.product_brand)}</span> · ` : ''}${it.product_id ? `<a href="#/product/${it.product_id}">${esc(it.product_sku || 'View stock item')}</a>` : ''}${it.parent_item_id ? ` <span class="muted">· ${job.items.some((x) => x.id === it.parent_item_id && isRun(x)) ? `part of ${groupWord(job.items.find((x) => x.id === it.parent_item_id))}` : (metaOf(it).role === 'package' ? 'in package' : `linked accessory${isIncluded(it) ? ', included' : ''}`)}</span>` : ''}</small></td>
       <td class="n"><input data-f="quantity" type="number" step="any" min="0" value="${num(it.quantity)}" aria-label="Quantity"></td>
       <td class="n"><input data-f="unit_price" type="number" step="0.01" min="0" value="${num(it.unit_price)}" aria-label="Price"></td>
       ${rental ? `<td class="n"><input data-f="days" type="number" step="any" min="0" placeholder="${num(cdays)}" value="${it.days ?? ''}" aria-label="Days" title="Blank = job's chargeable days"></td>` : ''}
@@ -2147,6 +2186,7 @@ async function renderStock(view) {
     cable: ['Cable', 'Type', 'Lengths', 'Total', 'Joins with'],
     package: ['Package', 'Code', 'Contents', 'Price / day'],
     power: ['Lead / distro', 'Code', 'Owned', 'Sockets', 'Rating', 'Plugs into'],
+    case: ['Flight case', 'Code', 'Owned', 'Made for', 'Inside (W × D × H)', 'Empty weight'],
   };
   const brandTag = (p) => (p.brand ? ` <span class="brand-tag">${esc(p.brand)}</span>` : '');
   const owned = (p) => p.sub_hire ? '<span class="muted">sub-hire</span>' : `${num(p.quantity)}${p.asset_count ? ' <span class="muted" title="Tracked by unit">units</span>' : ''}${p.sub_unit_count ? ` <span class="badge sub" title="Sub-hired units in stock or coming">+${num(p.sub_unit_count)} sub</span>` : ''}${p.quarantined ? ` <span class="badge warn" title="In quarantine">${num(p.quarantined)} quar.</span>` : ''}`;
@@ -2163,6 +2203,12 @@ async function renderStock(view) {
       return `<td>${thumbHTML(p)}<strong>${esc(p.name)}</strong>${brandTag(p)}${tags}</td><td class="mono muted">${esc(p.sku)}</td>
         <td class="small">${(p.contents || []).map((c) => `${num(c.quantity)} × ${esc(c.name)}`).join(', ') || '<span class="muted">Empty — open it to add items</span>'}</td>
         <td class="n">${p.day_rate ? money(p.day_rate) : '<span class="muted">items’ own rates</span>'}</td>`;
+    }
+    if (p.item_type === 'case') {
+      const forP = p.case_for_id && all.find((x) => x.id === p.case_for_id);
+      return `<td>${thumbHTML(p)}<strong>${esc(p.name)}</strong>${brandTag(p)}${tags}</td><td class="mono muted">${esc(p.sku)}</td><td class="n">${owned(p)}</td>
+        <td class="n">${forP ? esc(forP.name) : '<span class="muted">General — load at check-out</span>'}</td>
+        <td class="n">${esc(sizeText(p, 'inner')) || '—'}</td><td class="n">${p.weight_kg ? num(p.weight_kg) + ' kg' : '—'}</td>`;
     }
     if (p.item_type === 'power') {
       return `<td>${thumbHTML(p)}<strong>${esc(p.name)}</strong>${brandTag(p)}${tags}</td><td class="mono muted">${esc(p.sku)}</td><td class="n">${owned(p)}</td>
@@ -2505,6 +2551,7 @@ async function renderProduct(view, id) {
   if (p.item_type === 'cable') { await renderCable(view, p); return; }
   if (p.item_type === 'package') { await renderPackage(view, p); return; }
   const all = await get('/products?flat=1');
+  const caseFor = p.case_for_id && all.find((x) => x.id === p.case_for_id);
   const linked = new Set(p.accessories.map((a) => a.accessory_id));
   const choices = all.filter((x) => x.id !== p.id && !linked.has(x.id));
   const byCat = {};
@@ -2531,7 +2578,7 @@ async function renderProduct(view, id) {
     </div></div>`;
   view.innerHTML = `<div class="page">
     <div class="page-head"><div><a class="crumb" href="#/stock">← Stock</a>
-      <h1>${esc(p.name)}</h1><div class="sub">${esc([TYPE_ONE[p.item_type] ? (p.item_type === 'power' ? 'Power distribution' : (KIND_SHORT[p.equip_kind] || 'Equipment')) : '', p.brand, catLabel(p), p.sku].filter(Boolean).join(' · '))}${p.archived ? ' · Archived' : ''}</div></div>
+      <h1>${esc(p.name)}</h1><div class="sub">${esc([TYPE_ONE[p.item_type] ? (p.item_type === 'power' ? 'Power distribution' : p.item_type === 'case' ? 'Flight case' : (KIND_SHORT[p.equip_kind] || 'Equipment')) : '', p.brand, catLabel(p), p.sku].filter(Boolean).join(' · '))}${p.archived ? ' · Archived' : ''}</div></div>
       <div class="actions">
         <a class="btn" href="#/availability">Availability grid</a>
         <button class="btn" data-edit>Edit</button>
@@ -2557,9 +2604,11 @@ async function renderProduct(view, id) {
           ${!p.sub_hire && p.vendor ? `<dt>Extra from</dt><dd><a href="#/vendor/${p.vendor.id}">${esc(p.vendor.name)}</a>${p.sub_hire_cost ? ` <span class="muted">· ${money(p.sub_hire_cost)}/day</span>` : ''} <span class="muted small">when a job needs more than you own</span></dd>` : ''}
           <dt>Day rate</dt><dd>${money(p.day_rate)}</dd>
           <dt>Replacement</dt><dd>${money(p.replacement_value)} each</dd>
-          <dt>Weight</dt><dd>${p.weight_kg ? num(p.weight_kg) + ' kg' : '—'}</dd>
+          <dt>${p.item_type === 'case' ? 'Empty weight' : 'Weight'}</dt><dd>${p.weight_kg ? num(p.weight_kg) + ' kg' : '—'}</dd>
+          ${p.item_type === 'case' ? `<dt>Made for</dt><dd>${caseFor ? `<a href="#/product/${caseFor.id}">${esc(caseFor.name)}</a>` : '<span class="muted">General — scan it at check-out to load it</span>'}</dd>
+            ${sizeText(p, 'inner') ? `<dt>Inside</dt><dd>${esc(sizeText(p, 'inner'))} <span class="muted small">(W × D × H)</span></dd>` : ''}` : ''}
           ${p.category ? `<dt>Category</dt><dd>${esc(catLabel(p))}</dd>` : ''}
-          ${sizeText(p) ? `<dt>Size</dt><dd>${esc(sizeText(p))} <span class="muted small">(W × D × H)</span></dd>` : ''}
+          ${sizeText(p) ? `<dt>${p.item_type === 'case' ? 'Outside' : 'Size'}</dt><dd>${esc(sizeText(p))} <span class="muted small">(W × D × H)</span></dd>` : ''}
           ${p.deck_w > 0 ? `<dt>Stage deck</dt><dd>${num(p.deck_w)} × ${num(p.deck_d)} m</dd>` : ''}
           ${p.skirt_len > 0 ? `<dt>Stage skirt</dt><dd>${num(p.skirt_len)} m long${p.skirt_height > 0 ? `, ${num(p.skirt_height)} cm high` : ''}${p.skirt_style || p.skirt_colour ? `<br>${esc([p.skirt_colour, p.skirt_style].filter(Boolean).join(' · '))}` : ''}</dd>` : ''}
           ${p.item_type === 'equipment' && (!p.equip_kind || p.equip_kind === 'powered') ? `<dt>Power</dt><dd>${p.plugs_in ? 'Plugs in — needs a socket' : '<span class="muted">Doesn’t plug in</span>'}${p.power_watts ? `<br>${num(p.power_watts)} W · ${num(+(p.power_watts / (p.volts || 230)).toFixed(2))} A <span class="muted">at ${num(p.volts || 230)} V</span>` : p.plugs_in ? '<br><span class="muted">Power draw not set</span>' : ''}</dd>` : ''}
@@ -3134,8 +3183,40 @@ function noteHTML(l) {
       ${l.note_by ? `<span class="by-note">— ${esc(l.note_by)}</span>` : ''}</div>`;
 }
 
+/** Flight case being packed on this device for a job (kept if the page reloads). */
+function packingCase(jobId, v) {
+  const key = `het-packing-${jobId}`;
+  try {
+    if (v === undefined) return Number(sessionStorage.getItem(key)) || null;
+    if (v) sessionStorage.setItem(key, String(v)); else sessionStorage.removeItem(key);
+  } catch { /* storage blocked */ }
+  return v || null;
+}
+function caseName(c) { return [c.label, c.name].filter(Boolean).join(' — ') || c.code; }
+function kg(v) { return `${num(Math.round((Number(v) || 0) * 10) / 10)} kg`; }
+
+function casesCardHTML(cases, openId, closeCode) {
+  return `<div class="card cases-card"><header><h2>Flight cases</h2>
+      <span class="muted small">Scan a general flight case to load it${closeCode ? ` · scan <span class="mono">${esc(closeCode)}</span> to close it` : ''}</span></header>
+    ${cases.length ? `<div class="table-wrap"><table class="table check-table cases-table"><tbody>${cases.map((c) => `<tr data-case="${c.id}" class="${c.id === openId ? 'just' : ''}">
+      <td><strong>${esc(c.name)}</strong> <span class="mono muted small">${esc(c.code)}</span>
+        ${c.id === openId ? '<span class="badge ok">Packing</span>' : c.open ? '<span class="badge warn" title="Open on another device">Open</span>' : '<span class="pill">Closed</span>'}
+        <div class="case-fields"><label>Identifier <input data-case-field="label" value="${esc(c.label)}" placeholder="e.g. Case 3, FOH" aria-label="Identifier for ${esc(c.code)}"></label>
+          <label>Room <input data-case-field="room" value="${esc(c.room)}" placeholder="e.g. Main hall" aria-label="Room for ${esc(c.code)}"></label></div>
+        ${c.items.length ? `<div class="case-items small">${c.items.map((i) => `${num(i.quantity)} × ${esc(i.name)}${i.assets.length ? ` <span class="mono muted">(${i.assets.map((a) => esc(a.asset_number)).join(', ')})</span>` : ''}`).join('<br>')}</div>`
+          : '<div class="muted small">Empty — scan items while it’s packing.</div>'}</td>
+      <td class="n nowrap"><strong>${kg(c.total_kg)}</strong><br><span class="muted small">${kg(c.empty_kg)} case + ${kg(c.contents_kg)} contents</span></td>
+      <td class="n nowrap">${c.id === openId ? '<button class="btn small primary" data-case-close>Close case</button>' : '<button class="btn small" data-case-open>Pack into it</button>'}
+        <button class="btn small danger" data-case-unload title="Forget this case — items stay checked out">Unload</button></td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="empty">No flight cases loaded yet.</div>'}</div>`;
+}
+
 async function renderCheck(view, id, dir) {
   let st = await get(`/jobs/${id}/check?dir=${dir}`);
+  const settings = dir === 'out' ? await get('/settings').catch(() => ({})) : {};
+  const closeCode = settings.case_close_code || '';
+  let packing = dir === 'out' ? packingCase(id) : null;
+  if (packing && !(st.cases || []).some((c) => c.id === packing && c.open)) packing = packingCase(id, null);
   const job = st.job;
   const other = dir === 'out' ? 'in' : 'out';
   view.innerHTML = `<div class="page check-page">
@@ -3149,10 +3230,19 @@ async function renderCheck(view, id, dir) {
       <div class="scan-msg" data-msg aria-live="assertive"></div>
       <label class="check free-toggle"><input type="checkbox" data-free-toggle ${freeScanOn() ? 'checked' : ''}>
         <span><strong>Free scan</strong> — also record things that aren’t on this job, in their own section</span></label>
+      <div data-packing></div>
     </div></div>
     <div data-body></div></div>`;
   const scan = $('#scan', view);
+  const drawPacking = () => {
+    const box = $('[data-packing]', view);
+    const c = packing && (st.cases || []).find((x) => x.id === packing);
+    box.innerHTML = c ? `<div class="banner packing-banner"><span>📦 Packing into <strong>${esc(caseName(c))}</strong>
+        <span class="muted">· ${plural(c.item_count, 'item')} · ${kg(c.total_kg)}</span></span>
+        <button class="btn small primary" data-case-close>Close case</button></div>` : '';
+  };
   const drawBody = () => {
+    if (dir === 'out') drawPacking();
     const pct = st.needed ? Math.round(100 * st.done / st.needed) : 0;
     const complete = st.needed && st.done >= st.needed;
     const groups = {};
@@ -3187,10 +3277,14 @@ async function renderCheck(view, id, dir) {
           <td class="n count"><strong>${num(f.done)}</strong></td>
           <td class="n nowrap"><button class="btn small" data-free-add title="Add these to the job's equipment list">Add to job</button>
             <button class="btn small danger" data-free-remove title="Remove these free scans">Remove</button></td></tr>`).join('')}</tbody></table></div>`
-          : '<div class="empty">Scan anything that isn’t on the job and it’s listed here.</div>'}</div>` : ''}`;
+          : '<div class="empty">Scan anything that isn’t on the job and it’s listed here.</div>'}</div>` : ''}
+      ${dir === 'out' ? casesCardHTML(st.cases || [], packing, closeCode) : ''}`;
   };
+  const setPacking = (c) => { packing = packingCase(id, c ? c.id : null); };
   const show = (kind, msg) => {
     const el = $('[data-msg]', view);
+    if (kind === 'case_closed') kind = 'ok';
+    if (kind === 'case') kind = 'warn';
     el.className = 'scan-msg ' + kind;
     el.textContent = (kind === 'ok' ? '✓ ' : kind === 'warn' ? '⚠ ' : '✗ ') + msg;
     beep(kind);
@@ -3207,10 +3301,25 @@ async function renderCheck(view, id, dir) {
     scan.value = '';
     if (!code) return;
     try {
-      const r = await post(`/jobs/${id}/check/scan`, { code, dir, free: freeScanOn() });
+      const r = await post(`/jobs/${id}/check/scan`, { code, dir, free: freeScanOn(), case_id: packing });
       st = { ...st, ...r };
+      if ('open_case' in r) setPacking(r.open_case);
       drawBody();
       show(r.result === 'free' ? 'warn' : r.result, r.message);
+      if (r.result === 'case' && r.case_offer) {
+        const o = r.case_offer;
+        const ok = await confirmModal(`${o.existing_id ? (o.reopen ? 'Open' : 'Carry on packing') : 'Load'} ${o.name} (${o.code})? Everything you scan after this goes in it, until you close it${closeCode ? ` or scan ${closeCode}` : ''}.`,
+          { title: 'Load flight case?', okLabel: o.existing_id ? 'Pack into it' : 'Load case', danger: false });
+        if (ok) {
+          const res = await post(`/jobs/${id}/cases`, { code: o.code });
+          st = { ...st, ...res };
+          setPacking(res.open_case);
+          drawBody();
+          show('ok', `Packing into ${caseName(res.open_case)}`);
+        }
+        scan.focus();
+        return;
+      }
       const row = r.product_id && $(`[data-line="${r.product_id}"]`, view);
       if (row) { row.classList.add('just'); row.scrollIntoView({ block: 'nearest' }); }
     } catch (ex) { show('error', ex.message); }
@@ -3227,6 +3336,13 @@ async function renderCheck(view, id, dir) {
       toast(e.target.checked ? 'Free scan on — items not on the job go in their own section' : 'Free scan off');
     }
     if (e.target.matches('[data-note-input]')) saveNote(e.target);
+    const cf = e.target.closest('[data-case-field]');
+    if (cf) {
+      const cid = Number(cf.closest('[data-case]').dataset.case);
+      put(`/cases/${cid}`, { [cf.dataset.caseField]: cf.value.trim() })
+        .then((r) => { st = { ...st, ...r }; drawBody(); toast('Saved', 'ok'); })
+        .catch((ex) => toast(ex.message, 'error'));
+    }
   };
   view.onkeydown = (e) => {
     if (e.target.matches('[data-note-input]') && e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
@@ -3241,9 +3357,23 @@ async function renderCheck(view, id, dir) {
       t.closest('[data-note-open]').hidden = true;
       return;
     }
-    if (t.closest('[data-note-input]')) return;
+    if (t.closest('[data-note-input]') || t.closest('[data-case-field]')) return;
+    const caseRow = t.closest('[data-case]');
+    const caseId = caseRow ? Number(caseRow.dataset.case) : packing;
     try {
-      if (t.closest('[data-free-add]')) {
+      if (t.closest('[data-case-close]')) {
+        st = { ...st, ...await put(`/cases/${caseId}`, { closed: true }) };
+        if (caseId === packing) setPacking(null);
+        toast('Flight case closed', 'ok');
+      } else if (t.closest('[data-case-open]')) {
+        st = { ...st, ...await put(`/cases/${caseId}`, { closed: false }) };
+        setPacking({ id: caseId });
+        toast('Packing into this case — scan items to add them', 'ok');
+      } else if (t.closest('[data-case-unload]')) {
+        if (!await confirmModal('Unload this flight case? Its items stay checked out, just not recorded as in a case.', { okLabel: 'Unload' })) return;
+        st = { ...st, ...await del(`/cases/${caseId}`) };
+        if (caseId === packing) setPacking(null);
+      } else if (t.closest('[data-free-add]')) {
         const f = st.free.find((x) => x.product_id === pid);
         await post(`/jobs/${id}/items`, { product_id: pid, quantity: f.done });
         st = await get(`/jobs/${id}/check?dir=${dir}`);
@@ -3772,6 +3902,7 @@ async function renderContact(view, id) {
         ${c.email ? `<dt>Email</dt><dd><a href="mailto:${esc(c.email)}">${esc(c.email)}</a></dd>` : ''}
         ${c.phone ? `<dt>Phone</dt><dd>${esc(c.phone)}</dd>` : ''}
         ${c.address ? `<dt>Address</dt><dd class="notes-text">${esc(c.address)}</dd>` : ''}
+        ${c.job_prefix ? `<dt>Job numbers</dt><dd><span class="mono">${esc(c.job_prefix)}${num(c.next_job_number || 1)}</span> <span class="muted small">next</span></dd>` : ''}
         ${c.notes ? `<dt>Notes</dt><dd class="notes-text">${esc(c.notes)}</dd>` : ''}
       </dl>${!c.email && !c.phone && !c.address ? '<p class="muted">No contact details yet.</p>' : ''}</div></div>
     </div></div>`;
@@ -4056,6 +4187,67 @@ async function invoicesModal(preselect = null) {
 
 /* ---- your details (optional), change log, requests */
 
+const C128 = ('212222 222122 222221 121223 121322 131222 122213 122312 132212 221213 221312 231212 112232 122132 122231 113222 '
+  + '123122 123221 223211 221132 221231 213212 223112 312131 311222 321122 321221 312212 322112 322211 212123 212321 232121 '
+  + '111323 131123 131321 112313 132113 132311 211313 231113 231311 112133 112331 132131 113123 113321 133121 313121 211331 '
+  + '231131 213113 213311 213131 311123 311321 331121 312113 312311 332111 314111 221411 431111 111224 111422 121124 121421 '
+  + '141122 141221 112214 112412 122114 122411 142112 142211 241211 221114 413111 241112 134111 111242 121142 121241 114212 '
+  + '124112 124211 411212 421112 421211 212141 214121 412121 111143 111341 131141 114113 114311 411113 411311 113141 114131 '
+  + '311141 411131 211412 211214 211232').split(' ');
+/** A Code 128 barcode as SVG (printable characters only), with the text underneath. */
+function barcodeSVG(text) {
+  const chars = [...String(text)].filter((ch) => ch.charCodeAt(0) >= 32 && ch.charCodeAt(0) <= 126);
+  const vals = [104, ...chars.map((ch) => ch.charCodeAt(0) - 32)];
+  vals.push(vals.reduce((sum, v, i) => sum + v * (i || 1), 0) % 103);
+  const widths = vals.map((v) => C128[v]).join('') + '2331112';
+  let x = 10, bars = '';
+  [...widths].forEach((w, i) => { if (i % 2 === 0) bars += `<rect x="${x}" y="0" width="${w}" height="50"/>`; x += Number(w); });
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${x + 10} 66" role="img" aria-label="Barcode ${esc(chars.join(''))}">
+    <rect width="100%" height="100%" fill="#fff"/><g fill="#000">${bars}</g>
+    <text x="${(x + 10) / 2}" y="63" font-family="monospace" font-size="11" text-anchor="middle" fill="#000">${esc(chars.join(''))}</text></svg>`;
+}
+function printCloseCode(code) {
+  const w = window.open('', '_blank', 'width=420,height=320');
+  if (!w) { toast('Allow pop-ups to print the label', 'error'); return; }
+  w.document.write(`<!doctype html><meta charset="utf-8"><title>Close flight case</title>
+    <style>body{font-family:system-ui,sans-serif;text-align:center;margin:24px}svg{width:320px;height:auto}h1{font-size:18px;margin:0 0 10px}</style>
+    <h1>CLOSE FLIGHT CASE</h1>${barcodeSVG(code)}<p style="font-size:12px">Scan at check-out to close the case being packed</p>`);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 200);
+}
+
+/** Automatic updates (Software update card). */
+async function drawAutoUpdate(view) {
+  const box = $('[data-auto-update]', view);
+  if (!box) return;
+  let a;
+  try { a = await get('/update/auto'); } catch (ex) { box.innerHTML = `<p class="muted small">${esc(ex.message)}</p>`; return; }
+  box.innerHTML = `<div class="form-grid" style="padding:0">
+      <label class="field half"><span>Automatic updates</span><select data-au-mode ${a.can_change ? '' : 'disabled'}>
+        <option value="none" ${a.mode === 'none' ? 'selected' : ''}>None — I’ll check myself</option>
+        <option value="check" ${a.mode === 'check' ? 'selected' : ''}>Check at a set time, and ask me</option>
+        <option value="install" ${a.mode === 'install' ? 'selected' : ''}>Install automatically at a set time</option></select>
+        <small>${a.mode === 'check' ? 'If there’s a new version, admins are asked to install it the next time they open a page.' : a.mode === 'install' ? 'Your data and the current version are backed up first, then the app restarts on the new version.' : 'Use Check for updates below whenever you like.'}</small></label>
+      <label class="field half" ${a.mode === 'none' ? 'hidden' : ''} data-au-time-wrap><span>Time (on this computer)</span><input type="time" data-au-time value="${esc(a.time)}" ${a.can_change ? '' : 'disabled'}>
+        <small>Once a day. If the app is off then, it runs as soon as it’s next started that day.</small></label>
+    </div>
+    <div class="actions"><button type="button" class="btn small" data-au-save ${a.can_change ? '' : 'disabled'}>Save automatic updates</button></div>
+    ${a.last_result ? `<p class="muted small" style="margin:6px 0 0">${esc(a.last_result)}</p>` : ''}`;
+}
+
+/** "Check at a set time" found a new version: ask an admin on the next page load. */
+async function offerScheduledUpdate() {
+  let a;
+  try { a = await get('/update/auto'); } catch { return; }
+  if (!a.available || !a.can_install || a.mode !== 'check') return;
+  try { if (sessionStorage.getItem('het-update-later') === a.available) return; } catch { /* ignore */ }
+  const ok = await confirmModal(`Version ${a.available} is available (you’re on ${a.current}). Install it now? Your data and the current version are backed up first, then the app restarts.`,
+    { title: 'Update available', okLabel: `Install ${a.available}`, danger: false });
+  if (!ok) { try { sessionStorage.setItem('het-update-later', a.available); } catch { /* ignore */ } return; }
+  try { const info = await post('/update/github', {}); waitForRestart(info.new); } catch (ex) { toast(ex.message, 'error'); }
+}
+
 /** "From GitHub" in Software update: is there a newer release, and install it. */
 async function drawGithub(view, fresh = false) {
   const box = $('[data-gh]', view);
@@ -4084,7 +4276,7 @@ async function drawMeCard(view) {
       so you can be credited in the change log when your idea is built. ${S.meta && S.meta.users_enabled ? `These are <strong>${esc(me.who)}</strong>’s details.` : ''}</p>
     <div class="form-grid" style="padding:0">
       <label class="field half"><span>Name / alias</span><input data-me-alias value="${esc(me.alias)}" maxlength="80" placeholder="e.g. Jess, or SoundGuy"></label>
-      <label class="field half"><span>Company</span><input data-me-company value="${esc(me.company)}" maxlength="120" placeholder="e.g. Horan AV"></label>
+      <label class="field half"><span>Company</span><input data-me-company value="${esc(me.company)}" maxlength="120" placeholder="e.g. Smith Events Ltd"></label>
     </div>
     <div class="actions" style="margin-top:10px"><button type="button" class="btn small" data-me-save>Save my details</button></div>`;
   $('[data-me-save]', card).onclick = async () => {
@@ -4300,6 +4492,10 @@ async function renderSettings(view) {
         <div class="card settings-section" id="jobs-settings"><header><h2>Jobs</h2></header><div class="form-grid">
           ${F('overdue_grace_days', 'Days’ grace before a hire is overdue', { type: 'number', min: 0, max: 60, step: 1, half: true,
             help: 'A job with kit still out after its return date goes Overdue after this many days. 0 = the day after it’s due back.' })}
+          ${F('case_close_code', 'Flight case close code', { half: true,
+            help: 'Scanning this at check-out closes whichever flight case is being packed. One code works for every case.' })}
+          <div class="field" style="flex-basis:100%"><div class="close-code-label" data-close-preview>${barcodeSVG(s.case_close_code || 'CLOSE-CASE')}</div>
+            <div class="actions" style="margin-top:6px"><button type="button" class="btn small" data-print-close>Print close-code label</button></div></div>
         </div></div>
         <div class="card settings-section"><header><h2>Power &amp; cable runs</h2></header><div class="form-grid">
           <label class="field half"><span>Default venue supply</span><select name="default_supply">${(meta.power_supplies || []).map((x) =>
@@ -4319,11 +4515,11 @@ async function renderSettings(view) {
         <div class="card settings-section" id="users" data-users-card><header><h2>Users</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="network" data-net-card><header><h2>Network access</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="update"><header><h2>Software update</h2><span class="pill">Version ${esc(meta.version)}</span></header>
-          ${!meta.can_update ? `<div class="body"><p class="muted" style="margin:0">Updates are installed on the computer running Horan Event Tracking (${esc(meta.server_name)}).</p>
+          ${!meta.can_update ? `<div class="body"><p class="muted" style="margin:0">Updates are installed on the computer running ${esc(appName())} (${esc(meta.server_name)}).</p>
             <p class="muted small" style="margin:8px 0 0">If that’s a server with no screen, turn on server mode there once and admins can update it from here: run <code>horan-rms headless on</code>.</p></div>`
             : !meta.is_admin ? '<div class="body"><p class="muted" style="margin:0">Only an admin can install updates.</p></div>' : `<div class="body">
             ${meta.headless && meta.remote ? `<p class="small" style="margin-top:0"><span class="badge ok">Server</span> This installs the update on the server <strong>${esc(meta.server_name)}</strong>, so every device gets it.</p>` : ''}
-            <p class="muted" style="margin-top:0">Choose the new Horan Event Tracking <code>.zip</code> file. Your data and the
+            <p class="muted" style="margin-top:0">Choose the new ${esc(appName())} <code>.zip</code> file. Your data and the
               current version are backed up first, then the app restarts on the new version. Nothing needs to be re-installed.</p>
             <div class="actions">
               <label class="btn primary">Install update from file…<input type="file" accept=".zip,application/zip" data-update hidden></label>
@@ -4333,6 +4529,8 @@ async function renderSettings(view) {
             <div class="form-grid" style="padding:0">${F('update_repo', 'GitHub repository', { placeholder: meta.github_repo || 'owner/name, e.g. horanav/horan-event-tracking',
               help: meta.github_repo ? `Leave blank to use ${meta.github_repo}. Press Save settings after changing it.` : 'The public repository that publishes releases (owner/name). Press Save settings after changing it.' })}</div>
             <div class="gh-box" data-gh><button type="button" class="btn" data-gh-check>Check for updates</button></div>
+            <h3 class="net-h">Automatic updates</h3>
+            <div data-auto-update><p class="muted small">Loading…</p></div>
             ${backups.length ? `<p class="muted" style="margin-bottom:0;font-size:12px">Previous version available: ${esc(backupLabel(backups[0]))}</p>` : ''}
           </div>`}</div>
         <div class="card settings-section" id="zoho" data-zoho-card><header><h2>Zoho Books</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
@@ -4359,6 +4557,7 @@ async function renderSettings(view) {
   drawMeCard(view);
   drawChangelogCard(view);
   if (meta.can_update && meta.is_admin && (s.update_repo || meta.github_repo)) drawGithub(view, false);
+  if (meta.can_update && meta.is_admin) drawAutoUpdate(view);
   const accSel = $('[data-acc-sw]', view);
   if (accSel) {
     accSel.addEventListener('change', () => {
@@ -4429,6 +4628,13 @@ async function renderSettings(view) {
         return;
       }
       if (e.target.closest('[data-gh-check]')) { drawGithub(view, true); return; }
+      if (e.target.closest('[data-au-save]')) {
+        await put('/update/auto', { mode: $('[data-au-mode]', view).value, time: $('[data-au-time]', view).value });
+        toast('Automatic updates saved', 'ok');
+        drawAutoUpdate(view);
+        return;
+      }
+      if (e.target.closest('[data-print-close]')) { printCloseCode($('[name="case_close_code"]', view).value.trim() || s.case_close_code); return; }
       const ghi = e.target.closest('[data-gh-install]');
       if (ghi) {
         const v = ghi.dataset.ghInstall;
@@ -4560,6 +4766,8 @@ async function renderSettings(view) {
   view.onkeydown = (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } };
   view.oninput = (e) => {
     if (e.target.type === 'color') previewLook(view);
+    if (e.target.matches('[data-au-mode]')) { const tw = $('[data-au-time-wrap]', view); if (tw) tw.hidden = e.target.value === 'none'; }
+    if (e.target.name === 'case_close_code') { const pv = $('[data-close-preview]', view); if (pv) pv.innerHTML = barcodeSVG(e.target.value.trim() || 'CLOSE-CASE'); }
     if (e.target.matches('[data-font-local]')) {
       const w = e.target.dataset.fontLocal;
       $(`[name="font_${w}"]`, view).value = e.target.value.trim() ? 'local:' + e.target.value.trim() : '';
@@ -4595,7 +4803,7 @@ async function drawUsersCard(view) {
   const canEdit = !users.length || (me && me.is_admin);
   const active = users.filter((u) => u.active);
   $('.body', card).innerHTML = !users.length
-    ? `<p style="margin-top:0">Add the people who use Horan Event Tracking. Each gets a <strong>PIN</strong>, and the app records who creates jobs, adds kit, and scans items out and in (see <a href="#/activity">Activity</a>).</p>
+    ? `<p style="margin-top:0">Add the people who use ${esc(appName())}. Each gets a <strong>PIN</strong>, and the app records who creates jobs, adds kit, and scans items out and in (see <a href="#/activity">Activity</a>).</p>
        <p class="muted small">Once there’s a user, everyone signs in with their name and PIN, on this computer too. Start with yourself. The first person is an admin, who can change settings and manage users.</p>
        <button type="button" class="btn primary" data-user-add>Add the first user (you)</button>`
     : `<ul class="user-list">${users.map((u) => `<li><span class="u"><span class="avatar" style="${u.active ? '' : 'opacity:.4'}">${esc(initials(u.name))}</span>
@@ -4611,7 +4819,7 @@ async function drawUsersCard(view) {
         const v = await formModal({
           title: first ? 'Add yourself' : 'Add user',
           fields: [
-            { name: 'name', label: 'Name', required: true, placeholder: first ? 'e.g. James Horan' : 'e.g. Sam' },
+            { name: 'name', label: 'Name', required: true, placeholder: first ? 'e.g. Alex Smith' : 'e.g. Sam' },
             { name: 'pin', label: 'PIN', type: 'password', required: true, half: true, placeholder: 'At least 4 characters' },
             ...(first ? [] : [{ name: 'is_admin', label: 'Admin — can change settings and manage users', type: 'checkbox' }]),
           ],
@@ -4684,7 +4892,7 @@ async function drawNetworkCard(view) {
         <ul><li>Make sure it's on the same Wi-Fi or network as this computer, not mobile data or a guest network.</li>
         <li><strong>Bazzite / Linux:</strong> allow the port through the firewall. Open a terminal and run<br><code>sudo firewall-cmd --permanent --add-port=${num(n.port)}/tcp &amp;&amp; sudo firewall-cmd --reload</code></li>
         <li><strong>Mac:</strong> if asked whether “python3” can accept incoming connections, click <strong>Allow</strong>. If you missed it, see System Settings → Network → Firewall → Options.</li>
-        <li>This computer needs to be on and awake, with Horan Event Tracking running.</li></ul></details>` : ''}
+        <li>This computer needs to be on and awake, with ${esc(appName())} running.</li></ul></details>` : ''}
       ${devices}`;
   }
   $('.body', card).innerHTML = body;
@@ -4700,7 +4908,7 @@ async function drawNetworkCard(view) {
         const res = await put('/network', { enabled, passcode });
         if (res.restarting) {
           waitForRestart(null, { title: enabled ? 'Turning on network access…' : 'Turning off network access…',
-            text: 'Restarting Horan Event Tracking. This takes a few seconds.', done: enabled ? 'Network access is on' : 'Network access is off' });
+            text: `Restarting ${appName()}. This takes a few seconds.`, done: enabled ? 'Network access is on' : 'Network access is off' });
           return;
         }
         toast(passcode ? 'Passcode saved — other devices need to sign in again' : 'Saved', 'ok');
@@ -4833,7 +5041,7 @@ function backupLabel(name) {
   return m ? `version ${m[6]} (replaced ${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]})` : name;
 }
 
-function waitForRestart(version, { title = 'Updating…', text = 'Installing and restarting Horan Event Tracking. This takes a few seconds.', done } = {}) {
+function waitForRestart(version, { title = 'Updating…', text = `Installing and restarting ${appName()}. This takes a few seconds.`, done } = {}) {
   openModal(`<header><h2>${esc(title)}</h2></header><div class="modal-body"><p data-msg>${esc(text)}</p></div><footer></footer>`);
   const started = Date.now();
   const tick = async () => {
@@ -4847,7 +5055,7 @@ function waitForRestart(version, { title = 'Updating…', text = 'Installing and
     } catch { /* server restarting */ }
     if (Date.now() - started > 40000) {
       const el = $('[data-msg]');
-      if (el) el.textContent = 'This is taking longer than expected. Close this window and re-open Horan Event Tracking from your app menu.';
+      if (el) el.textContent = `This is taking longer than expected. Close this window and re-open ${appName()} from your app menu.`;
       return;
     }
     setTimeout(tick, 1000);
@@ -4953,13 +5161,17 @@ function applyBrand(src = S.settings) {
   $('.brand-sub').hidden = custom && !s.has_logo;
   const wrap = $('#brand-logo-wrap');
   const v = S.logoVersion || (S.logoVersion = Date.now());
-  if (s.has_logo) {
+  // No uploaded logo and the app isn't renamed: show the app's own logo (it has a light and a dark version).
+  const builtIn = !s.has_logo && !custom;
+  if (s.has_logo || builtIn) {
     $('#brand-logo').src = `/logo?variant=light&v=${v}`;
-    $('#brand-logo-dark').src = s.has_logo_dark ? `/logo?variant=dark&v=${v}` : '';
-    wrap.classList.toggle('has-dark', !!s.has_logo_dark);
+    $('#brand-logo-dark').src = s.has_logo_dark || builtIn ? `/logo?variant=dark&v=${v}` : '';
+    wrap.classList.toggle('has-dark', !!s.has_logo_dark || builtIn);
     wrap.hidden = false;
   } else wrap.hidden = true;
-  $('#brand-name').hidden = !!s.has_logo;
+  for (const img of [$('#brand-logo'), $('#brand-logo-dark')]) img.alt = appName(s);
+  $('#brand-name').hidden = !!s.has_logo || builtIn;
+  if (builtIn) $('.brand-sub').hidden = true;
   if (s.has_icon !== undefined) {
     $('#fav').href = `/favicon?v=${v}`;
     $('#touch-icon').href = `/apple-touch-icon.png?v=${v}`;
@@ -5155,6 +5367,13 @@ function planDocBody(data) {
   }).join('') + (data.updated_at ? `<p class="muted small">Plan last changed ${esc(fmtDate(data.updated_at.slice(0, 10)))} ${esc(data.updated_at.slice(11, 16))}${data.updated_by ? ` by ${esc(data.updated_by)}` : ''}.</p>` : '');
 }
 
+/** A line's description for quotes and invoices, with its brand in front (unless it already starts with it). */
+function brandedDesc(it) {
+  const b = (it.product_brand || '').trim();
+  const d = it.description || '';
+  return b && !d.toLowerCase().startsWith(b.toLowerCase()) ? `<span class="doc-brand">${esc(b)}</span> ${esc(d)}` : esc(d);
+}
+
 function docHTML(job, s, doc, title, planData) {
   const c = job.contact;
   const t = job.totals;
@@ -5247,14 +5466,22 @@ Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date)
         </tbody></table></div>` : ''}
       ${plans}
       ${totals}
-      <div class="doc-block"><p><strong>Total weight:</strong> ${num(job.total_weight_kg)} kg</p></div>
+      <div class="doc-block"><p><strong>Total weight:</strong> ${num(job.total_weight_kg)} kg${(job.cases || []).some((c) => !c.on_job) ? (() => {
+        const extra = job.cases.filter((c) => !c.on_job).reduce((a, c) => a + c.empty_kg, 0);
+        return ` + ${kg(extra)} of flight cases = <strong>${kg(job.total_weight_kg + extra)}</strong>`;
+      })() : ''}</p></div>
       ${job.power && job.power.has_data ? `<div class="doc-block doc-power"><h3>Power — whole sheet</h3>
         ${(job.sections || []).some((x) => x.power.has_data) ? `<table class="doc-table"><tbody>${job.sections.map((sc) => `<tr><td>${sc.parent_id ? '<span class="acc-mark">↳</span>' : '<strong>'}${esc(sc.name)}${sc.parent_id ? '' : '</strong>'}</td><td class="n">${sc.power.watts ? `${num(sc.power.watts)} W · ${num(sc.power.amps)} A` : '—'}</td></tr>`).join('')}</tbody></table>` : ''}
         <p><strong>Total ≈ ${num(job.power.watts)} W (${num(job.power.amps)} A)</strong> — needs ${job.power.supplies_needed} × ${esc(job.power.supply.label)} at ${job.power.safe_pct}% load.
         Sockets: ${num(job.power.sockets_needed)} needed, ${num(job.power.sockets_have)} packed${job.power.sockets_short ? ` — ${num(job.power.sockets_short)} SHORT` : ''}.</p></div>` : ''}
       ${job.internal_notes ? `<div class="doc-block"><h3>Crew notes</h3><p>${esc(job.internal_notes)}</p></div>` : ''}
       ${job.notes ? `<div class="doc-block"><h3>Job notes</h3><p>${esc(job.notes)}</p></div>` : ''}
-      <div class="doc-sign"><div>Prepped by</div><div>Checked out</div><div>Returned &amp; checked</div></div>`;
+      <div class="doc-sign"><div>Prepped by</div><div>Checked out</div><div>Returned &amp; checked</div></div>
+      ${(job.cases || []).length ? `<div class="doc-block doc-cases" style="margin-top:18px"><h3>Flight cases <span class="muted">· ${plural(job.cases.length, 'case')} · ${kg(job.cases.reduce((a, c) => a + c.total_kg, 0))} packed</span></h3>
+        ${job.cases.map((c) => `<div class="doc-case"><table class="doc-table"><thead><tr><th colspan="2">${c.label ? `<strong>${esc(c.label)}</strong> · ` : ''}${esc(c.name)} <span class="mono">${esc(c.code)}</span>${c.room ? ` · Room: <strong>${esc(c.room)}</strong>` : ''}</th>
+          <th class="n" style="width:150px">${kg(c.total_kg)} <span style="font-weight:400">(case ${kg(c.empty_kg)})</span></th></tr></thead><tbody>
+          ${c.items.map((i) => `<tr><td class="n" style="width:50px"><strong>${num(i.quantity)}</strong></td><td>${esc(i.name)}${i.assets.length ? ` <span class="mono muted small">${i.assets.map((a) => esc(a.asset_number)).join(', ')}</span>` : ''}</td><td class="n">${i.weight_kg ? kg(i.weight_kg) : ''}</td></tr>`).join('')}
+          </tbody></table></div>`).join('')}</div>` : ''}`;
   }
 
   const anyDisc = job.items.some((i) => i.discount_pct);
@@ -5267,9 +5494,9 @@ Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date)
     return `<tr class="grp"><td colspan="${cols}">${KIND_LABEL[k]}</td></tr>` + its.map((it) => isRun(it) ? `<tr class="run-row">
       <td><strong>${esc(it.description)}</strong> <span class="muted">(${isStage(it) ? 'each stage' : 'each'}: ${esc(metaOf(it).summary || '')})</span></td><td class="n">${num(it.quantity)}</td><td class="n"></td>
       ${hasRental ? '<td class="n"></td>' : ''}${anyDisc ? '<td class="n"></td>' : ''}<td class="n"></td></tr>` : isIncluded(it) ? `<tr class="acc">
-      <td><span class="acc-mark">↳</span>${esc(it.description)}</td><td class="n">${num(it.quantity)}</td><td class="n"></td>
+      <td><span class="acc-mark">↳</span>${brandedDesc(it)}</td><td class="n">${num(it.quantity)}</td><td class="n"></td>
       ${hasRental ? '<td class="n"></td>' : ''}${anyDisc ? '<td class="n"></td>' : ''}<td class="n">Included</td></tr>` : `<tr class="${it.parent_item_id ? 'acc' : ''}">
-      <td>${it.parent_item_id ? '<span class="acc-mark">↳</span>' : ''}${esc(it.description)}</td><td class="n">${num(it.quantity)}</td><td class="n">${money(it.unit_price)}</td>
+      <td>${it.parent_item_id ? '<span class="acc-mark">↳</span>' : ''}${brandedDesc(it)}</td><td class="n">${num(it.quantity)}</td><td class="n">${money(it.unit_price)}</td>
       ${hasRental ? `<td class="n">${k === 'rental' ? num(it.effective_days) : ''}</td>` : ''}
       ${anyDisc ? `<td class="n">${it.discount_pct ? num(it.discount_pct) + '%' : ''}</td>` : ''}
       <td class="n">${money(it.line_total)}</td></tr>`).join('') +
@@ -5350,7 +5577,7 @@ async function boot() {
   }
   applyBrand();
   $('#theme-toggle').onclick = cycleTheme;
-  $('#version').innerHTML = `<a href="#/changelog" title="What’s changed">Version ${esc(S.meta.version)}</a> · Horan AV`;
+  $('#version').innerHTML = `<a href="#/changelog" title="What’s changed">Version ${esc(S.meta.version)}</a>${appName() === DEFAULT_APP_NAME ? ' · Horan AV' : ''}`;
   if (S.meta.user || S.meta.remote) {
     $('#version').insertAdjacentHTML('beforebegin', `<div class="whoami">${S.meta.user ? `<strong>${esc(S.meta.user.name)}</strong>${S.meta.user.is_admin ? ' <span class="muted">· admin</span>' : ''}<br>` : ''}
       ${S.meta.remote ? `<span title="Connected over the network">⇄ ${esc(S.meta.server_name)}</span> · ` : ''}<a href="#" id="sign-out">${S.meta.user ? 'Switch user' : 'Sign out'}</a></div>`);
@@ -5363,6 +5590,7 @@ async function boot() {
     if (!typing && e.key === 'n' && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); newJob(); }
   });
   router();
+  if (S.meta.is_admin && S.meta.can_update) offerScheduledUpdate();
   try {
     const upd = sessionStorage.getItem('het-updated');
     if (upd) { sessionStorage.removeItem('het-updated'); toast(/^[0-9.]+$/.test(upd) ? `Now running version ${upd}` : upd, 'ok'); }

@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.21.1"
+VERSION = "1.22.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -58,7 +58,7 @@ HARD = ("confirmed", "out")          # firmly reserve stock
 SOFT = ("provisional",)              # shown as a warning, not a hard booking
 OPEN_STATUSES = ("enquiry", "quote", "provisional", "confirmed", "out")
 KINDS = ("rental", "sale", "service")
-ITEM_TYPES = ("equipment", "cable", "power", "package")
+ITEM_TYPES = ("equipment", "cable", "power", "package", "case")
 MAX_RANGE_DAYS = 400
 
 # Venue power supplies the power check can plan against (amps per phase).
@@ -116,9 +116,12 @@ DEFAULT_SETTINGS = {
     "accounting_software": "",   # quickbooks | xero | zoho | sage50 | sagecloud
     "acc_tax_code": "", "acc_sales_account": "", "acc_item_names": "kind",
     "update_repo": "",   # GitHub owner/repository for updates ("" = the one built into this version)
+    "case_close_code": "CLOSE-CASE",   # scanning this at check-out closes the flight case being packed
+    # automatic updates: none | check (look at a set time, offer it on the next page load) | install (at a set time)
+    "auto_update_mode": "none", "auto_update_time": "03:00",
 }
 # Settings only the computer running the app may change (never from a phone or another computer).
-LOCAL_ONLY_SETTINGS = {"network_access"}
+LOCAL_ONLY_SETTINGS = {"network_access", "auto_update_mode", "auto_update_time"}  # auto-update: /api/update/auto
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -334,6 +337,19 @@ CREATE TABLE IF NOT EXISTS job_checks (
     asset_id   INTEGER REFERENCES assets(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS job_cases (
+    id         INTEGER PRIMARY KEY,
+    job_id     INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    asset_id   INTEGER REFERENCES assets(id) ON DELETE SET NULL,
+    code       TEXT NOT NULL DEFAULT '',
+    label      TEXT NOT NULL DEFAULT '',
+    room       TEXT NOT NULL DEFAULT '',
+    opened_by  TEXT NOT NULL DEFAULT '',
+    opened_at  TEXT NOT NULL,
+    closed_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cases_job ON job_cases(job_id);
 CREATE INDEX IF NOT EXISTS idx_sections_job ON job_sections(job_id);
 CREATE INDEX IF NOT EXISTS idx_checks_job ON job_checks(job_id, direction);
 CREATE INDEX IF NOT EXISTS idx_assets_product ON assets(product_id);
@@ -486,7 +502,7 @@ def float_or_none(v, field):
 def type_field(v, field):
     v = as_str(v, field) or "equipment"
     if v not in ITEM_TYPES:
-        raise ApiError(400, "Stock type must be equipment, cable, power or package")
+        raise ApiError(400, "Stock type must be equipment, cable, power, package or flight case")
     return v
 
 
@@ -518,7 +534,9 @@ PRODUCT_SPEC = {
     "equip_kind": as_str, "stand_height_mode": as_str, "stand_h": float_or_none, "stand_h_min": float_or_none,
     "stand_h_max": float_or_none, "stand_h_steps": as_str, "stand_load_kg": float_or_none,
     "size_w": float_or_none, "size_d": float_or_none, "size_h": float_or_none, "plan_shape": as_str,
+    "inner_w": float_or_none, "inner_d": float_or_none, "inner_h": float_or_none, "case_for_id": int_or_none,
 }
+CASE_FIELDS = {"inner_w", "inner_d", "inner_h", "case_for_id"}
 SIZE_FIELDS = {"size_w", "size_d", "size_h", "plan_shape"}
 # Equipment comes in kinds; each kind only keeps the fields that make sense for it.
 EQUIP_KINDS = {
@@ -574,7 +592,7 @@ def parse_steps(text):
 
 
 def check_size(data):
-    for k in ("size_w", "size_d", "size_h"):
+    for k in ("size_w", "size_d", "size_h", "inner_w", "inner_d", "inner_h"):
         v = data.get(k)
         if v is not None and (v < 0 or v > 5000):
             raise ApiError(400, "Sizes are in centimetres, e.g. 43")
@@ -621,6 +639,7 @@ TYPE_FIELDS = {
     "cable": {"cable_type", "length_m", "joiner_product_id", "power_cable"} | POWER_CABLE_FIELDS,
     "power": {"sockets", "socket_type", "power_rating_a", "plug_type", "sub_hire", "vendor_id", "sub_hire_cost"} | SIZE_FIELDS,
     "package": set(),
+    "case": SIZE_FIELDS | CASE_FIELDS,
 }
 TYPE_RESET = {"power_watts": 0, "cable_type": "", "length_m": None, "joiner_product_id": None,
               "sockets": 0, "socket_type": "", "power_rating_a": 0, "plug_type": "",
@@ -628,11 +647,23 @@ TYPE_RESET = {"power_watts": 0, "cable_type": "", "length_m": None, "joiner_prod
               "skirt_len": None, "skirt_height": None, "skirt_style": "", "skirt_colour": "",
               "sub_hire": 0, "vendor_id": None, "sub_hire_cost": 0, "equip_kind": "",
               "stand_height_mode": "", "stand_h": None, "stand_h_min": None, "stand_h_max": None, "stand_h_steps": "",
-              "stand_load_kg": None, "size_w": None, "size_d": None, "size_h": None, "plan_shape": ""}
+              "stand_load_kg": None, "size_w": None, "size_d": None, "size_h": None, "plan_shape": "",
+              "inner_w": None, "inner_d": None, "inner_h": None, "case_for_id": None}
 CONTACT_SPEC = {
     "name": required(as_str), "company": as_str, "email": as_str, "phone": as_str,
     "address": as_str, "notes": as_str, "archived": bool_int, "account_ref": as_str,
+    "job_prefix": as_str, "next_job_number": int_or_none,
 }
+
+
+def check_contact_numbering(data):
+    if "job_prefix" in data:
+        data["job_prefix"] = data["job_prefix"].strip()
+        if len(data["job_prefix"]) > 20 or re.search(r"[\s/\\]", data["job_prefix"]):
+            raise ApiError(400, "A job number prefix is up to 20 characters, with no spaces or slashes — e.g. ACME-")
+    n = data.get("next_job_number")
+    if n is not None and not 1 <= n <= 10 ** 9:
+        raise ApiError(400, "The client's next job number must be 1 or more")
 JOB_SPEC = {
     "name": required(as_str), "contact_id": int_or_none, "venue": as_str,
     "reference": as_str, "start_date": date_field_req, "end_date": date_field_req,
@@ -734,7 +765,7 @@ def load_items(conn, job_ids):
     res = {jid: [] for jid in job_ids}
     for r in conn.execute(
             f"""SELECT ji.*, p.name AS product_name, p.category AS product_category, p.subcategory AS product_subcategory,
-                       p.quantity AS product_quantity, p.weight_kg AS product_weight,
+                       p.quantity AS product_quantity, p.weight_kg AS product_weight, p.brand AS product_brand,
                        p.sku AS product_sku, p.sub_hire AS product_sub_hire, p.vendor_id AS product_vendor_id,
                        v.name AS vendor_name, p.sub_hire_cost AS product_sub_hire_cost,
                        COALESCE(sv.name, CASE WHEN ji.sub_vendor_id IS NULL THEN v.name END) AS sub_vendor_name
@@ -1117,6 +1148,13 @@ def api_settings_put(req, conn):
             as_float(v, "VAT rate")
         if k == "next_job_number":
             as_int(v, "Next job number")
+        if k == "case_close_code":
+            v = v.strip()
+            if not v:
+                raise ApiError(400, "The flight case close code can't be empty")
+            if conn.execute("SELECT 1 FROM assets WHERE asset_number = ? COLLATE NOCASE", (v,)).fetchone() or \
+                    conn.execute("SELECT 1 FROM products WHERE sku = ? COLLATE NOCASE AND sku != ''", (v,)).fetchone():
+                raise ApiError(400, f"{v} is already a barcode on your stock — choose a different close code")
         if k == "cable_run_preference" and v not in ("excess", "joins"):
             raise ApiError(400, "Cable run preference must be 'excess' or 'joins'")
         if k.startswith(("brand_", "light_", "dark_")) and v and not re.match(r"^#[0-9a-fA-F]{6}$", v):
@@ -1155,7 +1193,26 @@ def api_settings_put(req, conn):
         conn.execute("INSERT INTO settings(key, value) VALUES(?, ?) "
                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (k, v))
     conn.commit()
+    if "app_name" in data and not req.remote:
+        rename_desktop_entry(app_name(conn))
     return get_settings(conn)
+
+
+def rename_desktop_entry(name):
+    """Best effort (Linux): the app-menu entry takes the app's name too."""
+    try:
+        desk = os.path.join(os.path.expanduser("~"), ".local", "share", "applications", "horan-rms.desktop")
+        if not sys.platform.startswith("linux") or not os.path.exists(desk):
+            return
+        clean_name = re.sub(r"[\r\n]+", " ", name).strip()
+        with open(desk, encoding="utf-8") as f:
+            text = f.read()
+        new = re.sub(r"(?m)^Name=.*$", lambda m: "Name=" + clean_name, text, count=1)
+        if new != text:
+            with open(desk, "w", encoding="utf-8") as f:
+                f.write(new)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------- network access (other devices)
@@ -1251,7 +1308,7 @@ def local_only(req, headless_ok=False):
     """Some things can only be done on the computer running the app. A headless server has no screen of its own,
     so there (headless_ok) an admin can do them from any signed-in device instead."""
     if req.remote and not (headless_ok and HEADLESS):
-        raise ApiError(403, "That can only be done on the computer running Horan Event Tracking")
+        raise ApiError(403, "That can only be done on the computer running this app")
 
 
 @route("GET", "/api/network")
@@ -1550,11 +1607,17 @@ def api_user_put(req, conn, uid):
 @route("GET", "/api/login-options")
 def api_login_options(req, conn):
     """What the sign-in page should ask for. Public: lists first names only, no other details."""
-    name = get_settings(conn).get("app_name") or DEFAULT_SETTINGS["app_name"]
+    name = app_name(conn)
+    extra = {"app_name": name, "default_name": name == DEFAULT_SETTINGS["app_name"], "has_logo": file_has(conn, "logo_light")}
     if users_exist(conn):
-        return {"mode": "users", "app_name": name, "users": rows(conn.execute(
+        return {"mode": "users", **extra, "users": rows(conn.execute(
             "SELECT id, name FROM users WHERE active = 1 ORDER BY name COLLATE NOCASE"))}
-    return {"mode": "passcode", "app_name": name}
+    return {"mode": "passcode", **extra}
+
+
+def app_name(conn):
+    """What the app is called on screen (Settings → app name)."""
+    return (get_settings(conn).get("app_name") or "").strip() or DEFAULT_SETTINGS["app_name"]
 
 
 ACTIVITY_KINDS = ("job", "item", "scan", "stock", "contact", "vendor", "settings", "user")
@@ -1931,7 +1994,9 @@ def logo(req, conn):
     v = logo_variant(req)
     f = file_get(conn, f"logo_{v}") or (file_get(conn, "logo_light") if v == "dark" else None)
     if not f:
-        raise ApiError(404, "No logo uploaded")
+        # Nothing uploaded: the app's own logo (for the sidebar and sign-in page; documents only use an uploaded one).
+        with open(os.path.join(STATIC_DIR, f"logo-default-{v}.png"), "rb") as fh:
+            return Raw(fh.read(), "image/png")
     return Raw(f["data"], f["ctype"], extra_headers={
         "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"})
 
@@ -2023,8 +2088,8 @@ def favicon(req, conn):
     f = file_get(conn, "icon_32")
     if f:
         return Raw(f["data"], "image/png")
-    with open(os.path.join(STATIC_DIR, "favicon.svg"), "rb") as fh:
-        return Raw(fh.read(), "image/svg+xml")
+    with open(os.path.join(STATIC_DIR, "favicon-64.png"), "rb") as fh:
+        return Raw(fh.read(), "image/png")
 
 
 @route("GET", "/apple-touch-icon.png")
@@ -2150,7 +2215,7 @@ def read_update_bytes(body):
     roots = [n[:-len("server.py")] for n in names if n.endswith("server.py")
              and (n[:-len("server.py")] + "static/index.html") in names]
     if not roots:
-        raise ApiError(400, "This zip doesn't look like a Horan Event Tracking update "
+        raise ApiError(400, "This zip doesn't look like an update for this app "
                             "(no server.py and static/index.html found)")
     root = min(roots, key=len)
     files = {}
@@ -2170,7 +2235,7 @@ def read_update_bytes(body):
     src = files["server.py"].decode("utf-8", "replace")
     m = re.search(r'^VERSION = "([^"]+)"', src, re.M)
     if not m or "Horan Event Tracking" not in src:
-        raise ApiError(400, "This zip isn't a Horan Event Tracking release")
+        raise ApiError(400, "This zip isn't a release of this app")
     try:
         compile(src, "server.py", "exec")
     except SyntaxError as e:
@@ -2339,6 +2404,127 @@ def api_update_github_install(req, conn):
     return out
 
 
+# ---- automatic updates
+
+AUTO_UPDATE_MODES = ("none", "check", "install")
+
+
+def set_setting(conn, key, value):
+    conn.execute("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                 (key, str(value)))
+
+
+def auto_update_info(conn, req=None):
+    s = get_settings(conn)
+    avail = s.get("auto_update_available") or ""
+    if avail and version_tuple(avail) <= version_tuple(VERSION):
+        avail = ""  # already installed
+    can_install = False
+    if req is not None:
+        try:
+            require_admin(req, conn)
+            local_only(req, headless_ok=True)
+            can_install = True
+        except ApiError:
+            pass
+    return {"mode": s.get("auto_update_mode") or "none", "time": s.get("auto_update_time") or "03:00",
+            "available": avail, "current": VERSION, "last_run": s.get("auto_update_last_run") or "",
+            "last_result": s.get("auto_update_last_result") or "", "can_install": can_install, "can_change": can_install}
+
+
+def auto_update_due(s, now):
+    mode = s.get("auto_update_mode") or "none"
+    if mode not in ("check", "install"):
+        return False
+    t = s.get("auto_update_time") or "03:00"
+    retry = s.get("auto_update_retry_at") or ""
+    if retry:  # the last try failed (e.g. no internet): try again an hour later, even past midnight
+        return now.isoformat(timespec="seconds") >= retry
+    return now.strftime("%H:%M") >= t and (s.get("auto_update_last_run") or "")[:10] != now.date().isoformat()
+
+
+def run_auto_update(conn, now=None):
+    """Once a day at the chosen time: look for a new release, and (if chosen) install it."""
+    now = now or dt.datetime.now()
+    s = get_settings(conn)
+    if not auto_update_due(s, now):
+        return None
+    mode = s["auto_update_mode"]
+    set_setting(conn, "auto_update_last_run", now.isoformat(timespec="seconds"))
+    set_setting(conn, "auto_update_retry_at", "")
+    conn.commit()
+    try:
+        rel = github_latest(conn, fresh=True)
+        if not rel["newer"]:
+            result = f"Checked {now:%d %b %H:%M}: you're up to date ({VERSION})"
+            set_setting(conn, "auto_update_available", "")
+        elif mode == "check":
+            result = f"Checked {now:%d %b %H:%M}: version {rel['version']} is available"
+            set_setting(conn, "auto_update_available", rel["version"])
+        else:
+            if not rel["zip_url"]:
+                raise ApiError(400, "That release has no download")
+            set_setting(conn, "auto_update_available", rel["version"])
+            body = github_get(rel["zip_url"], accept="application/octet-stream")
+            new_version, files = read_update_bytes(body)
+            set_setting(conn, "auto_update_last_result", f"Installed {new_version} automatically on {now:%d %b %H:%M}")
+            conn.commit()
+            install_update(conn, new_version, files)
+            return "installed"
+    except ApiError as e:
+        result = f"Automatic update on {now:%d %b %H:%M} didn't work: {e.message}. Trying again in an hour."
+        set_setting(conn, "auto_update_retry_at", (now + dt.timedelta(hours=1)).isoformat(timespec="seconds"))
+    except Exception as e:  # never let the scheduler die
+        result = f"Automatic update on {now:%d %b %H:%M} didn't work: {e}. Trying again in an hour."
+        set_setting(conn, "auto_update_retry_at", (now + dt.timedelta(hours=1)).isoformat(timespec="seconds"))
+    set_setting(conn, "auto_update_last_result", result)
+    conn.commit()
+    return result
+
+
+def auto_update_loop():
+    while True:
+        time.sleep(30)
+        try:
+            c = db()
+            try:
+                if run_auto_update(c) == "installed":
+                    return  # restarting
+            finally:
+                c.close()
+        except Exception as e:
+            print(f"Automatic update check failed: {e}", file=sys.stderr)
+
+
+@route("GET", "/api/update/auto")
+def api_update_auto(req, conn):
+    return auto_update_info(conn, req)
+
+
+@route("PUT", "/api/update/auto")
+def api_update_auto_put(req, conn):
+    require_admin(req, conn)
+    local_only(req, headless_ok=True)
+    d = req.json() or {}
+    mode = d.get("mode", get_settings(conn).get("auto_update_mode") or "none")
+    if mode not in AUTO_UPDATE_MODES:
+        raise ApiError(400, "Automatic updates must be none, check or install")
+    t = str(d.get("time") or get_settings(conn).get("auto_update_time") or "03:00")
+    if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", t):
+        raise ApiError(400, "Choose a time like 03:00")
+    now = dt.datetime.now()
+    if mode == "install" and now.strftime("%H:%M") >= t:
+        # Don't install the moment it's switched on in the afternoon: wait for the chosen time tomorrow.
+        set_setting(conn, "auto_update_last_run", now.isoformat(timespec="seconds"))
+    elif (get_settings(conn).get("auto_update_last_run") or "")[:10] == now.date().isoformat() and t > now.strftime("%H:%M"):
+        set_setting(conn, "auto_update_last_run", "")  # moved to later today: run then
+    set_setting(conn, "auto_update_mode", mode)
+    set_setting(conn, "auto_update_time", t)
+    set_setting(conn, "auto_update_retry_at", "")
+    conn.commit()
+    return auto_update_info(conn, req)
+
+
 def restore_snapshot(path):
     files = {"server.py": open(os.path.join(path, "server.py"), "rb").read()}
     for base, _dirs, fnames in os.walk(os.path.join(path, "static")):
@@ -2363,7 +2549,7 @@ def api_restore(req, conn):
     except Exception:
         raise ApiError(400, "That file couldn't be read")
     if not body.startswith(b"SQLite format 3\x00"):
-        raise ApiError(400, "That isn't a Horan Event Tracking backup (.db) file")
+        raise ApiError(400, "That isn't a backup (.db) file from this app")
     tmp = os.path.join(DATA_DIR, ".restore-upload.db")
     with open(tmp, "wb") as f:
         f.write(body)
@@ -2372,7 +2558,7 @@ def api_restore(req, conn):
         try:
             tables = {r[0] for r in chk.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             if not {"products", "jobs", "settings", "contacts"} <= tables:
-                raise ApiError(400, "That database isn't a Horan Event Tracking backup")
+                raise ApiError(400, "That database isn't a backup from this app")
             if chk.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ApiError(400, "That backup file is damaged")
             counts = {t: chk.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("products", "jobs", "contacts")}
@@ -2991,7 +3177,8 @@ def _hex_rgb(h, default=(0.12, 0.36, 0.24)):
 
 
 class PdfDoc:
-    def __init__(self):
+    def __init__(self, producer="Horan Event Tracking"):
+        self.producer = producer
         self.pages = []
         self.images = []
         self.ops = None
@@ -3047,7 +3234,7 @@ class PdfDoc:
                             % (pages_id, PDF_W, PDF_H, res, cs)))
         objs[pages_id - 1] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(b"%d 0 R" % k for k in kids), len(kids))
         objs[cat - 1] = b"<< /Type /Catalog /Pages %d 0 R >>" % pages_id
-        info = add(b"<< /Title (" + self._esc(title) + b") /Producer (Horan Event Tracking) >>")
+        info = add(b"<< /Title (" + self._esc(title) + b") /Producer (" + self._esc(self.producer) + b") >>")
         out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
         offs = []
         for n, o in enumerate(objs, 1):
@@ -3059,6 +3246,12 @@ class PdfDoc:
             out += b"%010d 00000 n \n" % o
         out += b"trailer\n<< /Size %d /Root %d 0 R /Info %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, cat, info, xref)
         return bytes(out)
+
+
+def with_brand(it):
+    """A line's description with its stock item's brand in front, unless the description already starts with it."""
+    desc, brand = it.get("description") or "", (it.get("product_brand") or "").strip()
+    return f"{brand} {desc}" if brand and not desc.lower().startswith(brand.lower()) else desc
 
 
 def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate):
@@ -3195,7 +3388,7 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate):
             if run:
                 desc = f"{it['description']} (each: {m.get('summary', '')})"
             else:
-                desc = it["description"]
+                desc = with_brand(it)
                 if included:
                     vals["Total"] = "Included"
                 else:
@@ -3280,7 +3473,7 @@ def api_invoices_pdf(req, conn):
                 conn.execute("UPDATE jobs SET status = 'invoiced', updated_at = ? WHERE id = ?", (now_iso(), j["id"]))
         conn.commit()
     logo = decode_logo(d.get("logo"))
-    pdf = PdfDoc()
+    pdf = PdfDoc(app_name(conn))
     for j in jobs:
         render_invoice_pdf(pdf, j, s, doc, logo, vat_rate_of(conn))
     word = "Invoice" if doc == "invoice" else "Quotation"
@@ -3389,6 +3582,15 @@ def check_product_links(conn, data, pid=None):
             raise ApiError(400, "A cable can't be its own joiner")
         if not conn.execute("SELECT 1 FROM products WHERE id = ?", (j,)).fetchone():
             raise ApiError(400, "Joiner item not found")
+    cf = data.get("case_for_id")
+    if cf:
+        if pid is not None and int(cf) == int(pid):
+            raise ApiError(400, "A flight case can't be linked to itself")
+        t = conn.execute("SELECT item_type FROM products WHERE id = ?", (cf,)).fetchone()
+        if not t:
+            raise ApiError(400, "The item this case is for wasn't found")
+        if t[0] in ("case", "package"):
+            raise ApiError(400, "Link a flight case to the item it carries, not to another case or a package")
     if data.get("length_m") is not None and data["length_m"] < 0:
         raise ApiError(400, "Length can't be negative")
 
@@ -3427,6 +3629,19 @@ def tidy_for_type(data, item_type, kind=None):
         data.pop("length_m", None)  # lengths live on the cable's length rows
 
 
+def sync_case_link(conn, case_id, old_for=None):
+    """A flight case made for an item goes with it: it's that item's (free) linked accessory, one case per item."""
+    p = one(conn.execute("SELECT item_type, case_for_id FROM products WHERE id = ?", (case_id,)))
+    new_for = p and p["item_type"] == "case" and p["case_for_id"]
+    if old_for and old_for != new_for:
+        conn.execute("DELETE FROM product_accessories WHERE product_id = ? AND accessory_id = ?", (old_for, case_id))
+    if new_for and not links_reach(conn, case_id, new_for):
+        conn.execute(
+            """INSERT INTO product_accessories (product_id, accessory_id, quantity, charged, sort)
+               VALUES (?, ?, 1, 0, (SELECT COALESCE(MAX(sort), 0) + 1 FROM product_accessories WHERE product_id = ?))
+               ON CONFLICT (product_id, accessory_id) DO NOTHING""", (new_for, case_id, new_for))
+
+
 def sync_cable(conn, parent_id):
     """Keep a cable's lengths named and configured like their cable, and the total quantity right."""
     p = one(conn.execute("SELECT * FROM products WHERE id = ?", (parent_id,)))
@@ -3462,6 +3677,7 @@ def api_products_post(req, conn):
     if data.get("sku") and barcode_in_use(conn, data["sku"]):
         raise ApiError(400, f"Code {data['sku']} is already {barcode_owner(conn, data['sku'])}")
     pid = insert(conn, "products", data)
+    sync_case_link(conn, pid)
     conn.commit()
     return one(conn.execute("SELECT * FROM products WHERE id = ?", (pid,)))
 
@@ -4098,6 +4314,9 @@ def sync_asset_qty(conn, pid):
 
 def barcode_owner(conn, code, skip_asset=None, skip_product=None):
     """What already uses this barcode (a unit or an item's code), e.g. "unit of QSC K12.2 Speaker" - or None."""
+    close = (get_settings(conn).get("case_close_code") or "").strip()
+    if close and code.strip().lower() == close.lower():
+        return "the code that closes a flight case"
     a = one(conn.execute("SELECT p.name FROM assets x JOIN products p ON p.id = x.product_id "
                          "WHERE x.asset_number = ? COLLATE NOCASE AND x.id != ?", (code, skip_asset or 0)))
     if a:
@@ -4392,6 +4611,7 @@ def api_product_put(req, conn, pid):
     if conn.execute("SELECT 1 FROM assets WHERE product_id = ? AND sub_hire = 0", (pid,)).fetchone():
         data.pop("quantity", None)  # owned quantity comes from the unit list
     update(conn, "products", pid, data)
+    sync_case_link(conn, int(pid), cur.get("case_for_id"))
     if cur["item_type"] == "cable":
         sync_cable(conn, cur["parent_id"] or int(pid))
     conn.commit()
@@ -4429,7 +4649,9 @@ def api_contacts(req, conn):
 
 @route("POST", "/api/contacts")
 def api_contacts_post(req, conn):
-    cid = insert(conn, "contacts", clean(req.json(), CONTACT_SPEC))
+    data = clean(req.json(), CONTACT_SPEC)
+    check_contact_numbering(data)
+    cid = insert(conn, "contacts", data)
     conn.commit()
     return one(conn.execute("SELECT * FROM contacts WHERE id = ?", (cid,)))
 
@@ -4449,7 +4671,9 @@ def api_contact(req, conn, cid):
 def api_contact_put(req, conn, cid):
     if not conn.execute("SELECT 1 FROM contacts WHERE id = ?", (cid,)).fetchone():
         raise ApiError(404, "Contact not found")
-    update(conn, "contacts", cid, clean(req.json(), CONTACT_SPEC, partial=True))
+    data = clean(req.json(), CONTACT_SPEC, partial=True)
+    check_contact_numbering(data)
+    update(conn, "contacts", cid, data)
     conn.commit()
     return one(conn.execute("SELECT * FROM contacts WHERE id = ?", (cid,)))
 
@@ -4478,7 +4702,16 @@ def attach_totals(conn, jobs):
     return jobs
 
 
-def next_job_number(conn):
+def next_job_number(conn, contact_id=None):
+    """The next job number. A client with their own prefix gets their own count, e.g. ACME-1, ACME-2."""
+    c = contact_id and one(conn.execute("SELECT job_prefix, next_job_number FROM contacts WHERE id = ?", (contact_id,)))
+    if c and (c["job_prefix"] or "").strip():
+        prefix = c["job_prefix"].strip()
+        n = c["next_job_number"] or 1
+        while conn.execute("SELECT 1 FROM jobs WHERE number = ?", (f"{prefix}{n}",)).fetchone():
+            n += 1
+        conn.execute("UPDATE contacts SET next_job_number = ? WHERE id = ?", (n + 1, contact_id))
+        return f"{prefix}{n}"
     s = get_settings(conn)
     prefix = s.get("job_prefix", "")
     try:
@@ -4567,7 +4800,7 @@ def api_jobs_post(req, conn):
     data = clean(req.json(), JOB_SPEC)
     validate_job_dates(data)
     data.setdefault("status", "enquiry")
-    data["number"] = next_job_number(conn)
+    data["number"] = next_job_number(conn, data.get("contact_id"))
     data["created_at"] = data["updated_at"] = now_iso()
     jid = insert(conn, "jobs", data)
     conn.commit()
@@ -4593,6 +4826,10 @@ def job_detail(conn, jid):
         job["zoho_invoice_url"] = f"https://{host}/app/{get_secret(conn, 'zoho_org_id')}#/invoices/{job['zoho_invoice_id']}"
     job["total_weight_kg"] = round(sum((it["product_weight"] or 0) * (it["quantity"] or 0)
                                        for it in items if it["product_id"]), 2)
+    job["cases"] = job_cases(conn, jid, packed_only=True)
+    on_job = {it["product_id"] for it in items if it["product_id"]}
+    for c in job["cases"]:
+        c["on_job"] = c["product_id"] in on_job  # already counted in the job's weight
     job["power"] = power_summary(conn, items, job.get("power_supply"))
     job["sub_hires"] = sub_hire_summary(conn, job, items)
     attach_overdue(conn, [job])
@@ -4679,7 +4916,7 @@ def api_job_duplicate(req, conn, jid):
     else:
         new["name"] = src["name"] + " (copy)"
     new["status"] = "enquiry"
-    new["number"] = next_job_number(conn)
+    new["number"] = next_job_number(conn, new.get("contact_id"))
     new["created_at"] = new["updated_at"] = now_iso()
     new_id = insert(conn, "jobs", new)
     secmap = {}
@@ -4979,9 +5216,12 @@ def check_lines(conn, jid, direction):
         f.update(name=p.get("name", "?"), sku=p.get("sku", ""), category=p.get("category", ""), by=sorted(f["by"]))
         n = notes.get(pid)
         f["note"], f["note_by"] = (n["note"], n["user_name"]) if n else ("", "")
-    return {"direction": direction, "lines": lines, "needed": sum(l["needed"] for l in lines),
-            "done": sum(min(l["done"], l["needed"]) for l in lines), "unexpected": len(extra),
-            "free": sorted(free.values(), key=lambda f: f["name"].lower())}
+    out = {"direction": direction, "lines": lines, "needed": sum(l["needed"] for l in lines),
+           "done": sum(min(l["done"], l["needed"]) for l in lines), "unexpected": len(extra),
+           "free": sorted(free.values(), key=lambda f: f["name"].lower())}
+    if direction == "out":
+        out["cases"] = job_cases(conn, jid)
+    return out
 
 
 def check_summary(conn, jid):
@@ -5009,15 +5249,101 @@ def api_check(req, conn, jid):
     return out
 
 
-def do_scan(conn, jid, direction, code, free=False):
-    """Scan one code on a job. free=True: something not on the job is recorded in the job's free-scan section."""
+def case_code_lookup(conn, code):
+    """If this barcode is a flight case (one of its units, or its item code), what it is - else None."""
+    a = one(conn.execute("SELECT x.id AS asset_id, x.asset_number AS code, p.id AS product_id, p.name, p.case_for_id "
+                         "FROM assets x JOIN products p ON p.id = x.product_id "
+                         "WHERE x.asset_number = ? COLLATE NOCASE AND p.item_type = 'case'", (code,)))
+    if a:
+        return a
+    p = one(conn.execute("SELECT NULL AS asset_id, sku AS code, id AS product_id, name, case_for_id FROM products "
+                         "WHERE sku = ? COLLATE NOCASE AND sku != '' AND item_type = 'case'", (code,)))
+    return p
+
+
+def open_case(conn, jid, case_id):
+    """The flight case being packed, if it's still open on this job."""
+    if not case_id:
+        return None
+    return one(conn.execute("SELECT * FROM job_cases WHERE id = ? AND job_id = ? AND closed_at IS NULL", (case_id, jid)))
+
+
+def case_title(c):
+    return " · ".join(x for x in (c.get("label"), c.get("name"), c.get("code")) if x)
+
+
+def job_cases(conn, jid, packed_only=False):
+    """Flight cases loaded on a job's check-out: what's in each one, and what it weighs packed."""
+    cases = rows(conn.execute(
+        "SELECT c.*, p.name, p.weight_kg AS empty_kg, p.size_w, p.size_d, p.size_h, p.inner_w, p.inner_d, p.inner_h "
+        "FROM job_cases c JOIN products p ON p.id = c.product_id WHERE c.job_id = ? ORDER BY c.id", (jid,)))
+    for c in cases:
+        items = {}
+        for r in rows(conn.execute(
+                "SELECT k.id AS check_id, k.product_id, k.quantity, x.asset_number, p.name, p.sku, p.weight_kg "
+                "FROM job_checks k JOIN products p ON p.id = k.product_id LEFT JOIN assets x ON x.id = k.asset_id "
+                "WHERE k.case_id = ? AND k.direction = 'out' ORDER BY k.id", (c["id"],))):
+            it = items.setdefault(r["product_id"], {"product_id": r["product_id"], "name": r["name"], "sku": r["sku"],
+                                                    "quantity": 0, "weight_kg": 0.0, "assets": []})
+            it["quantity"] += r["quantity"] or 0
+            it["weight_kg"] += (r["weight_kg"] or 0) * (r["quantity"] or 0)
+            if r["asset_number"]:
+                it["assets"].append({"check_id": r["check_id"], "asset_number": r["asset_number"]})
+        c["items"] = sorted(items.values(), key=lambda i: i["name"].lower())
+        for i in c["items"]:
+            i["weight_kg"] = round(i["weight_kg"], 2)
+        c["contents_kg"] = round(sum(i["weight_kg"] for i in c["items"]), 2)
+        c["empty_kg"] = round(c["empty_kg"] or 0, 2)
+        c["total_kg"] = round(c["empty_kg"] + c["contents_kg"], 2)
+        c["item_count"] = sum(i["quantity"] for i in c["items"])
+        c["open"] = c["closed_at"] is None
+    return [c for c in cases if c["items"]] if packed_only else cases
+
+
+def do_scan(conn, jid, direction, code, free=False, case_id=None):
+    """Scan one code on a job. free=True: something not on the job is recorded in the job's free-scan section.
+    case_id: the flight case being packed (check-out only) - what's scanned is recorded as inside it."""
     state = check_lines(conn, jid, direction)
     lines = {l["product_id"]: l for l in state["lines"]}
+    case = open_case(conn, jid, case_id) if direction == "out" else None
 
-    def reply(kind, message, pid=None):
+    def reply(kind, message, pid=None, **extra):
         res = check_lines(conn, jid, direction)
-        res.update({"result": kind, "message": message, "product_id": pid})
+        res.update({"result": kind, "message": message, "product_id": pid}, **extra)
+        if case_id and not open_case(conn, jid, case_id):
+            res["open_case"] = None  # closed (maybe by someone else): stop packing into it
+        elif case:
+            res["open_case"] = next((c for c in res.get("cases", []) if c["id"] == case["id"]), None)
         return res
+
+    def record(row):
+        if case:
+            row["case_id"] = case["id"]
+        insert(conn, "job_checks", row)
+
+    def into(msg):
+        if not case:
+            return msg
+        c = dict(case, name=one(conn.execute("SELECT name FROM products WHERE id = ?", (case["product_id"],)))["name"])
+        return f"{msg} → in {case_title(c)}"
+    close = (get_settings(conn).get("case_close_code") or "").strip()
+    if close and code.lower() == close.lower():
+        if direction != "out":
+            return reply("error", "Flight cases are packed at check-out — nothing to close here")
+        if not case:
+            return reply("warn", "No flight case is open — scan a flight case to start packing one", open_case=None)
+        conn.execute("UPDATE job_cases SET closed_at = ? WHERE id = ?", (now_iso(), case["id"]))
+        conn.commit()
+        case = None
+        return reply("case_closed", "Flight case closed", open_case=None)
+    fc = case_code_lookup(conn, code) if direction == "out" else None
+    if fc and not fc["case_for_id"]:
+        # A general-purpose case: offer to start packing it.
+        existing = one(conn.execute("SELECT id, closed_at FROM job_cases WHERE job_id = ? AND code = ? COLLATE NOCASE "
+                                    "ORDER BY id DESC LIMIT 1", (jid, fc["code"])))
+        return reply("case", f"{fc['code']} — {fc['name']} is a flight case. Load it?", fc["product_id"],
+                     case_offer={"code": fc["code"], "name": fc["name"], "existing_id": existing and existing["id"],
+                                 "reopen": bool(existing and existing["closed_at"])})
     asset = one(conn.execute("SELECT x.*, p.name FROM assets x JOIN products p ON p.id = x.product_id "
                              "WHERE x.asset_number = ? COLLATE NOCASE", (code,)))
     if asset:
@@ -5031,26 +5357,26 @@ def do_scan(conn, jid, direction, code, free=False):
         if not line:
             if not free:
                 return reply("error", f"{asset['asset_number']} ({asset['name']}) isn't on this job")
-            insert(conn, "job_checks", {"job_id": jid, "product_id": asset["product_id"], "direction": direction,
-                                        "quantity": 1, "asset_id": asset["id"], "free": 1, "created_at": now_iso()})
+            record({"job_id": jid, "product_id": asset["product_id"], "direction": direction,
+                    "quantity": 1, "asset_id": asset["id"], "free": 1, "created_at": now_iso()})
             conn.commit()
-            return reply("free", f"{asset['asset_number']} — {asset['name']} (free scan: not on the job)", asset["product_id"])
+            return reply("free", into(f"{asset['asset_number']} — {asset['name']} (free scan: not on the job)"), asset["product_id"])
         if line["done"] >= line["needed"]:
             return reply("warn", f"Already have all {fmt_num(line['needed'])} × {line['name']}", asset["product_id"])
-        insert(conn, "job_checks", {"job_id": jid, "product_id": asset["product_id"], "direction": direction,
-                                    "quantity": 1, "asset_id": asset["id"], "created_at": now_iso()})
+        record({"job_id": jid, "product_id": asset["product_id"], "direction": direction,
+                "quantity": 1, "asset_id": asset["id"], "created_at": now_iso()})
         conn.commit()
-        return reply("ok", f"{asset['asset_number']} — {asset['name']} ({fmt_num(line['done'] + 1)}/{fmt_num(line['needed'])})",
+        return reply("ok", into(f"{asset['asset_number']} — {asset['name']} ({fmt_num(line['done'] + 1)}/{fmt_num(line['needed'])})"),
                      asset["product_id"])
     prods = rows(conn.execute("SELECT id, name FROM products WHERE sku = ? COLLATE NOCASE AND sku != ''", (code,)))
     on_job = [p for p in prods if p["id"] in lines]
     if not on_job:
         if prods and free:
             p = prods[0]
-            insert(conn, "job_checks", {"job_id": jid, "product_id": p["id"], "direction": direction, "quantity": 1,
-                                        "free": 1, "created_at": now_iso()})
+            record({"job_id": jid, "product_id": p["id"], "direction": direction, "quantity": 1,
+                    "free": 1, "created_at": now_iso()})
             conn.commit()
-            return reply("free", f"{p['name']} (free scan: not on the job)", p["id"])
+            return reply("free", into(f"{p['name']} (free scan: not on the job)"), p["id"])
         if prods:
             return reply("error", f"{prods[0]['name']} isn't on this job")
         return reply("error", f"“{code}” doesn't match any asset number or item code")
@@ -5058,10 +5384,10 @@ def do_scan(conn, jid, direction, code, free=False):
     line = lines[p["id"]]
     if line["done"] >= line["needed"]:
         return reply("warn", f"Already have all {fmt_num(line['needed'])} × {p['name']}", p["id"])
-    insert(conn, "job_checks", {"job_id": jid, "product_id": p["id"], "direction": direction, "quantity": 1,
-                                "created_at": now_iso()})
+    record({"job_id": jid, "product_id": p["id"], "direction": direction, "quantity": 1,
+            "created_at": now_iso()})
     conn.commit()
-    return reply("ok", f"{p['name']} ({fmt_num(line['done'] + 1)}/{fmt_num(line['needed'])})", p["id"])
+    return reply("ok", into(f"{p['name']} ({fmt_num(line['done'] + 1)}/{fmt_num(line['needed'])})"), p["id"])
 
 
 @route("POST", r"/api/jobs/(\d+)/check/scan")
@@ -5070,7 +5396,62 @@ def api_check_scan(req, conn, jid):
     code = as_str(d.get("code"), "code")
     if not code:
         raise ApiError(400, "Nothing scanned")
-    return do_scan(conn, int(jid), direction_of(d.get("dir") or "out"), code, free=bool(d.get("free")))
+    return do_scan(conn, int(jid), direction_of(d.get("dir") or "out"), code, free=bool(d.get("free")),
+                   case_id=as_int(d.get("case_id"), "case_id", allow_none=True))
+
+
+@route("POST", r"/api/jobs/(\d+)/cases")
+def api_case_load(req, conn, jid):
+    """Start (or carry on) packing a flight case at check-out."""
+    jid = int(jid)
+    if not conn.execute("SELECT 1 FROM jobs WHERE id = ?", (jid,)).fetchone():
+        raise ApiError(404, "Job not found")
+    code = as_str((req.json() or {}).get("code"), "code")
+    fc = case_code_lookup(conn, code)
+    if not fc:
+        raise ApiError(400, f"“{code}” isn't a flight case")
+    c = one(conn.execute("SELECT * FROM job_cases WHERE job_id = ? AND code = ? COLLATE NOCASE ORDER BY id DESC LIMIT 1",
+                         (jid, fc["code"])))
+    if c:
+        conn.execute("UPDATE job_cases SET closed_at = NULL WHERE id = ?", (c["id"],))
+        cid = c["id"]
+    else:
+        cid = insert(conn, "job_cases", {"job_id": jid, "product_id": fc["product_id"], "asset_id": fc["asset_id"],
+                                         "code": fc["code"], "opened_by": actor_name() or "", "opened_at": now_iso()})
+    conn.commit()
+    res = check_lines(conn, jid, "out")
+    res["open_case"] = next(x for x in res["cases"] if x["id"] == cid)
+    return res
+
+
+@route("PUT", r"/api/cases/(\d+)")
+def api_case_put(req, conn, cid):
+    c = one(conn.execute("SELECT * FROM job_cases WHERE id = ?", (cid,)))
+    if not c:
+        raise ApiError(404, "Flight case not found")
+    d = req.json() or {}
+    data = {}
+    for k in ("label", "room"):
+        if k in d:
+            data[k] = as_str(d[k], k)[:120]
+    if "closed" in d:
+        data["closed_at"] = (c["closed_at"] or now_iso()) if d["closed"] else None
+    if data:
+        update(conn, "job_cases", c["id"], data)
+        conn.commit()
+    return check_lines(conn, c["job_id"], "out")
+
+
+@route("DELETE", r"/api/cases/(\d+)")
+def api_case_delete(req, conn, cid):
+    """Unload a case: its items stay checked out, just not recorded as in a case."""
+    c = one(conn.execute("SELECT * FROM job_cases WHERE id = ?", (cid,)))
+    if not c:
+        raise ApiError(404, "Flight case not found")
+    conn.execute("UPDATE job_checks SET case_id = NULL WHERE case_id = ?", (c["id"],))
+    conn.execute("DELETE FROM job_cases WHERE id = ?", (c["id"],))
+    conn.commit()
+    return check_lines(conn, c["job_id"], "out")
 
 
 @route("PUT", r"/api/jobs/(\d+)/check/note")
@@ -6427,8 +6808,6 @@ class Handler(BaseHTTPRequestHandler):
             rel = "index.html"
         elif path.startswith("/static/"):
             rel = path[len("/static/"):]
-        elif path == "/favicon.svg":
-            rel = "favicon.svg"
         else:
             return False
         full = os.path.realpath(os.path.join(STATIC_DIR, rel))
@@ -6468,10 +6847,10 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
         if remote and not allowed:
-            return self._json(403, {"error": "Network access is turned off on the computer running Horan Event Tracking"})
+            return self._json(403, {"error": "Network access is turned off on the computer running this app"})
         need_login = (has_users and not user) or (remote and not session)
         if need_login:
-            public = (path in ("/api/login", "/api/login-options", "/api/meta", "/favicon.svg", "/favicon", "/apple-touch-icon.png",
+            public = (path in ("/api/login", "/api/login-options", "/api/meta", "/favicon", "/apple-touch-icon.png",
                                "/manifest.webmanifest", "/app-icon-192.png", "/app-icon-512.png", "/logo")
                       or path.startswith("/static/"))
             if not public:
@@ -6636,7 +7015,14 @@ def init_db():
                              ("contacts", "zoho_contact_id", "TEXT"),
                              ("jobs", "zoho_invoice_id", "TEXT"),
                              ("jobs", "zoho_invoice_number", "TEXT"),
-                             ("jobs", "zoho_synced_at", "TEXT")):
+                             ("jobs", "zoho_synced_at", "TEXT"),
+                             ("products", "inner_w", "REAL"),
+                             ("products", "inner_d", "REAL"),
+                             ("products", "inner_h", "REAL"),
+                             ("products", "case_for_id", "INTEGER REFERENCES products(id) ON DELETE SET NULL"),
+                             ("job_checks", "case_id", "INTEGER REFERENCES job_cases(id) ON DELETE SET NULL"),
+                             ("contacts", "job_prefix", "TEXT NOT NULL DEFAULT ''"),
+                             ("contacts", "next_job_number", "INTEGER")):
         if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():
@@ -6806,6 +7192,7 @@ def main():
         finally:
             c.close()
     daily_backup()
+    threading.Thread(target=auto_update_loop, daemon=True, name="auto-update").start()
     if args.demo:
         load_demo()
 
@@ -6999,7 +7386,7 @@ def load_demo():
     def mk(name, contact, start_off, length, status, lines, venue=""):
         start = today + dt.timedelta(days=start_off)
         jid = insert(conn, "jobs", {
-            "number": next_job_number(conn), "name": name, "contact_id": contact, "venue": venue,
+            "number": next_job_number(conn, contact), "name": name, "contact_id": contact, "venue": venue,
             "start_date": start.isoformat(),
             "end_date": (start + dt.timedelta(days=length - 1)).isoformat(),
             "status": status, "created_at": now_iso(), "updated_at": now_iso()})

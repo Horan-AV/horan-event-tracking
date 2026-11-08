@@ -853,3 +853,15 @@ tr.bc-row td { background: var(--bg); padding: 8px 12px 12px; }
 .gh-notes summary { cursor: pointer; font-weight: 600; font-size: 13px; }
 .gh-notes .notes-text { max-height: 220px; overflow: auto; font-size: 13px; margin-top: 6px; }
 .cl-ai { margin-top: 4px; }
+
+/* flight cases (1.22) */
+.packing-banner { background: var(--ok-bg); color: var(--ok); margin: 10px 0 0; justify-content: space-between; flex-wrap: wrap; }
+.cases-card .case-fields { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 6px 0; }
+.cases-card .case-fields label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.cases-card .case-fields input { width: 150px; max-width: 100%; padding: 4px 8px; }
+.cases-card .case-items { margin-top: 4px; line-height: 1.5; }
+.doc-brand { font-weight: 600; }
+.line-brand { font-weight: 600; color: var(--muted); }
+.doc-cases .doc-case { break-inside: avoid; margin-bottom: 10px; }
+.close-code-label { display: inline-block; padding: 10px 14px; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); text-align: center; color: #000; }
+.close-code-label svg { display: block; height: 70px; width: auto; max-width: 100%; }
