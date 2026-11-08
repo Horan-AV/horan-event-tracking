@@ -2,6 +2,14 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.21.1 — 2026-11-08 · Security fixes
+
+- Security fixes from GitHub code scanning: uploaded SVG logos are now cleaned before use, so a logo file can no longer run hidden script in the app.
+- The Zoho API Console link in Settings only ever opens a normal web address.
+- Text typed in the stock picker search (such as cable lengths) is always shown as plain text.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.21.0 — 2026-11-05 · Open source, and updates from GitHub
 
 - Update from GitHub: Settings → Software update → Check for updates looks at the project's GitHub releases. Install downloads the new version, backs up your data and the current version, installs and restarts — the same as updating from a file. Works on servers too.
