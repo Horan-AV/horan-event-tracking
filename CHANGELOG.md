@@ -2,6 +2,17 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.22.0 — 2026-11-08 · Flight cases, client job numbers and automatic updates
+
+- Flight cases: a new kind of stock with outside size, inside size and empty weight. Link a case to the item it carries (e.g. an SQ5 case to the SQ5) and it goes on jobs with that item.
+- Packing flight cases at check out: scan a general case to load it, and everything scanned after is recorded as in that case. Close it with the button, or scan the close code (one code for every case, printable from Settings → Jobs).
+- Each packed case can have an identifier and a room, and shows its packed weight (the case plus everything in it). Packed cases are listed at the bottom of the prep list.
+- Clients can have their own job number prefix and count, e.g. ACME-1, ACME-2.
+- The brand shows on each line of a job, and on printed and PDF quotes and invoices.
+- Automatic updates: none, check at a set time and ask on the next page load, or install automatically at a set time (Settings → Software update).
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.21.1 — 2026-11-08 · Security fixes
 
 - Security fixes from GitHub code scanning: uploaded SVG logos are now cleaned before use, so a logo file can no longer run hidden script in the app.
