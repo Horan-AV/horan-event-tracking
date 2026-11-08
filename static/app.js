@@ -5000,9 +5000,22 @@ function sanitizeSVG(svg) {
   }
   return svg;
 }
-async function fitSVG(text) {
-  const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
-  const svg = doc.documentElement;
+/** Read an SVG file straight into an inert XML document (nothing in it runs; it isn't attached to the page). */
+function loadSVGDocument(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(new Blob([file], { type: 'image/svg+xml' }));
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', url);
+    xhr.responseType = 'document';
+    xhr.overrideMimeType('image/svg+xml');
+    xhr.onload = () => { URL.revokeObjectURL(url); resolve(xhr.responseXML); };
+    xhr.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That SVG file couldn’t be read')); };
+    xhr.send();
+  });
+}
+async function fitSVG(file) {
+  const doc = await loadSVGDocument(file);
+  const svg = doc && doc.documentElement;
   if (!svg || svg.nodeName.toLowerCase() !== 'svg' || doc.querySelector('parsererror')) throw new Error('That SVG file couldn’t be read');
   sanitizeSVG(svg);
   const host = document.createElement('div');
@@ -5030,7 +5043,7 @@ async function fitSVG(text) {
  *  Returns { data_url, width, height, warning }. */
 async function prepareLogo(file) {
   if (file.type === 'image/svg+xml' || /\.svg$/i.test(file.name || '')) {
-    const fit = await fitSVG(await file.text());
+    const fit = await fitSVG(file);
     const b64 = btoa(unescape(encodeURIComponent(fit.text)));
     return { data_url: `data:image/svg+xml;base64,${b64}`, width: fit.width, height: fit.height, warning: '' };
   }
