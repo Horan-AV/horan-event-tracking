@@ -2,6 +2,24 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.21.1",
+      "date": "2026-11-08",
+      "title": "Security fixes",
+      "changes": [
+        {
+          "text": "Security fixes from GitHub code scanning: uploaded SVG logos are now cleaned before use, so a logo file can no longer run hidden script in the app."
+        },
+        {
+          "text": "The Zoho API Console link in Settings only ever opens a normal web address."
+        },
+        {
+          "text": "Text typed in the stock picker search (such as cable lengths) is always shown as plain text."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.21.0",
       "date": "2026-11-05",
       "title": "Open source, and updates from GitHub",
