@@ -2,6 +2,14 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.23.0 — 2026-11-09 · ROI calculator and day rate suggestions
+
+- Return on investment card on every equipment, power and flight case item: what it's earned (last 12 months, since its first hire, booked ahead), and a calculator for revenue, profit, payback time and return over its life.
+- Day rate help: suggested rates to pay an item back in your target time, to match your other stock in the same category, and a 3–5% rule of thumb. Use one with a click, then save it as the item's day rate.
+- Stock → ROI calculator works out whether kit you're thinking of buying is worth it, and what to hire it out for.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.22.0 — 2026-11-08 · Flight cases, client job numbers, automatic updates and a new (temporary) logo
 
 - Flight cases: a new kind of stock with outside size, inside size and empty weight. Link a case to the item it carries (e.g. an SQ5 case to the SQ5) and it goes on jobs with that item.

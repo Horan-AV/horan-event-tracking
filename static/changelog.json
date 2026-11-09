@@ -1,6 +1,24 @@
 {
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
+  {
+    "version": "1.23.0",
+    "date": "2026-11-09",
+    "title": "ROI calculator and day rate suggestions",
+    "changes": [
+      {
+        "text": "Return on investment card on every equipment, power and flight case item: what it's earned (last 12 months, since its first hire, booked ahead), and a calculator for revenue, profit, payback time and return over its life."
+      },
+      {
+        "text": "Day rate help: suggested rates to pay an item back in your target time, to match your other stock in the same category, and a 3–5% rule of thumb. Use one with a click, then save it as the item's day rate."
+      },
+      {
+        "text": "Stock → ROI calculator works out whether kit you're thinking of buying is worth it, and what to hire it out for."
+      }
+    ],
+    "fulfils": [],
+    "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+  },
     {
       "version": "1.22.0",
       "date": "2026-11-08",

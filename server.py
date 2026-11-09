@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.22.0"
+VERSION = "1.23.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -3713,6 +3713,93 @@ def api_lengths_post(req, conn, pid):
     sync_cable(conn, pid)  # copies power-cable details to the new length
     conn.commit()
     return api_product(req, conn, pid)
+
+
+# ---- return on investment and day-rate help
+
+EARNED_STATUSES = ("confirmed", "out", "returned", "invoiced")  # firm hires that earn money
+
+
+def category_rate_benchmark(conn, category, skip_id=None):
+    """Day rate as a share of purchase price across your own stock: the same category first, else everything."""
+    def ratios(where, params):
+        return sorted(r[0] / r[1] for r in conn.execute(
+            "SELECT day_rate, replacement_value FROM products WHERE archived = 0 AND sub_hire = 0 AND day_rate > 0 "
+            "AND replacement_value > 0 AND item_type IN ('equipment', 'power', 'case') AND id != ? " + where,
+            [skip_id or 0] + params))
+
+    def median(v):
+        n = len(v)
+        return (v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2) if n else None
+    same = ratios("AND category = ? COLLATE NOCASE", [category]) if category else []
+    if len(same) >= 2:
+        return {"scope": "category", "category": category, "count": len(same), "ratio": round(median(same), 5)}
+    every = ratios("", [])
+    if every:
+        return {"scope": "all", "category": category or "", "count": len(every), "ratio": round(median(every), 5)}
+    return None
+
+
+def hire_history(conn, pid):
+    """What an item has earned and how often it's been out, from firm jobs (confirmed, on hire, returned, invoiced)."""
+    today = dt.date.today()
+    year_ago = today - dt.timedelta(days=365)
+    marks = ",".join("?" * len(EARNED_STATUSES))
+    jobs = rows(conn.execute(f"SELECT * FROM jobs WHERE status IN ({marks}) AND id IN "
+                             "(SELECT job_id FROM job_items WHERE product_id = ? AND kind = 'rental') ORDER BY start_date",
+                             list(EARNED_STATUSES) + [pid]))
+    out = {k: {"revenue": 0.0, "unit_days": 0.0, "list_value": 0.0, "jobs": 0} for k in ("all", "year", "ahead")}
+    out["first_hire"] = None
+    items = load_items(conn, [j["id"] for j in jobs])
+    for j in jobs:
+        lines = [it for it in price_items(j, items[j["id"]]) if it["product_id"] == pid and it["kind"] == "rental"]
+        if not lines:
+            continue
+        start, end = parse_date(j["start_date"]), parse_date(j["end_date"])
+        job_disc = 1 - (j.get("discount_pct") or 0) / 100.0
+        # The part of the hire inside the last 12 months counts towards "this year".
+        days_total = (end - start).days + 1
+        days_year = max(0, (min(end, today) - max(start, year_ago)).days + 1) if end >= year_ago and start <= today else 0
+        if start > today:  # firm, but not started: booked ahead, not earned yet
+            parts = (("ahead", 1.0),)
+        else:
+            out["first_hire"] = out["first_hire"] or j["start_date"]
+            parts = (("all", 1.0), ("year", days_year / days_total if days_total else 0))
+        for key, share in parts:
+            if share <= 0:
+                continue
+            b = out[key]
+            b["jobs"] += 1
+            for it in lines:
+                qty = it["quantity"] or 0
+                b["unit_days"] += qty * days_total * share
+                b["revenue"] += it["line_total"] * job_disc * share
+                b["list_value"] += qty * (it["unit_price"] or 0) * it["effective_days"] * share
+    # The "last 12 months" window is shorter for kit first hired less than a year ago.
+    out["window_days"] = min(365, max(30, (today - parse_date(out["first_hire"])).days + 1)) if out["first_hire"] else 365
+    for b in (out["all"], out["year"], out["ahead"]):
+        # How much less than the list price was charged, on average (line and job discounts, free days).
+        b["avg_discount_pct"] = round(100 * (1 - b["revenue"] / b["list_value"]), 1) if b["list_value"] > 0 else None
+        for k in ("revenue", "unit_days", "list_value"):
+            b[k] = round(b[k], 2)
+    return out
+
+
+@route("GET", r"/api/products/(\d+)/roi")
+def api_product_roi(req, conn, pid):
+    p = one(conn.execute("SELECT * FROM products WHERE id = ?", (pid,)))
+    if not p:
+        raise ApiError(404, "Product not found")
+    return {"product": {k: p[k] for k in ("id", "name", "brand", "category", "item_type", "quantity", "day_rate",
+                                          "replacement_value", "sub_hire")},
+            "history": hire_history(conn, int(pid)),
+            "benchmark": category_rate_benchmark(conn, p["category"], int(pid))}
+
+
+@route("GET", "/api/roi/benchmark")
+def api_roi_benchmark(req, conn):
+    """For the ROI calculator before you buy: what your stock in a category charges per day."""
+    return {"benchmark": category_rate_benchmark(conn, (req.q("category") or "").strip())}
 
 
 @route("GET", r"/api/products/(\d+)")
