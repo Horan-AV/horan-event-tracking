@@ -888,3 +888,9 @@ tr.bc-row td { background: var(--bg); padding: 8px 12px 12px; }
 .roi-sugs { display: grid; gap: 8px; }
 .roi-sug { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; }
 .roi-sug strong { font-size: 16px; }
+
+/* Settings tabs (1.25) */
+.settings-tabs { margin: 0 0 16px; }
+.settings-panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; align-items: start; }
+.settings-panel > .card { margin: 0; }
+.settings-panel[hidden] { display: none; }

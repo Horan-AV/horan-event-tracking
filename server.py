@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.24.0"
+VERSION = "1.25.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -2943,6 +2943,8 @@ ACCOUNTING = {
     "zoho": {"label": "Zoho Books", "tax": "Standard Rate", "tax0": "", "account": ""},
     "sage50": {"label": "Sage 50 Accounts", "tax": "T1", "tax0": "T9", "account": "4000"},
     "sagecloud": {"label": "Sage Accounting", "tax": "Standard 20%", "tax0": "No VAT", "account": ""},
+    # Plain columns any program's importer can map: FreeAgent, KashFlow, Clear Books, QuickFile and other MTD software.
+    "generic": {"label": "Other software (generic CSV)", "tax": "", "tax0": "", "account": ""},
 }
 KIND_ITEM = {"rental": "Equipment hire", "sale": "Sales", "service": "Services"}
 
@@ -3091,6 +3093,14 @@ def accounting_rows(fmt, jobs, s, vat_rate):
                           "Project Refn", "Cost Code Refn"]
                 out.append(["SI", account_ref(c), account, "", _d(info["date"]), info["number"][:30], desc[:60],
                             f"{x['amount']:.2f}", tax, f"{x['tax']:.2f}", "", job["number"][:30], "", "", ""])
+            elif fmt == "generic":
+                header = ["Invoice Number", "Invoice Date", "Due Date", "Customer", "Customer Email", "Customer Account Ref",
+                          "Job Number", "Reference", "Item", "Description", "Quantity", "Unit Price", "Net Amount",
+                          "VAT Code", "VAT Rate %", "VAT Amount", "Gross Amount", "Nominal Code", "Notes"]
+                out.append([info["number"], _d(info["date"]), _d(info["due"]), customer, c.get("email", ""),
+                            c.get("account_ref", ""), job["number"], job.get("reference") or "", item, desc,
+                            fmt_num(x["qty"]), f"{x['rate']:.2f}", f"{x['amount']:.2f}", tax, fmt_num(vat_rate),
+                            f"{x['tax']:.2f}", f"{x['amount'] + x['tax']:.2f}", account, memo])
             elif fmt == "sagecloud":
                 header = ["Contact Name", "Date", "Reference", "Description", "Net Amount", "Tax Rate", "Total Amount"]
                 out.append([customer, _d(info["date"]), info["number"], desc, f"{x['amount']:.2f}", tax,
@@ -3116,7 +3126,7 @@ def api_invoices_export(req, conn):
     s = get_settings(conn)
     fmt = d.get("format") or s.get("accounting_software") or ""
     if fmt not in ACCOUNTING:
-        raise ApiError(400, "Choose your accounting software (QuickBooks, Xero, Zoho Books or Sage)")
+        raise ApiError(400, "Choose your accounting software (QuickBooks, Xero, Zoho Books, Sage or another program)")
     jobs = jobs_for_invoicing(conn, d.get("ids") or [])
     if fmt == "quickbooks" and len(jobs) > 100:
         raise ApiError(400, "QuickBooks imports up to 100 invoices at a time — choose fewer jobs")
@@ -6800,6 +6810,7 @@ def export_jobs(req, conn):
 
 @route("GET", "/api/export.json")
 def export_json(req, conn):
+    require_admin(req, conn)  # everything in the business: only admins
     dump = {"app": "Horan Event Tracking", "version": VERSION, "exported_at": now_iso()}
     for t in ("settings", "products", "product_accessories", "contacts", "jobs", "job_items"):
         dump[t] = rows(conn.execute(f"SELECT * FROM {t}"))
@@ -6811,6 +6822,7 @@ def export_json(req, conn):
 
 @route("GET", "/api/backup.db")
 def backup_db(req, conn):
+    require_admin(req, conn)  # the whole database, PIN hashes and connection tokens included: only admins
     tmp = os.path.join(DATA_DIR, ".download-backup.db")
     if os.path.exists(tmp):
         os.remove(tmp)

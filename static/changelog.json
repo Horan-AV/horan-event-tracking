@@ -2,6 +2,27 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.25.0",
+      "date": "2026-11-09",
+      "title": "Tidier settings, in tabs",
+      "changes": [
+        {
+          "text": "Settings is now in tabs: Users, Customisation, Company information, Electrical, External software and Updates. Save settings still saves every tab at once."
+        },
+        {
+          "text": "Tabs that only hold admin settings are hidden from everyone else. Non-admins see Updates, with their own details and the change log."
+        },
+        {
+          "text": "Downloading a database backup or the JSON export is now for admins only. A backup holds everything, including PINs and connection details, so other users could previously download it."
+        },
+        {
+          "text": "New accounting export: Other software (generic CSV), with plain columns that FreeAgent, KashFlow, Clear Books, QuickFile and other accounting / Making Tax Digital software can map when importing. Choose it under Settings → External software."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.24.0",
       "date": "2026-11-09",
       "title": "VAT registration setting",
