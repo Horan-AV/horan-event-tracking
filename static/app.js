@@ -35,7 +35,7 @@ function groupRows(list, ncols, rowFn, cls = 'group') {
     const cat = p.category || 'Uncategorised';
     const sub = p.subcategory || '';
     let r = '';
-    if (cat !== lastCat) { r += `<tr class="${cls}"><td colspan="${ncols}">${esc(cat)}</td></tr>`; lastCat = cat; lastSub = ''; }
+    if (cat !== lastCat) { r += `<tr class="${cls}"><td colspan="${ncols}">${catIcon(p.category)}${esc(cat)}</td></tr>`; lastCat = cat; lastSub = ''; }
     if (sub !== lastSub) { if (sub) r += `<tr class="${cls} subgroup"><td colspan="${ncols}">› ${esc(sub)}</td></tr>`; lastSub = sub; }
     return r + rowFn(p);
   }).join('');
@@ -1849,7 +1849,7 @@ function drawPicker() {
     box.innerHTML = res.map((p, i) => {
       const cls = p.free <= 0 ? 'bad' : p.freeProv <= 0 ? 'warn' : 'ok';
       return `<button type="button" class="pick-row ${i === S.pickIdx ? 'hl' : ''}" data-pick="${p.product_id}">
-        <span class="pn">${p.image_id ? `<img class="thumb" src="/img/${p.image_id}/thumb" alt="" loading="lazy">` : ''}${esc(p.name)}</span>
+        <span class="pn">${p.image_id ? `<img class="thumb" src="/img/${p.image_id}/thumb" alt="" loading="lazy">` : catIcon(p.category)}${esc(p.name)}</span>
         <span class="pr">${money(p.day_rate)}/day</span>
         <span class="pa">${p.item_type === 'package' ? '<span class="badge ok" title="Adds everything in the package">Package</span>' : p.sub_hire ? `<span class="badge sub" title="Sub-hired — order it in">Sub-hire${p.vendor_name ? ` · ${esc(p.vendor_name)}` : ''}</span>`
           : `<span class="badge ${cls}" title="Free for these dates after firm bookings${p.freeProv !== p.free ? ` (${num(p.freeProv)} if provisionals confirm)` : ''}">${num(p.free)} of ${num(p.quantity)} free</span>`}</span>
@@ -2172,6 +2172,7 @@ async function renderStock(view) {
         <button class="btn" data-import>Import CSV</button>
         <button class="btn" data-export>Export CSV</button>
         <a class="btn" href="#/roi">ROI calculator</a>
+        <button class="btn" data-print-labels="" data-stock-labels>Print barcodes</button>
         <button class="btn primary" data-add></button></div></div>
     <div class="toolbar">
       <div class="tabs">${Object.entries(TYPE_LABEL).map(([k, l]) => `<button data-tab="${k}" class="${S.stockTab === k ? 'active' : ''}">${l}</button>`).join('')}</div>
@@ -2235,6 +2236,8 @@ async function renderStock(view) {
       && (!S.stockBrand || (p.brand || '').trim() === S.stockBrand)
       && (!q || `${p.name} ${p.brand || ''} ${p.vendor_name || ''} ${p.sub_hire ? 'sub-hire subhire' : ''} ${p.sku} ${p.category} ${p.subcategory || ''} ${p.cable_type} ${(p.lengths || []).map((l) => l.sku).join(' ')}`.toLowerCase().includes(q)));
     const n = cols[tab].length;
+    const lb = $('[data-stock-labels]', view);
+    if (lb) { lb.dataset.printLabels = list.map((p) => p.id).join(','); lb.disabled = !list.length; lb.title = `Barcode labels for the ${plural(list.length, 'item')} listed`; }
     const body = groupRows(list, n, (p) => `<tr class="click" data-href="#/product/${p.id}">${row(p)}</tr>`);
     $('[data-list]', view).innerHTML = mine.length ? `<div class="table-wrap"><table class="table">
       <thead><tr>${cols[tab].map((c, i) => `<th class="${i >= 2 && tab !== 'cable' ? 'n' : ''}">${c}</th>`).join('')}</tr></thead>
@@ -2299,7 +2302,7 @@ async function renderPackage(view, p) {
   view.innerHTML = `<div class="page">
     <div class="page-head"><div><a class="crumb" href="#/stock">← Stock</a>
       <h1>${esc(p.name)}</h1><div class="sub">${esc(['Package', p.brand, catLabel(p), p.sku].filter(Boolean).join(' · '))}${p.archived ? ' · Archived' : ''}</div></div>
-      <div class="actions"><button class="btn" data-edit>Edit</button>
+      <div class="actions"><button class="btn" data-print-labels="${p.id}">Print barcodes</button><button class="btn" data-edit>Edit</button>
         ${p.archived ? '<button class="btn" data-unarchive>Restore</button>' : '<button class="btn danger" data-remove>Delete</button>'}</div></div>
     <div class="grid-2">
       <div class="stack">
@@ -2398,7 +2401,7 @@ async function renderCable(view, p) {
   view.innerHTML = `<div class="page">
     <div class="page-head"><div><a class="crumb" href="#/stock">← Stock</a>
       <h1>${esc(p.name)}</h1><div class="sub">Cable · ${esc(p.cable_type)}${p.category ? ' · ' + esc(catLabel(p)) : ''}${p.archived ? ' · Archived' : ''}</div></div>
-      <div class="actions"><button class="btn" data-edit>Edit</button>
+      <div class="actions"><button class="btn" data-print-labels="${p.id}">Print barcodes</button><button class="btn" data-edit>Edit</button>
         ${p.archived ? '<button class="btn" data-unarchive>Restore</button>' : '<button class="btn danger" data-remove>Delete</button>'}</div></div>
     <div class="grid-2">
       <div class="stack">
@@ -2583,7 +2586,7 @@ async function renderProduct(view, id) {
       <h1>${esc(p.name)}</h1><div class="sub">${esc([TYPE_ONE[p.item_type] ? (p.item_type === 'power' ? 'Power distribution' : p.item_type === 'case' ? 'Flight case' : (KIND_SHORT[p.equip_kind] || 'Equipment')) : '', p.brand, catLabel(p), p.sku].filter(Boolean).join(' · '))}${p.archived ? ' · Archived' : ''}</div></div>
       <div class="actions">
         <a class="btn" href="#/availability">Availability grid</a>
-        <button class="btn" data-edit>Edit</button>
+        <button class="btn" data-print-labels="${p.id}">Print barcodes</button><button class="btn" data-edit>Edit</button>
         ${p.archived ? '<button class="btn" data-unarchive>Restore</button>' : '<button class="btn danger" data-remove>Delete</button>'}
       </div></div>
     <div class="grid-2">
@@ -3173,7 +3176,41 @@ async function subUnitsModal(p, unit = null) {
 const del_ = (p) => del(p);
 
 let audioCtx;
+const SOUND_KINDS = [['ok', 'Scan successful', 'Ticked off, or added to a flight case'],
+  ['warn', 'Warning', 'Already scanned, all already done, a free scan, or a flight case to load'],
+  ['error', 'Scan failed', 'Not on the job, unknown code, or in quarantine']];
+// MP3, WAV and open formats (Ogg Vorbis / Opus, FLAC, WebM); some phones send files without a type, so go by the extension too.
+const SOUND_EXT = { mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/opus', flac: 'audio/flac', webm: 'audio/webm' };
+const soundCache = {};
+function customSounds(s = S.settings) {
+  try { const v = JSON.parse((s && s.custom_sounds) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
+}
+/** Your own sound for a scan result, loaded once and ready to play. */
+function soundFor(kind) {
+  const spec = customSounds()[kind];
+  if (!spec) return null;
+  const src = `/sound?k=${kind}&v=${spec.v || 0}`;
+  if (!soundCache[kind] || soundCache[kind].dataset.src !== src) {
+    const a = new Audio(src);
+    a.preload = 'auto';
+    a.dataset.src = src;
+    soundCache[kind] = a;
+  }
+  return soundCache[kind];
+}
 function beep(kind) {
+  const custom = soundFor(kind);
+  if (custom) {
+    try {
+      custom.pause(); custom.currentTime = 0;
+      const p = custom.play();
+      if (p && p.catch) p.catch(() => tone(kind));  // couldn't play it (e.g. a format this browser can't): beep instead
+      return;
+    } catch { /* fall back to the beep */ }
+  }
+  tone(kind);
+}
+function tone(kind) {
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     const o = audioCtx.createOscillator(), g = audioCtx.createGain();
@@ -4138,6 +4175,7 @@ async function postDownload(path, body, fallbackName) {
 }
 
 async function downloadPdf(ids, doc = 'invoice', opts = {}) {
+  if (docLayout(doc).method === 'html') { await printTemplateDocs(ids, doc, opts); return; }
   await postDownload('/invoices/pdf', { ids, doc, logo: await logoJpeg(), mark_invoiced: !!opts.markInvoiced }, `${doc}.pdf`);
 }
 
@@ -4411,8 +4449,8 @@ async function renderRequests(view) {
 const SETTINGS_TABS = [
   { key: 'users', label: 'Users', cards: ['users', 'network'], admin: true, save: false,
     sub: 'Who can sign in, and using the app from other devices.' },
-  { key: 'customise', label: 'Customisation', cards: ['logo', 'appearance'], admin: true,
-    sub: 'Logos, app icon, colours, light and dark mode, and fonts.' },
+  { key: 'customise', label: 'Customisation', cards: ['logo', 'appearance', 'icons', 'sounds', 'doc-layout'], admin: true,
+    sub: 'Logos, app icon, colours, light and dark mode, fonts, icons, scan sounds and the layout of quotes and invoices.' },
   { key: 'company', label: 'Company information', cards: ['company', 'invoicing', 'money', 'jobs-settings', 'documents'], admin: true,
     sub: 'Your details, invoices, VAT and numbering, jobs and documents.' },
   { key: 'electrical', label: 'Electrical', cards: ['power'], admin: true, sub: 'Venue supplies, voltage, safe load and cable runs.' },
@@ -4530,6 +4568,9 @@ async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
             <button type="button" class="btn small danger" data-font-del="${f.id}">Remove</button></li>`).join('')}</ul>` : ''}
           <style>${fontFaces((S.fonts || []).map((f) => `upload:${f.id}`))}</style>
         </div></div>
+        <div class="card settings-section" id="sounds" data-sounds-card><header><h2>Scan sounds</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
+        <div class="card settings-section" id="icons" data-icons-card><header><h2>Icons</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
+        <div class="card settings-section wide-card" id="doc-layout" data-layout-card><header><h2>Quote &amp; invoice layout</h2><span class="muted small">for printing and PDFs</span></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="company"><header><h2>Company</h2></header><div class="form-grid">
           ${F('app_name', 'App name', { help: 'What this app is called in the sidebar, the browser tab, the sign-in page and on phones’ home screens. Your documents use the company name below.' })}
           ${F('company_name', 'Company name (printed on documents)')}
@@ -4628,6 +4669,9 @@ async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
 
   arrangeSettingsTabs(view, meta, tab);
   drawZohoCard(view);
+  drawIconsCard(view);
+  drawSoundsCard(view);
+  drawLayoutCard(view, s);
   drawNetworkCard(view);
   drawUsersCard(view);
   drawMeCard(view);
@@ -4702,6 +4746,16 @@ async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
         return;
       }
       if (e.target.closest('[data-gh-check]')) { drawGithub(view, true); return; }
+      const st = e.target.closest('[data-sound-test]');
+      if (st) { beep(st.dataset.soundTest); return; }
+      const sr = e.target.closest('[data-sound-remove]');
+      if (sr) {
+        const r = await put('/sounds', { kind: sr.dataset.soundRemove });
+        S.settings.custom_sounds = JSON.stringify(r.custom_sounds);
+        drawSoundsCard(view); toast('Back to the standard beep', 'ok'); return;
+      }
+      const ip = e.target.closest('[data-icon-pick]');
+      if (ip) { if (await iconPickerModal(ip.dataset.iconPick, ip.dataset.iconLabel, ip.dataset.iconDef)) drawIconsCard(view); return; }
       if (e.target.closest('[data-au-save]')) {
         await put('/update/auto', { mode: $('[data-au-mode]', view).value, time: $('[data-au-time]', view).value });
         toast('Automatic updates saved', 'ok');
@@ -4762,6 +4816,16 @@ async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
   };
   view.onchange = async (e) => {
     try {
+      if (e.target.matches('[data-sound-file]')) {
+        const f = e.target.files[0];
+        e.target.value = '';
+        if (!f) return;
+        await uploadSound(e.target.dataset.soundFile, f);
+        drawSoundsCard(view);
+        beep(e.target.dataset.soundFile);
+        toast('Sound saved', 'ok');
+        return;
+      }
       if (e.target.matches('[data-logo]')) {
         const file = e.target.files[0];
         if (!file) return;
@@ -5234,6 +5298,7 @@ function applyBrand(src = S.settings) {
   $('#brand-name').textContent = custom ? appName(s) : 'Horan';
   $('.brand-sub').textContent = custom ? (s.has_logo ? appName(s) : '') : 'Event Tracking';
   $('.brand-sub').hidden = custom && !s.has_logo;
+  applyNavIcons();
   const wrap = $('#brand-logo-wrap');
   const v = S.logoVersion || (S.logoVersion = Date.now());
   // No uploaded logo and the app isn't renamed: show the app's own logo (it has a light and a dark version).
@@ -5390,6 +5455,207 @@ async function prepareProductImage(file) {
     const tg = t.getContext('2d'); tg.fillStyle = '#ffffff'; tg.fillRect(0, 0, t.width, t.height); tg.drawImage(c, 0, 0, t.width, t.height);
     return { data_url, thumb_url: t.toDataURL('image/jpeg', 0.8) };
   } finally { URL.revokeObjectURL(url); }
+}
+
+/* ---------------------------------------------------------------- icons you can change (sidebar and stock categories) */
+
+// Built-in icons: 24 × 24 line drawings, drawn with the text colour so they suit light and dark mode.
+const ICON_LIB = {
+  dashboard: ['Dashboard', '<path d="M4 13h6V4H4zM14 20h6v-9h-6zM4 20h6v-3H4zM14 7h6V4h-6z"/>'],
+  list: ['List', '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>'],
+  calendar: ['Calendar', '<path d="M4 7h16v13H4zM4 11h16M9 4v6M15 4v6"/>'],
+  barcode: ['Barcode', '<path d="M3 7V4h3M18 4h3v3M21 17v3h-3M6 20H3v-3M7 8v8M10 8v8M13 8v8M16 8v8"/>'],
+  box: ['Box', '<path d="M3 8l9-5 9 5-9 5zM3 8v8l9 5 9-5V8M12 13v8"/>'],
+  shield: ['Shield', '<path d="M12 3l9 4v6c0 4.5-3.8 7.7-9 8-5.2-.3-9-3.5-9-8V7z"/><path d="M9 9l6 6M15 9l-6 6"/>'],
+  store: ['Shop', '<path d="M3 9l1.5-5h15L21 9M3 9v11h18V9M3 9h18M9 20v-6h6v6"/>'],
+  users: ['People', '<path d="M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M9.5 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM21 19v-1a4 4 0 0 0-3-3.9M16 3.1a3.5 3.5 0 0 1 0 6.8"/>'],
+  activity: ['Activity', '<path d="M3 12h4l3-8 4 16 3-8h4"/>'],
+  bulb: ['Idea', '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.9V16h5v-.2c0-.8.4-1.5 1-1.9A6 6 0 0 0 12 3z"/>'],
+  gear: ['Settings', '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'],
+  plus: ['Plus', '<path d="M12 5v14M5 12h14"/>'],
+  speaker: ['Speaker', '<rect x="6" y="2" width="12" height="20" rx="2"/><circle cx="12" cy="14" r="4"/><path d="M12 6h.01"/>'],
+  mic: ['Microphone', '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"/>'],
+  headphones: ['Headphones', '<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1v-6h3zM3 19a2 2 0 0 0 2 2h1v-6H3z"/>'],
+  music: ['Music', '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>'],
+  sliders: ['Mixer', '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>'],
+  radio: ['Radio / RF', '<circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 5a10 10 0 0 1 0 14M5 19A10 10 0 0 1 5 5"/>'],
+  lamp: ['Light', '<path d="M8 2h8l3 8H5zM12 10v8M8 22h8M12 18v4"/>'],
+  sun: ['Wash / sun', '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'],
+  cloud: ['Haze / smoke', '<path d="M18 10h-1.3A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>'],
+  monitor: ['Monitor', '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>'],
+  tv: ['Screen', '<rect x="2" y="7" width="20" height="13" rx="2"/><path d="M17 2l-5 5-5-5"/>'],
+  projector: ['Projector', '<rect x="2" y="8" width="20" height="9" rx="2"/><circle cx="16" cy="12.5" r="2.5"/><path d="M6 12h4M5 17v2M19 17v2"/>'],
+  pscreen: ['Projection screen', '<path d="M3 4h18M4 4v11h16V4M12 15v5M8 21l4-1 4 1"/>'],
+  camera: ['Camera', '<path d="M23 7l-7 5 7 5z"/><rect x="1" y="5" width="15" height="14" rx="2"/>'],
+  laptop: ['Laptop', '<rect x="4" y="4" width="16" height="11" rx="1"/><path d="M2 19h20"/>'],
+  wifi: ['Network', '<path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M2 9a15 15 0 0 1 20 0M12 20h.01"/>'],
+  cable: ['Cable', '<path d="M7 3v4M11 3v4M5 7h8v4a4 4 0 0 1-8 0zM9 15v2a4 4 0 0 0 4 4h2a4 4 0 0 0 4-4V3"/>'],
+  plug: ['Plug', '<path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0zM12 17v5"/>'],
+  bolt: ['Power', '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>'],
+  battery: ['Battery', '<rect x="2" y="7" width="18" height="10" rx="2"/><path d="M22 11v2M6 11v2"/>'],
+  truss: ['Truss', '<path d="M2 6h20M2 18h20M2 6l4 12 4-12 4 12 4-12 4 12"/>'],
+  ladder: ['Rigging', '<path d="M7 2v20M17 2v20M7 6h10M7 11h10M7 16h10"/>'],
+  stage: ['Stage', '<path d="M2 10h20v5H2zM4 15v6M20 15v6M2 10l3-4h14l3 4"/>'],
+  drape: ['Drape', '<path d="M3 3h18M5 3v18M19 3v18M5 3c2 6 2 12 0 18M19 3c-2 6-2 12 0 18M12 3v18"/>'],
+  fcase: ['Flight case', '<rect x="2" y="6" width="20" height="13" rx="1"/><path d="M2 10h20M7 6v4M17 6v4M5 19v2M19 19v2"/>'],
+  truck: ['Truck', '<path d="M1 4h14v12H1zM15 9h4l3 4v3h-7"/><circle cx="5.5" cy="18.5" r="2"/><circle cx="18.5" cy="18.5" r="2"/>'],
+  tent: ['Marquee', '<path d="M12 3L2 20h20zM12 3v17M8 20l4-7 4 7"/>'],
+  chair: ['Chair', '<path d="M6 3h12v8H6zM5 11h14v3H5zM7 14v7M17 14v7"/>'],
+  table: ['Table', '<path d="M2 8h20M4 8v12M20 8v12M2 8l2-4h16l2 4"/>'],
+  tool: ['Tools', '<path d="M14 7l3-3 3 3-3 3M14 7l-9 9 3 3 9-9"/>'],
+  layers: ['Layers', '<path d="M12 2l10 5-10 5L2 7zM2 17l10 5 10-5M2 12l10 5 10-5"/>'],
+  grid: ['Grid', '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>'],
+  folder: ['Folder', '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'],
+  clipboard: ['Clipboard', '<rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 2h6v4H9zM9 12h6M9 16h6"/>'],
+  file: ['Document', '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>'],
+  tag: ['Tag', '<path d="M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L2 12V2h10l8.6 8.6a2 2 0 0 1 0 2.8z"/><path d="M7 7h.01"/>'],
+  chart: ['Chart', '<path d="M3 3v18h18M7 15l4-4 3 3 5-6"/>'],
+  pound: ['Money', '<path d="M17 20H7c2-1 3-3 3-6V8a4 4 0 0 1 7-2.6M6 13h8"/>'],
+  clock: ['Clock', '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>'],
+  bell: ['Bell', '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>'],
+  search: ['Search', '<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/>'],
+  home: ['Home', '<path d="M3 10l9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>'],
+  user: ['Person', '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>'],
+  flag: ['Flag', '<path d="M4 22V3M4 4h13l-2 4 2 4H4"/>'],
+  star: ['Star', '<path d="M12 2l3 7h7l-5.5 4.5 2 7.5L12 17l-6.5 4 2-7.5L2 9h7z"/>'],
+  heart: ['Heart', '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21.2l8.8-8.8a5.5 5.5 0 0 0 0-7.8z"/>'],
+  check: ['Tick', '<path d="M20 6L9 17l-5-5"/>'],
+};
+// The sidebar, in order, with each item's own icon.
+const NAV_ICONS = [['new_job', 'New job', 'plus'], ['dashboard', 'Dashboard', 'dashboard'], ['jobs', 'Jobs & quotes', 'list'],
+  ['availability', 'Availability', 'calendar'], ['scan', 'Scan', 'barcode'], ['stock', 'Stock', 'box'], ['quarantine', 'Quarantine', 'shield'],
+  ['vendors', 'Vendors', 'store'], ['contacts', 'Clients', 'users'], ['activity', 'Activity', 'activity'], ['requests', 'Requests', 'bulb'],
+  ['settings', 'Settings', 'gear']];
+
+function customIcons(s = S.settings) {
+  try { const v = JSON.parse((s && s.custom_icons) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
+}
+const libSVG = (name, cls = '') => (ICON_LIB[name] ? `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON_LIB[name][1]}</svg>` : '');
+/** An icon as HTML: a chosen built-in, an uploaded file (coloured to match the text, or as it is), or the fallback. */
+function iconHTML(target, fallback = '', cls = '') {
+  const spec = customIcons()[target];
+  if (spec && spec.file) {
+    const url = `/uicon?t=${encodeURIComponent(target)}&v=${spec.v || 0}`;
+    return spec.tint ? `<span class="uicon tint ${cls}" style="--u:url('${url}')" aria-hidden="true"></span>`
+      : `<img class="uicon ${cls}" src="${url}" alt="" aria-hidden="true">`;
+  }
+  return libSVG((spec && spec.lib) || fallback, cls);
+}
+const catTarget = (cat) => `cat:${String(cat || '').trim().toLowerCase()}`;
+/** A stock category's icon, if one has been chosen. */
+function catIcon(cat, cls = 'cat-icon') { return cat && customIcons()[catTarget(cat)] ? iconHTML(catTarget(cat), '', cls) : ''; }
+
+/** Put the chosen icons in the sidebar. */
+function applyNavIcons() {
+  for (const [key, , def] of NAV_ICONS) {
+    const host = key === 'new_job' ? $('#nav-new-job') : $(`[data-nav="${key}"]`);
+    if (!host) continue;
+    const old = host.querySelector('svg, .uicon');
+    const html = iconHTML(`nav:${key}`, def);
+    if (old) old.outerHTML = html; else host.insertAdjacentHTML('afterbegin', html);
+  }
+}
+
+/** Settings → Customisation → Scan sounds. */
+function drawSoundsCard(view) {
+  const card = $('[data-sounds-card]', view);
+  if (!card) return;
+  const cs = customSounds();
+  $('.body', card).innerHTML = `<p class="muted" style="margin-top:0">Use your own sounds when scanning at check out, check in and on the Scan page.
+      MP3, WAV, Ogg (Vorbis or Opus), FLAC or WebM, up to 2 MB — short clips (under a second) work best. Without one, the app beeps.</p>
+    <ul class="icon-list sound-list">${SOUND_KINDS.map(([k, label, help]) => `<li>
+      <span class="icon-name"><strong>${esc(label)}</strong><br><span class="muted small">${esc(help)}</span>
+        ${cs[k] ? `<br><span class="small">🎵 ${esc(cs[k].name || 'your sound')}</span>` : '<br><span class="muted small">Standard beep</span>'}</span>
+      <button type="button" class="btn small" data-sound-test="${k}" aria-label="Play the ${esc(label)} sound">▶ Test</button>
+      <label class="btn small">${cs[k] ? 'Replace' : 'Upload'}…<input type="file" accept=".mp3,.wav,.ogg,.oga,.opus,.flac,.webm,audio/*" data-sound-file="${k}" hidden></label>
+      ${cs[k] ? `<button type="button" class="btn small danger" data-sound-remove="${k}">Use the beep</button>` : ''}</li>`).join('')}</ul>`;
+}
+async function uploadSound(kind, file) {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const type = SOUND_EXT[ext] || (/^audio\//.test(file.type) ? file.type : '');
+  if (!type) throw new Error('Choose an MP3, WAV, Ogg, Opus, FLAC or WebM sound file');
+  if (file.size > 2 * 1024 * 1024) throw new Error('That sound is over 2 MB — use a shorter clip');
+  // Check this browser can play it before saving.
+  const url = URL.createObjectURL(file);
+  try {
+    await new Promise((res, rej) => {
+      const a = new Audio();
+      a.oncanplaythrough = res; a.onerror = () => rej(new Error('This browser can’t play that file — try MP3 or WAV'));
+      a.src = url; a.load();
+      setTimeout(res, 3000);
+    });
+  } finally { URL.revokeObjectURL(url); }
+  const raw = await fileToDataURL(file);
+  const dataUrl = raw.replace(/^data:[^;,]*;/, `data:${type};`);
+  const r = await put('/sounds', { kind, data_url: dataUrl, name: file.name });
+  S.settings.custom_sounds = JSON.stringify(r.custom_sounds);
+}
+
+/** Settings → Customisation → Icons. */
+async function drawIconsCard(view) {
+  const card = $('[data-icons-card]', view);
+  if (!card) return;
+  let cats = [];
+  try { cats = [...new Set((await get('/products?archived=1')).map((p) => (p.category || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b)); } catch { /* ignore */ }
+  const ci = customIcons();
+  const row = (target, label, def) => `<li><span class="icon-cur">${iconHTML(target, def) || '<span class="muted small">none</span>'}</span>
+      <span class="icon-name">${esc(label)}</span>${ci[target] ? '<span class="pill">changed</span>' : ''}
+      <button type="button" class="btn small" data-icon-pick="${esc(target)}" data-icon-def="${esc(def)}" data-icon-label="${esc(label)}">Change…</button></li>`;
+  $('.body', card).innerHTML = `<p class="muted" style="margin-top:0">Pick one of the built-in icons or upload your own (SVG or PNG, square works best). Icons follow light and dark mode unless you upload a coloured one and keep its colours.</p>
+    <h3 class="net-h">Sidebar</h3><ul class="icon-list">${NAV_ICONS.map(([k, l, d]) => row(`nav:${k}`, l, d)).join('')}</ul>
+    <h3 class="net-h">Stock categories</h3>
+    ${cats.length ? `<ul class="icon-list">${cats.map((c) => row(catTarget(c), c, '')).join('')}</ul>
+      <p class="muted small">Category icons show in the stock list and when adding items to a job.</p>` : '<p class="muted small">Add stock with categories first, then give each category an icon here.</p>'}`;
+}
+
+function iconPickerModal(target, label, def) {
+  return new Promise((resolve) => {
+    const spec = customIcons()[target] || {};
+    const m = openModal(`<header><h2>Icon for ${esc(label)}</h2><button class="icon-btn" data-x aria-label="Close">×</button></header>
+      <div class="modal-body">
+        <div class="icon-grid" role="listbox" aria-label="Built-in icons">${Object.entries(ICON_LIB).map(([k, [name, svg]]) => `<button type="button" class="icon-opt ${(spec.lib || (!spec.file && def)) === k ? 'on' : ''}" data-lib="${k}" title="${esc(name)}" aria-label="${esc(name)}">
+          <svg viewBox="0 0 24 24" aria-hidden="true">${svg}</svg></button>`).join('')}</div>
+        <h3 class="net-h">Your own</h3>
+        <div class="actions"><label class="btn small">Upload SVG or PNG…<input type="file" accept="image/svg+xml,image/png,image/webp" data-icon-file hidden></label>
+          <label class="check"><input type="checkbox" data-icon-tint ${spec.file ? (spec.tint ? 'checked' : '') : 'checked'}> Colour it to match the text (best for single-colour icons)</label></div>
+        ${spec.file ? `<p class="small">Using your uploaded icon: ${iconHTML(target, def, 'big-icon')}</p>` : ''}
+        <p class="form-error" data-err></p>
+      </div>
+      <footer>${def || spec.lib || spec.file ? `<button class="btn" data-reset>${def ? 'Back to the original' : 'Remove icon'}</button>` : ''}<button class="btn" data-x>Close</button></footer>`);
+    const done = async (body) => {
+      try {
+        const r = await put('/icons', { target, ...body });
+        S.settings.custom_icons = JSON.stringify(r.custom_icons);
+        applyNavIcons();
+        m.close(); resolve(true);
+      } catch (ex) { $('[data-err]', m.el).textContent = ex.message; }
+    };
+    m.el.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-lib]');
+      if (b) done({ lib: b.dataset.lib });
+      if (e.target.closest('[data-reset]')) done({});
+      if (e.target.closest('[data-x]')) { m.close(); resolve(false); }
+    });
+    m.wrap.addEventListener('cancel', () => { m.close(); resolve(false); });
+    m.el.addEventListener('change', async (e) => {
+      if (e.target.matches('[data-icon-tint]') && spec.file) { done({ tint: e.target.checked }); return; }
+      if (!e.target.matches('[data-icon-file]')) return;
+      const f = e.target.files[0];
+      if (!f) return;
+      try {
+        let dataUrl;
+        if (f.type === 'image/svg+xml' || /\.svg$/i.test(f.name)) {
+          const svg = sanitizeSVG((await loadSVGDocument(f)).documentElement);
+          if (!svg || svg.nodeName.toLowerCase() !== 'svg') throw new Error('That SVG file couldn’t be read');
+          dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(new XMLSerializer().serializeToString(svg))));
+        } else {
+          const { img, url } = await loadImage(f);
+          dataUrl = squarePNG(img, 128); URL.revokeObjectURL(url);
+        }
+        done({ data_url: dataUrl, name: f.name, tint: $('[data-icon-tint]', m.el).checked });
+      } catch (ex) { $('[data-err]', m.el).textContent = ex.message; }
+    });
+  });
 }
 
 /* ---------------------------------------------------------------- return on investment & day rate */
@@ -5557,6 +5823,534 @@ async function renderRoi(view) {
   });
 }
 
+/* ---------------------------------------------------------------- quote & invoice layouts */
+
+const DOC_LAYOUT_DEFAULT = {
+  method: 'options', logo_position: 'left', logo_size: 'medium', colour: '', font_size: 'normal',
+  title: '', header_text: '', footer_text: '',
+  show_company_details: true, show_client_contact: true, show_job: true,
+  show_codes: false, show_brand: true, show_rate: true, show_days: true, show_discount: true,
+  show_line_totals: true, show_subtotals: true, show_notes: true, show_payment: true, show_terms: true,
+  block_order: ['notes', 'payment', 'terms'], html: '',
+};
+const DOC_BLOCK_LABEL = { notes: 'Job notes', payment: 'Payment details (invoices)', terms: 'Terms' };
+
+function parseLayout(raw) {
+  try { const v = JSON.parse(raw || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
+}
+/** The layout a quote or invoice uses: the shared one, or the document's own. */
+function docLayout(doc, s = S.settings) {
+  const own = s.doc_layout_shared === '0' && doc === 'invoice' && (s.doc_layout_invoice || '').trim();
+  return { ...DOC_LAYOUT_DEFAULT, ...parseLayout(own ? s.doc_layout_invoice : s.doc_layout_quote) };
+}
+
+/** A quote or invoice drawn with the layout options. */
+function optionsDocHTML(job, s, doc, L) {
+  const c = job.contact;
+  const t = job.totals;
+  const inv = doc === 'invoice';
+  const title = (L.title || '').trim() || (inv ? 'Invoice' : 'Quotation');
+  const colour = /^#[0-9a-f]{6}$/i.test(L.colour || '') ? L.colour : (s.brand_primary || '#1f5c3d');
+  const details = L.show_company_details
+    ? [s.company_address, [s.company_phone, s.company_email].filter(Boolean).join(' · '), s.company_website].filter(Boolean).join('\n') : '';
+  const registered = t.vat_registered !== false && s.vat_registered !== '0';
+  const head = `<div class="doc-head lp-${L.logo_position}">
+      <div class="doc-logo">${s.has_logo ? `<img src="/logo?v=1" alt="${esc(s.company_name)}">` : `<div class="wordmark">${esc(s.company_name)}</div>`}</div>
+      <div class="doc-company">${L.logo_position === 'center' && !s.has_logo ? esc(details) : `<strong>${esc(s.company_name)}</strong>${details ? `\n${esc(details)}` : ''}`}</div>
+    </div>
+    <div class="doc-title"><h1>${esc(title)}</h1>
+      <div class="meta">${inv && job.invoice ? `<b>${esc(job.invoice.number)}</b><br>Date: ${esc(fmtDate(job.invoice.date))}<br>Due: ${esc(fmtDate(job.invoice.due))}<br>Job: ${esc(job.number)}${job.invoice.issued ? '' : '<br><span class="no-print muted small">Not issued yet — the date is fixed when it’s downloaded, printed or exported</span>'}`
+        : `<b>${esc(job.number)}</b><br>Date: ${esc(fmtDate(todayISO()))}<br>Status: ${esc(STATUS[job.status])}`}${job.reference ? `<br>Your ref: ${esc(job.reference)}` : ''}</div></div>
+    ${(L.header_text || '').trim() ? `<div class="doc-block doc-header-text"><p>${esc(L.header_text)}</p></div>` : ''}
+    <div class="doc-parties ${L.show_job ? '' : 'one'}">
+      <div><h3>${inv ? 'Invoice to' : 'Prepared for'}</h3>
+        <p>${c ? `<strong>${esc(c.company || c.name)}</strong>${c.company ? `\n${esc(c.name)}` : ''}${L.show_client_contact && c.address ? `\n${esc(c.address)}` : ''}${L.show_client_contact && c.email ? `\n${esc(c.email)}` : ''}` : '—'}</p></div>
+      ${L.show_job ? `<div><h3>Job</h3><p><strong>${esc(job.name)}</strong>${job.venue ? `\n${esc(job.venue)}` : ''}
+${esc(fmtRange(job.start_date, job.end_date))}
+Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date) + 1, 'day')}</p></div>` : ''}
+    </div>`;
+
+  const anyDisc = L.show_discount && job.items.some((i) => i.discount_pct);
+  const hasRental = job.items.some((i) => i.kind === 'rental');
+  const showRate = L.show_rate, showDays = L.show_days && hasRental, showTot = L.show_line_totals;
+  const cols = 2 + (L.show_codes ? 1 : 0) + (showRate ? 1 : 0) + (showDays ? 1 : 0) + (anyDisc ? 1 : 0) + (showTot ? 1 : 0);
+  const desc = (it) => (L.show_brand ? brandedDesc(it) : esc(it.description || ''));
+  const cells = (it, k, { included = false, run = false } = {}) => `${L.show_codes ? `<td class="mono small">${run ? '' : esc(it.product_sku || '')}</td>` : ''}<td class="n">${num(it.quantity)}</td>
+      ${showRate ? `<td class="n">${run || included ? '' : money(it.unit_price)}</td>` : ''}
+      ${showDays ? `<td class="n">${run || included || k !== 'rental' ? '' : num(it.effective_days)}</td>` : ''}
+      ${anyDisc ? `<td class="n">${!run && !included && it.discount_pct ? num(it.discount_pct) + '%' : ''}</td>` : ''}
+      ${showTot ? `<td class="n">${run ? '' : included ? 'Included' : money(it.line_total)}</td>` : ''}`;
+  const sections = ['rental', 'sale', 'service'].map((k) => {
+    const showIncl = s.show_included_accessories === '1';
+    const its = orderItems(job.items.filter((i) => i.kind === k)).filter((it) => showIncl || !isIncluded(it));
+    if (!its.length) return '';
+    return `<tr class="grp"><td colspan="${cols}">${KIND_LABEL[k]}</td></tr>` + its.map((it) => isRun(it)
+      ? `<tr class="run-row"><td><strong>${esc(it.description)}</strong> <span class="muted">(${isStage(it) ? 'each stage' : 'each'}: ${esc(metaOf(it).summary || '')})</span></td>${cells(it, k, { run: true })}</tr>`
+      : isIncluded(it) ? `<tr class="acc"><td><span class="acc-mark">↳</span>${desc(it)}</td>${cells(it, k, { included: true })}</tr>`
+        : `<tr class="${it.parent_item_id ? 'acc' : ''}"><td>${it.parent_item_id ? '<span class="acc-mark">↳</span>' : ''}${desc(it)}</td>${cells(it, k)}</tr>`).join('') +
+      (L.show_subtotals ? `<tr class="sub"><td colspan="${cols - 1}" class="n">${KIND_LABEL[k]} subtotal</td><td class="n">${money(t[k])}</td></tr>` : '');
+  }).join('');
+  const blockHTML = {
+    notes: L.show_notes && job.notes ? `<div class="doc-block"><h3>Notes</h3><p>${esc(job.notes)}</p></div>` : '',
+    payment: L.show_payment && inv && s.payment_details ? `<div class="doc-block"><h3>Payment details</h3><p>${esc(s.payment_details)}</p></div>` : '',
+    terms: L.show_terms && (inv ? s.invoice_terms : s.quote_terms) ? `<div class="doc-block"><h3>Terms</h3><p>${esc(inv ? s.invoice_terms : s.quote_terms)}</p></div>` : '',
+  };
+  const order = Array.isArray(L.block_order) && L.block_order.length === 3 ? L.block_order : DOC_LAYOUT_DEFAULT.block_order;
+  return `<div class="doc-layout fs-${esc(L.font_size)} ls-${esc(L.logo_size)}" style="--brand:${colour}">${head}
+    <table class="doc-table"><thead><tr><th>Description</th>${L.show_codes ? '<th>Code</th>' : ''}<th class="n">Qty</th>
+      ${showRate ? `<th class="n">${hasRental ? 'Rate' : 'Price'}</th>` : ''}${showDays ? '<th class="n">Days</th>' : ''}${anyDisc ? '<th class="n">Disc</th>' : ''}${showTot ? '<th class="n">Total</th>' : ''}</tr></thead>
+      <tbody>${sections || `<tr><td colspan="${cols}">No items.</td></tr>`}</tbody></table>
+    <div class="doc-totals"><table><tbody>
+      ${t.discount ? `<tr><td>Subtotal</td><td>${money(t.gross)}</td></tr><tr><td>Discount (${num(job.discount_pct)}%)</td><td>−${money(t.discount)}</td></tr>` : ''}
+      ${registered ? `<tr><td>Net</td><td>${money(t.net)}</td></tr><tr><td>VAT ${num(t.vat_rate)}%</td><td>${money(t.vat)}</td></tr>` : ''}
+      <tr class="grand"><td>Total</td><td>${money(t.total)}</td></tr>
+    </tbody></table></div>
+    ${order.map((b) => blockHTML[b] || '').join('')}
+    <div class="doc-foot">${(L.footer_text || '').trim() ? `<div class="doc-foot-text">${esc(L.footer_text)}</div>` : ''}${esc([s.company_name, s.company_number ? `Company no. ${s.company_number}` : '', s.vat_number && registered ? `VAT no. ${s.vat_number}` : ''].filter(Boolean).join(' · '))}</div></div>`;
+}
+
+/* ---- HTML templates: {{name}} (escaped), {{{name}}} (as HTML), {{#list}}…{{/list}}, {{^name}}…{{/name}} */
+
+function tplLookup(stack, path) {
+  if (path === '.') return stack[stack.length - 1];
+  const parts = path.split('.');
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    let v = stack[i];
+    if (v == null || typeof v !== 'object' || !(parts[0] in v)) continue;
+    for (const k of parts) { v = v == null ? undefined : v[k]; }
+    return v;
+  }
+  return undefined;
+}
+function renderTemplate(tpl, data) {
+  const run = (src, stack) => {
+    let out = '', i = 0;
+    const re = /\{\{(\{?)\s*([#^/]?)\s*([\w.]+)\s*\}?\}\}/g;
+    let m;
+    while ((m = re.exec(src))) {
+      out += src.slice(i, m.index);
+      i = re.lastIndex;
+      const [, triple, kind, name] = m;
+      if (kind === '#' || kind === '^') {
+        // find the matching close tag, allowing the same section to nest
+        const open = new RegExp(`\\{\\{\\s*[#^]\\s*${name.replace('.', '\\.')}\\s*\\}\\}|\\{\\{\\s*/\\s*${name.replace('.', '\\.')}\\s*\\}\\}`, 'g');
+        open.lastIndex = i;
+        let depth = 1, end = -1, after = i, mm;
+        while ((mm = open.exec(src))) {
+          if (/\{\{\s*\//.test(mm[0])) depth -= 1; else depth += 1;
+          if (!depth) { end = mm.index; after = open.lastIndex; break; }
+        }
+        if (end < 0) throw new Error(`The template has {{${kind}${name}}} without a matching {{/${name}}}`);
+        const inner = src.slice(i, end);
+        const v = tplLookup(stack, name);
+        const truthy = Array.isArray(v) ? v.length > 0 : !!v;
+        if (kind === '^') { if (!truthy) out += run(inner, stack); } else if (Array.isArray(v)) out += v.map((x) => run(inner, [...stack, x])).join('');
+        else if (truthy) out += run(inner, typeof v === 'object' ? [...stack, v] : stack);
+        i = re.lastIndex = after;
+      } else if (kind === '/') {
+        // a stray close tag: ignore it
+      } else {
+        const v = tplLookup(stack, name);
+        out += v == null ? '' : triple ? String(v) : esc(String(v));
+      }
+    }
+    return out + src.slice(i);
+  };
+  return run(String(tpl || ''), [data]);
+}
+
+/** Everything a template can use. */
+function templateData(job, s, doc) {
+  const c = job.contact || {};
+  const t = job.totals;
+  const inv = doc === 'invoice';
+  const registered = t.vat_registered !== false && s.vat_registered !== '0';
+  const showIncl = s.show_included_accessories === '1';
+  const groups = ['rental', 'sale', 'service'].map((k) => {
+    const its = orderItems(job.items.filter((i) => i.kind === k)).filter((it) => showIncl || !isIncluded(it));
+    return its.length ? {
+      label: KIND_LABEL[k], subtotal: money(t[k]),
+      items: its.map((it) => ({
+        description: it.description || '', brand: it.product_brand || '', code: it.product_sku || '', quantity: num(it.quantity),
+        rate: isRun(it) ? '' : money(it.unit_price), days: k === 'rental' && !isRun(it) ? num(it.effective_days) : '',
+        discount: it.discount_pct ? `${num(it.discount_pct)}%` : '', total: isRun(it) ? '' : isIncluded(it) ? 'Included' : money(it.line_total),
+        is_accessory: !!it.parent_item_id, is_included: isIncluded(it), summary: isRun(it) ? (metaOf(it).summary || '') : '',
+      })),
+    } : null;
+  }).filter(Boolean);
+  return {
+    doc: { title: inv ? 'Invoice' : 'Quotation', is_invoice: inv, is_quote: !inv,
+      number: inv && job.invoice ? job.invoice.number : job.number, date: fmtDate(inv && job.invoice ? job.invoice.date : todayISO()),
+      due: inv && job.invoice ? fmtDate(job.invoice.due) : '' },
+    company: { name: s.company_name || '', address: s.company_address || '', email: s.company_email || '', phone: s.company_phone || '',
+      website: s.company_website || '', number: s.company_number || '', vat_number: registered ? (s.vat_number || '') : '' },
+    logo: s.has_logo ? '/logo?v=1' : '', colour: s.brand_primary || '#1f5c3d', accent: s.brand_accent || '#c9a227',
+    client: { name: c.name || '', company: c.company || '', display: c.company || c.name || '', address: c.address || '', email: c.email || '', phone: c.phone || '' },
+    job: { number: job.number, name: job.name, venue: job.venue || '', reference: job.reference || '', status: STATUS[job.status] || job.status,
+      dates: fmtRange(job.start_date, job.end_date), start: fmtDate(job.start_date), end: fmtDate(job.end_date),
+      hire_days: num(job.hire_days || daysBetween(job.start_date, job.end_date) + 1), notes: job.notes || '' },
+    groups,
+    totals: { gross: money(t.gross), discount: t.discount ? money(t.discount) : '', discount_pct: job.discount_pct ? num(job.discount_pct) : '',
+      net: money(t.net), vat: money(t.vat), vat_rate: num(t.vat_rate), total: money(t.total), vat_registered: registered },
+    payment_details: inv ? (s.payment_details || '') : '', terms: (inv ? s.invoice_terms : s.quote_terms) || '',
+  };
+}
+
+const DEFAULT_DOC_TEMPLATE = `<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 12px; color: #1d1f1e; margin: 0; }
+  .page { padding: 16mm 15mm; }
+  header { display: flex; justify-content: space-between; border-bottom: 3px solid {{colour}}; padding-bottom: 12px; }
+  header img { max-height: 64px; max-width: 220px; }
+  .company { text-align: right; white-space: pre-line; font-size: 11px; color: #555; }
+  h1 { color: {{colour}}; text-transform: uppercase; letter-spacing: .08em; margin: 20px 0 10px; }
+  .parties { display: flex; gap: 40px; margin-bottom: 16px; white-space: pre-line; }
+  .parties h3 { font-size: 10px; text-transform: uppercase; color: #777; margin: 0 0 4px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: {{colour}}; color: #fff; text-align: left; padding: 6px 8px; font-size: 10px; text-transform: uppercase; }
+  td { padding: 6px 8px; border-bottom: 1px solid #e3e5e2; }
+  .n { text-align: right; white-space: nowrap; }
+  .grp td { background: #f1f3f0; font-weight: bold; font-size: 10px; text-transform: uppercase; color: #666; }
+  .acc td:first-child { padding-left: 24px; color: #555; }
+  .totals { width: 260px; margin: 12px 0 18px auto; }
+  .totals .grand td { background: {{colour}}; color: #fff; font-weight: bold; font-size: 14px; }
+  .block { white-space: pre-line; margin-bottom: 12px; }
+  .block h3 { font-size: 10px; text-transform: uppercase; color: #777; margin: 0 0 4px; }
+  footer { border-top: 1px solid #ddd; margin-top: 24px; padding-top: 8px; font-size: 10px; color: #777; text-align: center; }
+</style>
+<div class="page">
+  <header>
+    <div>{{#logo}}<img src="{{logo}}" alt="{{company.name}}">{{/logo}}{{^logo}}<strong style="font-size:24px;color:{{colour}}">{{company.name}}</strong>{{/logo}}</div>
+    <div class="company"><strong>{{company.name}}</strong>
+{{company.address}}
+{{company.phone}} {{company.email}}</div>
+  </header>
+  <h1>{{doc.title}} {{doc.number}}</h1>
+  <p>Date: {{doc.date}}{{#doc.is_invoice}} · Due: {{doc.due}}{{/doc.is_invoice}}</p>
+  <div class="parties">
+    <div><h3>{{#doc.is_invoice}}Invoice to{{/doc.is_invoice}}{{^doc.is_invoice}}Prepared for{{/doc.is_invoice}}</h3><strong>{{client.display}}</strong>
+{{client.address}}</div>
+    <div><h3>Job</h3><strong>{{job.name}}</strong>
+{{job.venue}}
+{{job.dates}} ({{job.hire_days}} days)</div>
+  </div>
+  <table>
+    <thead><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Days</th><th class="n">Total</th></tr></thead>
+    <tbody>
+    {{#groups}}
+      <tr class="grp"><td colspan="5">{{label}}</td></tr>
+      {{#items}}<tr class="{{#is_accessory}}acc{{/is_accessory}}"><td>{{#brand}}<b>{{brand}}</b> {{/brand}}{{description}}</td><td class="n">{{quantity}}</td><td class="n">{{rate}}</td><td class="n">{{days}}</td><td class="n">{{total}}</td></tr>{{/items}}
+      <tr><td colspan="4" class="n"><b>{{label}} subtotal</b></td><td class="n"><b>{{subtotal}}</b></td></tr>
+    {{/groups}}
+    </tbody>
+  </table>
+  <table class="totals">
+    {{#totals.discount}}<tr><td>Discount ({{totals.discount_pct}}%)</td><td class="n">−{{totals.discount}}</td></tr>{{/totals.discount}}
+    {{#totals.vat_registered}}<tr><td>Net</td><td class="n">{{totals.net}}</td></tr><tr><td>VAT {{totals.vat_rate}}%</td><td class="n">{{totals.vat}}</td></tr>{{/totals.vat_registered}}
+    <tr class="grand"><td>Total</td><td class="n">{{totals.total}}</td></tr>
+  </table>
+  {{#job.notes}}<div class="block"><h3>Notes</h3>{{job.notes}}</div>{{/job.notes}}
+  {{#payment_details}}<div class="block"><h3>Payment details</h3>{{payment_details}}</div>{{/payment_details}}
+  {{#terms}}<div class="block"><h3>Terms</h3>{{terms}}</div>{{/terms}}
+  <footer>{{company.name}}{{#company.number}} · Company no. {{company.number}}{{/company.number}}{{#company.vat_number}} · VAT no. {{company.vat_number}}{{/company.vat_number}}</footer>
+</div>`;
+
+const TEMPLATE_HELP = `<details class="tpl-help"><summary>What you can use in a template</summary><div class="small">
+  <p><code>{{name}}</code> puts in a value (made safe), <code>{{#name}}…{{/name}}</code> repeats for each item in a list or shows only if it has a value, <code>{{^name}}…{{/name}}</code> shows only when it’s empty. Scripts don’t run.</p>
+  <p><b>doc</b>: title, number, date, due, is_invoice, is_quote · <b>company</b>: name, address, email, phone, website, number, vat_number · <b>logo</b> (image address) · <b>colour</b>, <b>accent</b><br>
+  <b>client</b>: display, name, company, address, email, phone · <b>job</b>: number, name, venue, reference, status, dates, start, end, hire_days, notes<br>
+  <b>groups</b> (Equipment hire / Sales / Labour): label, subtotal, <b>items</b>: description, brand, code, quantity, rate, days, discount, total, summary, is_accessory, is_included<br>
+  <b>totals</b>: gross, discount, discount_pct, net, vat, vat_rate, total, vat_registered · <b>payment_details</b> (invoices) · <b>terms</b></p></div></details>`;
+
+/** A full page for a template, shown in a sandboxed frame (nothing in it can run scripts). */
+function templatePage(bodies) {
+  return `<!doctype html><html><head><meta charset="utf-8"><base href="${esc(location.origin)}/">
+    <style>@page { size: A4; margin: 0; } .doc-page { page-break-after: always; break-after: page; } .doc-page:last-child { page-break-after: auto; break-after: auto; }</style></head>
+    <body>${bodies.map((b) => `<div class="doc-page">${b}</div>`).join('')}</body></html>`;
+}
+function templateFrame(html, cls = 'tpl-frame') {
+  const f = document.createElement('iframe');
+  f.className = cls;
+  f.setAttribute('sandbox', 'allow-same-origin allow-modals');  // no allow-scripts: a template can't run code
+  f.setAttribute('title', 'Document');
+  f.srcdoc = html;
+  const fit = () => { try { f.style.height = `${f.contentDocument.documentElement.scrollHeight + 4}px`; } catch { /* ignore */ } };
+  f.addEventListener('load', () => { fit(); setTimeout(fit, 300); });
+  return f;
+}
+function printFrame(f) {
+  return new Promise((resolve) => {
+    const go = () => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (ex) { toast(ex.message, 'error'); } resolve(); };
+    if (f.contentDocument && f.contentDocument.readyState === 'complete' && f.contentDocument.body && f.contentDocument.body.childElementCount) go();
+    else f.addEventListener('load', () => setTimeout(go, 150), { once: true });
+  });
+}
+/** Print (or save as PDF) quotes/invoices that use an HTML template, several at once with a page each. */
+async function printTemplateDocs(ids, doc, opts = {}) {
+  if (doc === 'invoice') await post('/invoices/issue', { ids, mark_invoiced: !!opts.markInvoiced });
+  const s = S.settings;
+  const jobs = await Promise.all(ids.map((id) => get(`/jobs/${id}`)));
+  const L = docLayout(doc, s);
+  const html = templatePage(jobs.map((j) => renderTemplate(L.html || DEFAULT_DOC_TEMPLATE, templateData(j, s, doc))));
+  const f = templateFrame(html, 'tpl-print-frame');
+  document.body.appendChild(f);
+  await printFrame(f);
+  setTimeout(() => f.remove(), 60000);
+}
+
+/** Settings → Customisation → Quote & invoice layout. Edits go into hidden fields, saved by Save settings. */
+async function drawLayoutCard(view, s) {
+  const card = $('[data-layout-card]', view);
+  if (!card) return;
+  const state = {
+    shared: s.doc_layout_shared !== '0',
+    quote: { ...DOC_LAYOUT_DEFAULT, ...parseLayout(s.doc_layout_quote) },
+    invoice: { ...DOC_LAYOUT_DEFAULT, ...parseLayout(s.doc_layout_invoice || s.doc_layout_quote) },
+    editing: 'quote', previewDoc: 'quote', job: null,
+  };
+  try {
+    const jobs = await get('/jobs');
+    const pick = jobs.find((j) => (j.totals || {}).total > 0) || jobs[0];
+    if (pick) state.job = await get(`/jobs/${pick.id}`);
+  } catch { /* no preview */ }
+  const cur = () => state[state.shared ? 'quote' : state.editing];
+  const sync = () => {
+    $('[name="doc_layout_shared"]', card).value = state.shared ? '1' : '0';
+    $('[name="doc_layout_quote"]', card).value = JSON.stringify(state.quote);
+    $('[name="doc_layout_invoice"]', card).value = state.shared ? '' : JSON.stringify(state.invoice);
+  };
+  const chk = (k, label) => `<label class="check"><input type="checkbox" data-lay="${k}" ${cur()[k] ? 'checked' : ''}> ${label}</label>`;
+  const sel = (k, label, opts) => `<label class="field third"><span>${label}</span><select data-lay="${k}">${opts.map(([v, l]) => `<option value="${v}" ${cur()[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+  const form = () => {
+    const L = cur();
+    const order = L.block_order && L.block_order.length === 3 ? L.block_order : DOC_LAYOUT_DEFAULT.block_order;
+    return `<div class="seg lay-method" role="group" aria-label="How to lay it out">
+        <button type="button" data-lay-method="options" class="${L.method !== 'html' ? 'on' : ''}">Layout options</button>
+        <button type="button" data-lay-method="html" class="${L.method === 'html' ? 'on' : ''}">HTML template</button></div>
+      ${L.method === 'html' ? `
+        <p class="muted small">Write the document in HTML and CSS. Your logo, company, client, items and totals go in with placeholders like <code>{{company.name}}</code>.
+          It prints, or saves as a PDF, from your browser’s print window.</p>
+        ${TEMPLATE_HELP}
+        <textarea class="tpl-edit mono" data-lay-html rows="16" spellcheck="false" aria-label="HTML template">${esc(L.html || DEFAULT_DOC_TEMPLATE)}</textarea>
+        <div class="actions"><button type="button" class="btn primary small" data-lay-refresh>Refresh preview</button>
+          <button type="button" class="btn small" data-lay-reset-html>Start again from the standard template</button></div>`
+      : `<div class="form-grid" style="padding:0">
+          ${sel('logo_position', 'Logo', [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']])}
+          ${sel('logo_size', 'Logo size', [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']])}
+          ${sel('font_size', 'Text size', [['small', 'Small'], ['normal', 'Normal'], ['large', 'Large']])}
+          <label class="field third"><span>Colour</span><input type="color" data-lay="colour" value="${esc(L.colour || s.brand_primary || '#1f5c3d')}">
+            <small><a href="#" data-lay-colour-reset>Use the brand colour</a></small></label>
+          <label class="field third"><span>Title</span><input data-lay="title" value="${esc(L.title)}" placeholder="${state.shared ? 'Quotation / Invoice' : state.editing === 'invoice' ? 'Invoice' : 'Quotation'}"></label>
+          <label class="field"><span>Text under the title</span><textarea data-lay="header_text" rows="2" placeholder="e.g. Thank you for choosing us.">${esc(L.header_text)}</textarea></label>
+          <label class="field"><span>Footer text</span><textarea data-lay="footer_text" rows="2" placeholder="e.g. Registered office: …">${esc(L.footer_text)}</textarea></label>
+        </div>
+        <h3 class="net-h">Show</h3>
+        <div class="lay-checks">${chk('show_company_details', 'Company address and contact details')}${chk('show_client_contact', 'Client’s address and email')}
+          ${chk('show_job', 'Job details (name, venue, dates)')}${chk('show_brand', 'Brand before item names')}${chk('show_codes', 'Item codes')}
+          ${chk('show_rate', 'Rate')}${chk('show_days', 'Days')}${chk('show_discount', 'Line discounts')}${chk('show_line_totals', 'Line totals')}
+          ${chk('show_subtotals', 'Subtotals')}${chk('show_notes', 'Job notes')}${chk('show_payment', 'Payment details (invoices)')}${chk('show_terms', 'Terms')}</div>
+        <h3 class="net-h">Order at the bottom</h3>
+        <ol class="lay-order">${order.map((b, i) => `<li><span>${DOC_BLOCK_LABEL[b]}</span>
+          <button type="button" class="icon-btn" data-lay-up="${i}" ${i ? '' : 'disabled'} aria-label="Move up">↑</button>
+          <button type="button" class="icon-btn" data-lay-down="${i}" ${i < 2 ? '' : 'disabled'} aria-label="Move down">↓</button></li>`).join('')}</ol>
+        <div class="actions"><button type="button" class="btn small" data-lay-pdf>Preview PDF</button>
+          <button type="button" class="btn small" data-lay-reset>Reset to the standard layout</button></div>`}`;
+  };
+  const preview = () => {
+    const box = $('[data-lay-preview]', card);
+    if (!state.job) { box.innerHTML = '<p class="muted">Make a job with some items to see a preview here.</p>'; return; }
+    const doc = state.shared ? state.previewDoc : state.editing;
+    const L = cur();
+    const j = { ...state.job, invoice: state.job.invoice || { number: `INV-${state.job.number}`, date: todayISO(), due: todayISO(), issued: false } };
+    box.innerHTML = '';
+    if (L.method === 'html') {
+      try {
+        box.appendChild(templateFrame(templatePage([renderTemplate(L.html || DEFAULT_DOC_TEMPLATE, templateData(j, s, doc))]), 'tpl-frame preview'));
+      } catch (ex) { box.innerHTML = `<p class="form-error">${esc(ex.message)}</p>`; }
+    } else {
+      box.innerHTML = `<div class="sheet">${optionsDocHTML(j, s, doc, L)}</div>`;
+    }
+  };
+  const draw = () => {
+    card.querySelector('.body').innerHTML = `
+      <input type="hidden" name="doc_layout_shared"><input type="hidden" name="doc_layout_quote"><input type="hidden" name="doc_layout_invoice">
+      <div class="lay-top">
+        <label class="field half"><span>Quotes and invoices</span><select data-lay-shared>
+          <option value="1" ${state.shared ? 'selected' : ''}>Share one layout</option><option value="0" ${state.shared ? '' : 'selected'}>Each has its own layout</option></select></label>
+        ${state.shared ? `<label class="field half"><span>Preview as</span><select data-lay-preview-doc><option value="quote" ${state.previewDoc === 'quote' ? 'selected' : ''}>Quotation</option><option value="invoice" ${state.previewDoc === 'invoice' ? 'selected' : ''}>Invoice</option></select></label>`
+          : `<div class="field half"><span>Editing</span><div class="tabs prefer">${['quote', 'invoice'].map((d) => `<button type="button" data-lay-edit="${d}" class="${state.editing === d ? 'active' : ''}">${d === 'quote' ? 'Quotation' : 'Invoice'}</button>`).join('')}</div></div>`}
+      </div>
+      <div class="lay-grid"><div class="lay-form">${form()}</div>
+        <div class="lay-preview-wrap"><div class="muted small">Preview${state.job ? ` — ${esc(state.job.number)} ${esc(state.job.name)}` : ''}</div><div class="lay-preview" data-lay-preview></div></div></div>
+      <p class="muted small" style="margin-bottom:0">Press <strong>Save settings</strong> to keep your changes. The prep list keeps its own layout.</p>`;
+    sync();
+    preview();
+  };
+  card.addEventListener('input', (e) => {
+    const k = e.target.dataset.lay;
+    if (k) {
+      cur()[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+      sync(); preview();
+    } else if (e.target.matches('[data-lay-html]')) { cur().html = e.target.value; sync(); }
+  });
+  card.addEventListener('change', (e) => {
+    if (e.target.matches('[data-lay-shared]')) { state.shared = e.target.value === '1'; if (!state.shared) state.invoice = { ...state.quote }; draw(); }
+    if (e.target.matches('[data-lay-preview-doc]')) { state.previewDoc = e.target.value; preview(); }
+  });
+  card.addEventListener('click', async (e) => {
+    const t = e.target;
+    const L = cur();
+    const ed = t.closest('[data-lay-edit]');
+    if (ed) { state.editing = ed.dataset.layEdit; draw(); return; }
+    const m = t.closest('[data-lay-method]');
+    if (m) { L.method = m.dataset.layMethod; if (L.method === 'html' && !L.html) L.html = DEFAULT_DOC_TEMPLATE; draw(); return; }
+    if (t.closest('[data-lay-refresh]')) { preview(); return; }
+    if (t.closest('[data-lay-reset-html]')) {
+      if (!await confirmModal('Replace your template with the standard one?', { okLabel: 'Replace' })) return;
+      L.html = DEFAULT_DOC_TEMPLATE; draw(); return;
+    }
+    if (t.closest('[data-lay-reset]')) { Object.assign(L, { ...DOC_LAYOUT_DEFAULT, html: L.html }); draw(); return; }
+    if (t.closest('[data-lay-colour-reset]')) { e.preventDefault(); L.colour = ''; draw(); return; }
+    const up = t.closest('[data-lay-up]'), down = t.closest('[data-lay-down]');
+    if (up || down) {
+      const order = [...(L.block_order && L.block_order.length === 3 ? L.block_order : DOC_LAYOUT_DEFAULT.block_order)];
+      const i = Number((up || down).dataset[up ? 'layUp' : 'layDown']), j = up ? i - 1 : i + 1;
+      [order[i], order[j]] = [order[j], order[i]];
+      L.block_order = order; draw(); return;
+    }
+    if (t.closest('[data-lay-pdf]')) {
+      if (!state.job) { toast('Make a job first to preview', 'error'); return; }
+      const doc = state.shared ? state.previewDoc : state.editing;
+      try { await postDownload('/invoices/pdf', { ids: [state.job.id], doc, logo: await logoJpeg(), layout: L }, 'preview.pdf'); } catch (ex) { toast(ex.message, 'error'); }
+    }
+  });
+  draw();
+}
+
+/* ---------------------------------------------------------------- printable barcode labels */
+
+// Label stock, in mm. Sheets: page, label size, gaps (pitch) and margins of the common A4 sizes. Rolls: one label per page.
+const LABEL_FORMATS = {
+  'a4-65': { label: 'A4 sheet, 65 per page — 38.1 × 21.2 mm (e.g. Avery L7651)', w: 38.1, h: 21.2, cols: 5, rows: 13, left: 4.7, top: 10.7, px: 40.6, py: 21.2 },
+  'a4-24': { label: 'A4 sheet, 24 per page — 63.5 × 33.9 mm (e.g. Avery L7159)', w: 63.5, h: 33.9, cols: 3, rows: 8, left: 7.2, top: 12.9, px: 66.0, py: 33.9 },
+  'a4-21': { label: 'A4 sheet, 21 per page — 63.5 × 38.1 mm (e.g. Avery L7160)', w: 63.5, h: 38.1, cols: 3, rows: 7, left: 7.2, top: 15.1, px: 66.0, py: 38.1 },
+  'a4-14': { label: 'A4 sheet, 14 per page — 99.1 × 38.1 mm (e.g. Avery L7163)', w: 99.1, h: 38.1, cols: 2, rows: 7, left: 4.65, top: 15.1, px: 101.6, py: 38.1 },
+  'roll-62x29': { label: 'Label printer — 62 × 29 mm (e.g. Brother DK-11209)', w: 62, h: 29, roll: true },
+  'roll-50x25': { label: 'Label printer — 50 × 25 mm', w: 50, h: 25, roll: true },
+  'roll-57x32': { label: 'Label printer — 57 × 32 mm (e.g. Dymo 11354)', w: 57, h: 32, roll: true },
+};
+const LABEL_PREF = 'het-label-format';
+
+function labelHTML(l, opts, f) {
+  const small = f.h < 25;
+  return `<div class="lbl" style="width:${f.w}mm;height:${f.h}mm">
+    ${opts.company && S.settings.company_name && !small ? `<div class="co">${esc(S.settings.company_name)}</div>` : ''}
+    <div class="bc">${barcodeSVG(l.code)}</div>
+    ${opts.name ? `<div class="nm">${esc(l.name)}</div>` : ''}</div>`;
+}
+
+/** The label pages, ready to print in a sandboxed frame. */
+function labelsPage(labels, format, opts) {
+  const f = LABEL_FORMATS[format] || LABEL_FORMATS['a4-65'];
+  const css = `* { box-sizing: border-box; } body { margin: 0; font-family: Helvetica, Arial, sans-serif; color: #000; }
+    .lbl { overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.2mm 2mm; text-align: center; }
+    .lbl .bc { width: 100%; flex: 1 1 auto; min-height: 0; display: flex; }
+    .lbl .bc svg { width: 100%; height: 100%; }
+    .lbl .nm { font-size: ${f.h < 25 ? 5.5 : 7}pt; line-height: 1.25; max-height: 2.6em; overflow: hidden; width: 100%; flex: none; padding-bottom: .3mm; }
+    .lbl .co { font-size: 6pt; font-weight: bold; }
+    ${f.roll ? `@page { size: ${f.w}mm ${f.h}mm; margin: 0; } .lbl { page-break-after: always; break-after: page; }`
+      : `@page { size: A4; margin: 0; } .sheet { position: relative; width: 210mm; height: 297mm; page-break-after: always; break-after: page; }
+         .sheet .lbl { position: absolute; }`}`;
+  let body = '';
+  if (f.roll) {
+    body = labels.map((l) => labelHTML(l, opts, f)).join('');
+  } else {
+    const per = f.cols * f.rows;
+    const slots = [...Array(Math.max(0, opts.skip || 0)).fill(null), ...labels];
+    for (let i = 0; i < slots.length; i += per) {
+      body += `<div class="sheet">${slots.slice(i, i + per).map((l, k) => (l ? `<div style="position:absolute;left:${f.left + (k % f.cols) * f.px}mm;top:${f.top + Math.floor(k / f.cols) * f.py}mm">${labelHTML(l, opts, f)}</div>` : '')).join('')}</div>`;
+    }
+  }
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>${body}</body></html>`;
+}
+
+/** Choose what to print for some stock items, and print it. */
+async function labelsModal(productIds) {
+  let items = await get(`/barcodes?ids=${productIds.join(',')}`);
+  let format = 'a4-65';
+  try { format = localStorage.getItem(LABEL_PREF) || format; } catch { /* ignore */ }
+  if (!LABEL_FORMATS[format]) format = 'a4-65';
+  const multi = items.length > 1;
+  const m = openModal(`<header><h2>Print barcodes${multi ? '' : ` — ${esc(items[0] ? items[0].name : '')}`}</h2><button class="icon-btn" data-x aria-label="Close">×</button></header>
+    <div class="modal-body" data-lbl-body></div>
+    <footer><span class="muted small" data-lbl-count></span><button class="btn" data-x>Cancel</button><button class="btn primary" data-lbl-print>Print labels</button></footer>`, { wide: true });
+  const st = { units: true, item: true, copies: 1, name: true, company: false, skip: 0 };
+  const list = () => {
+    const out = [];
+    for (const it of items) {
+      const label = [it.brand && !it.name.toLowerCase().startsWith(it.brand.toLowerCase()) ? it.brand : '', it.name].filter(Boolean).join(' ');
+      if (st.units) for (const u of it.units) out.push({ code: u, name: label });
+      if (st.item && it.sku && (!it.units.length || !st.units)) for (let i = 0; i < st.copies; i += 1) out.push({ code: it.sku, name: label });
+    }
+    return out;
+  };
+  const draw = () => {
+    const f = LABEL_FORMATS[format];
+    const none = items.filter((it) => !it.sku && !it.units.length);
+    const hasUnits = items.some((it) => it.units.length);
+    $('[data-lbl-body]', m.el).innerHTML = `
+      <div class="form-grid" style="padding:0">
+        <label class="field"><span>Labels</span><select data-lbl-format>${Object.entries(LABEL_FORMATS).map(([k, x]) => `<option value="${k}" ${k === format ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
+          <small>Print at 100% / “Actual size”, with no margins or headers.</small></label>
+        ${hasUnits ? `<label class="check" style="flex-basis:100%"><input type="checkbox" data-lbl="units" ${st.units ? 'checked' : ''}> A label for each unit (its own barcode)</label>` : ''}
+        <label class="check"><input type="checkbox" data-lbl="item" ${st.item ? 'checked' : ''}> ${hasUnits ? 'Items with no units: a' : 'A'} label with the item code</label>
+        <label class="field third"><span>Copies of each item code</span><input type="number" min="1" max="500" step="1" value="${st.copies}" data-lbl-copies></label>
+        ${f.roll ? '' : `<label class="field third"><span>Skip labels already used</span><input type="number" min="0" max="${f.cols * f.rows - 1}" step="1" value="${st.skip}" data-lbl-skip><small>On a part-used sheet.</small></label>`}
+        <label class="check"><input type="checkbox" data-lbl="name" ${st.name ? 'checked' : ''}> Item name under the barcode</label>
+        <label class="check"><input type="checkbox" data-lbl="company" ${st.company ? 'checked' : ''}> Company name</label>
+      </div>
+      ${none.length ? `<div class="banner warn" style="margin-top:10px"><span>${none.length === 1 ? `${esc(none[0].name)} has` : `${num(none.length)} items have`} no code or units yet, so ${none.length === 1 ? 'it has' : 'they have'} nothing to print.</span>
+        <button type="button" class="btn small" data-lbl-make>Create ${none.length === 1 ? 'a code' : 'codes'}</button></div>` : ''}
+      <div class="lbl-preview" data-lbl-preview></div>`;
+    const labels = list();
+    const per = f.roll ? 1 : f.cols * f.rows;
+    $('[data-lbl-count]', m.el).textContent = labels.length ? `${plural(labels.length, 'label')} · ${plural(Math.ceil((labels.length + (f.roll ? 0 : st.skip)) / per), f.roll ? 'label' : 'sheet')}` : 'Nothing to print';
+    $('[data-lbl-print]', m.el).disabled = !labels.length;
+    $('[data-lbl-preview]', m.el).innerHTML = labels.slice(0, 6).map((l) => `<div class="lbl-sample" style="width:${f.w * 2.2}px;height:${f.h * 2.2}px">${barcodeSVG(l.code)}${st.name ? `<div class="small">${esc(l.name)}</div>` : ''}</div>`).join('')
+      + (labels.length > 6 ? `<span class="muted small">+ ${num(labels.length - 6)} more</span>` : '');
+  };
+  m.el.addEventListener('input', (e) => {
+    if (e.target.matches('[data-lbl]')) st[e.target.dataset.lbl] = e.target.checked;
+    if (e.target.matches('[data-lbl-copies]')) st.copies = Math.max(1, Math.min(500, Number(e.target.value) || 1));
+    if (e.target.matches('[data-lbl-skip]')) st.skip = Math.max(0, Number(e.target.value) || 0);
+    if (e.target.matches('[data-lbl-format]')) { format = e.target.value; try { localStorage.setItem(LABEL_PREF, format); } catch { /* ignore */ } draw(); return; }
+    if (e.target.matches('[data-lbl], [data-lbl-copies], [data-lbl-skip]')) {
+      const keep = e.target.matches('[data-lbl-copies], [data-lbl-skip]') ? e.target : null;
+      const pos = keep && keep.selectionStart;
+      draw();
+      if (keep) { const el = $(`[${keep.matches('[data-lbl-copies]') ? 'data-lbl-copies' : 'data-lbl-skip'}]`, m.el); if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch { /* number inputs */ } } }
+    }
+  });
+  m.el.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-x]')) { m.close(); return; }
+    if (e.target.closest('[data-lbl-make]')) {
+      try {
+        for (const it of items.filter((x) => !x.sku && !x.units.length)) it.sku = (await post(`/products/${it.product_id}/make-code`, {})).sku;
+        toast('Codes created — they’re on each item’s page', 'ok');
+        draw();
+      } catch (ex) { toast(ex.message, 'error'); }
+      return;
+    }
+    if (e.target.closest('[data-lbl-print]')) {
+      const f = templateFrame(labelsPage(list(), format, st), 'tpl-print-frame');
+      document.body.appendChild(f);
+      await printFrame(f);
+      setTimeout(() => f.remove(), 60000);
+    }
+  });
+  m.wrap.addEventListener('cancel', () => m.close());
+  draw();
+}
+
 /* ---------------------------------------------------------------- print */
 
 async function renderPrint(id, doc) {
@@ -5568,19 +6362,34 @@ async function renderPrint(id, doc) {
   if (!titles[doc]) doc = 'quote';
   const sw = s.accounting_software;
   const planData = doc === 'plan' ? await get(`/jobs/${id}/plan`) : null;
+  // A quote or invoice with an HTML template is shown in a sandboxed frame and printed from there.
+  const tpl = (doc === 'quote' || doc === 'invoice') && docLayout(doc, s).method === 'html';
   root.innerHTML = `<div class="print-toolbar">
       <a class="btn small" href="#/job/${job.id}">← Back to job</a>
       <div class="tabs">${Object.entries(titles).map(([k, l]) => `<button data-doc="${k}" class="${k === doc ? 'active' : ''}">${l}</button>`).join('')}</div>
       <span class="spacer"></span>
-      ${doc === 'quote' || doc === 'invoice' ? `<button class="btn small" data-pdf>Download PDF</button>` : '<span style="opacity:.8;font-size:12px">Use “Save to PDF” in the print dialog to email it.</span>'}
+      ${(doc === 'quote' || doc === 'invoice') && !tpl ? `<button class="btn small" data-pdf>Download PDF</button>` : '<span style="opacity:.8;font-size:12px">Use “Save to PDF” in the print dialog to email it.</span>'}
       ${doc === 'invoice' ? `<button class="btn small" data-acc>${sw ? `Export for ${esc(ACCOUNTING[sw].label)}` : 'Export for accounts…'}</button>` : ''}
       <button class="btn accent" data-print>Print</button>
     </div>
-    <div class="sheet">${docHTML(job, s, doc, titles[doc] || 'Quotation', planData)}</div>`;
+    <div class="sheet ${tpl ? 'tpl-sheet' : ''}">${tpl ? '' : docHTML(job, s, doc, titles[doc] || 'Quotation', planData)}</div>`;
+  let frame = null;
+  if (tpl) {
+    try {
+      frame = templateFrame(templatePage([renderTemplate(docLayout(doc, s).html || DEFAULT_DOC_TEMPLATE, templateData(job, s, doc))]));
+      $('.sheet', root).appendChild(frame);
+    } catch (ex) { $('.sheet', root).innerHTML = `<p class="form-error">The HTML template has a problem: ${esc(ex.message)}. Fix it in Settings → Customisation → Quote &amp; invoice layout.</p>`; }
+  }
   root.onclick = (e) => {
     const d = e.target.closest('[data-doc]');
     if (d) { location.hash = `#/print/${job.id}/${d.dataset.doc}`; return; }
-    if (e.target.closest('[data-print]')) window.print();
+    if (e.target.closest('[data-print]')) {
+      if (!frame) { window.print(); return; }
+      (doc === 'invoice' && !job.invoice.issued ? post('/invoices/issue', { ids: [job.id] }) : Promise.resolve())
+        .then(() => printFrame(frame)).then(() => { if (doc === 'invoice' && !job.invoice.issued) renderPrint(id, doc); })
+        .catch((ex) => toast(ex.message, 'error'));
+      return;
+    }
     const pb = e.target.closest('[data-pdf]');
     if (pb) {
       pb.disabled = true;
@@ -5615,6 +6424,7 @@ function brandedDesc(it) {
 }
 
 function docHTML(job, s, doc, title, planData) {
+  if (doc === 'quote' || doc === 'invoice') return optionsDocHTML(job, s, doc, docLayout(doc, s));
   const c = job.contact;
   const t = job.totals;
   const company = [s.company_address, [s.company_phone, s.company_email].filter(Boolean).join(' · '), s.company_website].filter(Boolean).join('\n');
@@ -5830,6 +6640,13 @@ async function boot() {
     if (!typing && e.key === 'n' && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); newJob(); }
   });
   router();
+  // "Print barcodes" buttons anywhere: data-print-labels="id,id,…"
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-print-labels]');
+    if (!b || !b.dataset.printLabels) return;
+    e.preventDefault(); e.stopPropagation();
+    labelsModal(b.dataset.printLabels.split(',').map(Number).filter(Boolean)).catch((ex) => toast(ex.message, 'error'));
+  }, true);
   if (S.meta.is_admin && S.meta.can_update) offerScheduledUpdate();
   try {
     const upd = sessionStorage.getItem('het-updated');

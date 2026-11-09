@@ -159,7 +159,7 @@ Settings is split into tabs:
 | Tab | What's in it |
 |---|---|
 | **Users** | Users, and network access for other devices |
-| **Customisation** | Logo & app icon, appearance (light/dark mode, colours, fonts) |
+| **Customisation** | Logo & app icon, appearance (light/dark mode, colours, fonts), icons, scan sounds, quote & invoice layout |
 | **Company information** | Company details, invoices, money & numbering (VAT), jobs, documents |
 | **Electrical** | Power & cable runs |
 | **External software** | Zoho Books, and invoice exports for other accounting / MTD software |
@@ -199,6 +199,49 @@ Everything here is saved with your data, so it's in every backup and shows the s
 - one of the built-in styles (system, serif, rounded and others);
 - a font installed on the computer, typed by name (e.g. *Myanmar MN*);
 - your own font file (.woff2, .woff, .ttf or .otf) added with **Add font file…**. Added fonts work on every device and on printed documents.
+
+## Icons, scan sounds and document layouts
+
+All in **Settings → Customisation**.
+
+**Icons.** Change any sidebar icon, and give each stock category an icon.
+- Pick one of the built-in icons, or upload your own SVG or PNG.
+- Uploaded SVGs are cleaned of anything that could run code.
+- Tick **Colour it to match the text** for single-colour icons so they follow light and dark mode. Leave it off to keep a coloured icon's colours.
+- Category icons show in the stock list and when adding items to a job.
+
+**Scan sounds.** Replace the beeps for **Scan successful**, **Warning** and **Scan failed** with your own sound.
+- Formats: MP3, WAV, or the open formats Ogg (Vorbis or Opus), FLAC and WebM, up to 2 MB.
+- Short clips work best.
+- **▶ Test** plays a sound, and **Use the beep** goes back to the standard beep.
+- If a browser can't play a file, it beeps instead.
+
+**Quote & invoice layout.** Quotes and invoices can **share one layout** or **each have their own**. Each layout uses one of two methods.
+- **Layout options**, with a live preview:
+  - logo position (left, centre or right) and size;
+  - colour and text size;
+  - your own title (e.g. "Estimate"), text under the title, and footer text;
+  - which details and columns show: company details, client address, job details, brand, item codes, rate, days, discounts, line totals and subtotals;
+  - which of notes, payment details and terms show, and in what order.
+
+  **Preview PDF** shows the exact PDF, and the same layout is used when you print or download.
+- **HTML template**: write the document yourself in HTML and CSS, using placeholders such as `{{company.name}}`, `{{client.display}}`, `{{#groups}}…{{/groups}}` and `{{totals.total}}`.
+  - The full list is in the editor, and it starts from a copy of the standard design.
+  - **Refresh preview** shows it with one of your jobs.
+  - Templates are printed, or saved as a PDF, from the browser's print window. Printing an invoice fixes its number and date, just like downloading it.
+  - Scripts in a template never run.
+
+The prep list keeps its own layout.
+
+## Barcode labels
+
+**Print barcodes** is on every item's page, and on the Stock page for everything in the current list (filter by category, brand or search first).
+- **What prints:** a label for each unit's own barcode, and the item code for items counted by quantity, as many copies as you like.
+- **Label stock:** A4 sheets (65, 24, 21 or 14 per page, e.g. Avery L7651, L7159, L7160, L7163) or label printer rolls (62 × 29, 57 × 32 or 50 × 25 mm).
+- **Part-used sheets:** skip the labels already used.
+- **Extras:** add the item name and your company name if you like.
+- **No code yet?** If an item has no code or units, **Create a code** gives it one, e.g. `LEMARKGAFF-53`.
+- Print at 100% / "Actual size" with no margins. Barcodes are Code 128, which any USB or Bluetooth scanner reads. On the smallest labels, keep codes short.
 
 ## Invoices, PDFs and accounting software
 
@@ -742,4 +785,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.25.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.26.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)

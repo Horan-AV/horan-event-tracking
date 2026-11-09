@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.25.0"
+VERSION = "1.26.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -120,9 +120,14 @@ DEFAULT_SETTINGS = {
     "case_close_code": "CLOSE-CASE",   # scanning this at check-out closes the flight case being packed
     # automatic updates: none | check (look at a set time, offer it on the next page load) | install (at a set time)
     "auto_update_mode": "none", "auto_update_time": "03:00",
+    # {"nav:jobs": {"lib": "speaker"} | {"file": 1, "tint": true}, "cat:audio": ...} - set with /api/icons
+    "custom_icons": "{}",
+    "custom_sounds": "{}",   # {"ok": {"name": "ding.mp3", "v": 123}, ...} - set with /api/sounds
+    # quote / invoice layouts (JSON): one shared, or one each - see DOC_LAYOUT_DEFAULT
+    "doc_layout_shared": "1", "doc_layout_quote": "", "doc_layout_invoice": "",
 }
 # Settings only the computer running the app may change (never from a phone or another computer).
-LOCAL_ONLY_SETTINGS = {"network_access", "auto_update_mode", "auto_update_time"}  # auto-update: /api/update/auto
+LOCAL_ONLY_SETTINGS = {"network_access", "auto_update_mode", "auto_update_time", "custom_icons", "custom_sounds"}  # set elsewhere  # auto-update: /api/update/auto
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -1157,6 +1162,10 @@ def api_settings_put(req, conn):
             as_float(v, "VAT rate")
         if k == "next_job_number":
             as_int(v, "Next job number")
+        if k in ("doc_layout_quote", "doc_layout_invoice"):
+            v = json.dumps(clean_doc_layout(v)) if v.strip() else ""
+        if k == "doc_layout_shared" and v not in ("0", "1"):
+            raise ApiError(400, "Document layout must be shared or separate")
         if k == "case_close_code":
             v = v.strip()
             if not v:
@@ -2008,6 +2017,116 @@ def logo(req, conn):
             return Raw(fh.read(), "image/png")
     return Raw(f["data"], f["ctype"], extra_headers={
         "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"})
+
+
+# ---------------------------------------------------------------- your own icons (sidebar and stock categories)
+
+ICON_TARGET_RE = re.compile(r"^(nav:[a-z_]{2,20}|cat:[^\x00-\x1f]{1,80})$")
+ICON_LIB_RE = re.compile(r"^[a-z0-9_-]{1,30}$")
+
+
+def icon_target(v):
+    t = str(v or "").strip()
+    if t.startswith("cat:"):
+        t = "cat:" + t[4:].strip().lower()
+    if not ICON_TARGET_RE.match(t):
+        raise ApiError(400, "Unknown icon")
+    return t
+
+
+def custom_icons(conn):
+    try:
+        v = json.loads(get_settings(conn).get("custom_icons") or "{}")
+        return v if isinstance(v, dict) else {}
+    except ValueError:
+        return {}
+
+
+def save_custom_icons(conn, icons):
+    conn.execute("INSERT INTO settings(key, value) VALUES('custom_icons', ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (json.dumps(icons),))
+
+
+@route("PUT", "/api/icons")
+def api_icons_put(req, conn):
+    """Choose a built-in icon ({target, lib}), upload one ({target, data_url, tint}), or go back to the default ({target})."""
+    require_admin(req, conn)
+    d = req.json() or {}
+    target = icon_target(d.get("target"))
+    icons = custom_icons(conn)
+    fkey = f"uicon:{target}"
+    if d.get("data_url"):
+        ctype, raw = decode_data_url(d.get("data_url"), LOGO_TYPES, "Icon", 1)
+        file_put(conn, fkey, ctype, raw, as_str(d.get("name"), "name")[:120])
+        icons[target] = {"file": 1, "tint": bool(d.get("tint")), "v": int(time.time())}
+    elif d.get("lib"):
+        lib = str(d["lib"])
+        if not ICON_LIB_RE.match(lib):
+            raise ApiError(400, "Unknown icon")
+        icons[target] = {"lib": lib}
+        conn.execute("DELETE FROM files WHERE key = ?", (fkey,))
+    elif "tint" in d and target in icons and icons[target].get("file"):
+        icons[target]["tint"] = bool(d["tint"])
+    else:
+        icons.pop(target, None)
+        conn.execute("DELETE FROM files WHERE key = ?", (fkey,))
+    save_custom_icons(conn, icons)
+    conn.commit()
+    return {"custom_icons": icons}
+
+
+@route("GET", "/uicon")
+def uicon(req, conn):
+    f = file_get(conn, f"uicon:{icon_target(req.q('t'))}")
+    if not f:
+        raise ApiError(404, "No icon uploaded")
+    return Raw(f["data"], f["ctype"], extra_headers={
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'", "Cache-Control": "private, max-age=86400"})
+
+
+# ---------------------------------------------------------------- scan sounds
+
+SOUND_KINDS = ("ok", "warn", "error")
+# MP3 and WAV, and the open formats browsers play: Ogg Vorbis/Opus, FLAC and WebM.
+AUDIO_TYPES = {"audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+               "audio/vnd.wave": "wav", "audio/ogg": "ogg", "audio/opus": "opus", "audio/flac": "flac",
+               "audio/x-flac": "flac", "audio/webm": "webm"}
+
+
+@route("PUT", "/api/sounds")
+def api_sounds_put(req, conn):
+    """Use your own sound for a scan result ({kind, data_url, name}), or go back to the beep ({kind})."""
+    require_admin(req, conn)
+    d = req.json() or {}
+    kind = d.get("kind")
+    if kind not in SOUND_KINDS:
+        raise ApiError(400, "Unknown sound")
+    try:
+        sounds = json.loads(get_settings(conn).get("custom_sounds") or "{}")
+        sounds = sounds if isinstance(sounds, dict) else {}
+    except ValueError:
+        sounds = {}
+    if d.get("data_url"):
+        ctype, raw = decode_data_url(d["data_url"], AUDIO_TYPES, "Sound", 2)
+        file_put(conn, f"sound:{kind}", ctype, raw, as_str(d.get("name"), "name")[:120])
+        sounds[kind] = {"name": as_str(d.get("name"), "name")[:120], "v": int(time.time())}
+    else:
+        conn.execute("DELETE FROM files WHERE key = ?", (f"sound:{kind}",))
+        sounds.pop(kind, None)
+    conn.execute("INSERT INTO settings(key, value) VALUES('custom_sounds', ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (json.dumps(sounds),))
+    conn.commit()
+    return {"custom_sounds": sounds}
+
+
+@route("GET", "/sound")
+def scan_sound(req, conn):
+    kind = req.q("k")
+    f = kind in SOUND_KINDS and file_get(conn, f"sound:{kind}")
+    if not f:
+        raise ApiError(404, "No sound uploaded")
+    return Raw(f["data"], f["ctype"], extra_headers={"Cache-Control": "private, max-age=86400",
+                                                     "Content-Security-Policy": "default-src 'none'"})
 
 
 # ---------------------------------------------------------------- app icon
@@ -3273,9 +3392,75 @@ def with_brand(it):
     return f"{brand} {desc}" if brand and not desc.lower().startswith(brand.lower()) else desc
 
 
-def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate):
-    """One quotation or invoice, on as many pages as it needs."""
-    brand = _hex_rgb(s.get("brand_primary"))
+DOC_LAYOUT_DEFAULT = {
+    "method": "options",            # options | html
+    "logo_position": "left",        # left | center | right
+    "logo_size": "medium",          # small | medium | large
+    "colour": "",                   # "" = the brand colour
+    "font_size": "normal",          # small | normal | large
+    "title": "", "header_text": "", "footer_text": "",
+    "show_company_details": True, "show_client_contact": True, "show_job": True,
+    "show_codes": False, "show_brand": True, "show_rate": True, "show_days": True, "show_discount": True,
+    "show_line_totals": True, "show_subtotals": True,
+    "show_notes": True, "show_payment": True, "show_terms": True,
+    "block_order": ["notes", "payment", "terms"],
+    "html": "",
+}
+DOC_LAYOUT_CHOICES = {"method": ("options", "html"), "logo_position": ("left", "center", "right"),
+                      "logo_size": ("small", "medium", "large"), "font_size": ("small", "normal", "large")}
+DOC_BLOCKS = ("notes", "payment", "terms")
+
+
+def clean_doc_layout(raw):
+    """A layout from Settings, checked: unknown keys dropped, wrong values back to the default."""
+    try:
+        v = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        raise ApiError(400, "That document layout couldn't be read")
+    if not v:
+        return {}
+    if not isinstance(v, dict):
+        raise ApiError(400, "That document layout couldn't be read")
+    out = {}
+    for k, default in DOC_LAYOUT_DEFAULT.items():
+        if k not in v:
+            continue
+        x = v[k]
+        if k in DOC_LAYOUT_CHOICES:
+            if x in DOC_LAYOUT_CHOICES[k]:
+                out[k] = x
+        elif k == "colour":
+            if x == "" or (isinstance(x, str) and re.match(r"^#[0-9a-fA-F]{6}$", x)):
+                out[k] = x
+        elif k == "block_order":
+            if isinstance(x, list) and sorted(x) == sorted(DOC_BLOCKS):
+                out[k] = x
+        elif isinstance(default, bool):
+            out[k] = bool(x)
+        elif k == "html":
+            out[k] = str(x)[:200000]
+        else:
+            out[k] = str(x)[:2000]
+    return out
+
+
+def doc_layout(s, doc):
+    """The layout for a quote or invoice: the shared one, or the document's own."""
+    key = "doc_layout_quote"
+    if s.get("doc_layout_shared", "1") == "0" and doc == "invoice" and (s.get("doc_layout_invoice") or "").strip():
+        key = "doc_layout_invoice"
+    try:
+        v = clean_doc_layout(s.get(key) or "")
+    except ApiError:
+        v = {}
+    return dict(DOC_LAYOUT_DEFAULT, **v)
+
+
+def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate, layout=None):
+    """One quotation or invoice, on as many pages as it needs, laid out as Settings → Customisation says."""
+    lay = layout or doc_layout(s, doc)
+    brand = _hex_rgb(lay["colour"] or s.get("brand_primary"))
+    sc = {"small": 0.9, "normal": 1.0, "large": 1.12}[lay["font_size"]]
     grey, dark, light = (0.42, 0.45, 0.43), (0.1, 0.12, 0.11), (0.95, 0.96, 0.95)
     cur = s.get("currency", "£")
     money_ = lambda v: f"{'-' if v < 0 else ''}{cur}{abs(v):,.2f}"
@@ -3286,43 +3471,64 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate):
     registered = s.get("vat_registered", "1") != "0"
     foot = " · ".join(x for x in (company, f"Company no. {s['company_number']}" if s.get("company_number") else "",
                                   f"VAT no. {s['vat_number']}" if s.get("vat_number") and registered else "") if x)
-    title = "INVOICE" if doc == "invoice" else "QUOTATION"
+    title = (lay["title"].strip() or ("Invoice" if doc == "invoice" else "Quotation")).upper()
     state = {"y": 0}
 
     def new_page(first=False):
         pdf.page()
-        pdf.text(L, PDF_H - 24, foot, 7.5, color=grey)
+        fy = PDF_H - 24
+        pdf.text(L, fy, foot, 7.5, color=grey)
+        if lay["footer_text"].strip():
+            for i, ln in enumerate(reversed(pdf_wrap(lay["footer_text"], R - L, 7.5)[:3])):
+                pdf.text(L, fy - 10 * (i + 1), ln, 7.5, color=grey)
         if not first:
             pdf.text(L, PDF_M + 10, f"{title.title()} {info['number'] if doc == 'invoice' else job['number']} (continued)", 9, True, brand)
             state["y"] = PDF_M + 30
 
+    bottom = PDF_H - 60 - (10 * min(3, len(pdf_wrap(lay["footer_text"], R - L, 7.5))) if lay["footer_text"].strip() else 0)
+
     def need(h):
-        if state["y"] + h > PDF_H - 60:
+        if state["y"] + h > bottom:
             new_page()
             table_head()
 
     new_page(first=True)
     y = PDF_M
-    top_h = 0
+    pos = lay["logo_position"]
+    max_h, max_w = {"small": (40.0, 120.0), "medium": (60.0, 170.0), "large": (90.0, 250.0)}[lay["logo_size"]]
+    details = []
+    if lay["show_company_details"]:
+        details = [x for x in (s.get("company_address") or "").split("\n") if x.strip()] + \
+            [x for x in (" · ".join(x for x in (s.get("company_phone"), s.get("company_email")) if x), s.get("company_website", "")) if x]
+    # the logo (or the company name in large type when there's no logo)
     if logo:
         data, pw, ph = logo
-        w = min(170.0, 60.0 * pw / ph)
+        w = min(max_w, max_h * pw / ph)
         h = w * ph / pw
-        pdf.image(data, pw, ph, L, y, w, h)
+        lx = L if pos == "left" else (R - w if pos == "right" else (L + R - w) / 2)
+        pdf.image(data, pw, ph, lx, y, w, h)
         top_h = h
     else:
-        pdf.text(L, y + 16, company, 16, True, brand)
+        pdf.text({"left": L, "right": R, "center": (L + R) / 2}[pos], y + 16, company, 16 * sc, True, brand,
+                 {"left": "left", "right": "right", "center": "center"}[pos])
         top_h = 20
-    cy = y + 8
-    pdf.text(R, cy, company, 10, True, dark, "right")
-    for ln in [x for x in (s.get("company_address") or "").split("\n") if x.strip()] + \
-            [" · ".join(x for x in (s.get("company_phone"), s.get("company_email")) if x), s.get("company_website", "")]:
-        if ln:
+    # the company's details opposite the logo, or under it when it's centred
+    if pos == "center":
+        cy = y + top_h + 4
+        for ln in ([company] if logo else []) + details:
             cy += 11
-            pdf.text(R, cy, ln, 8.5, color=grey, align="right")
-    y = max(y + top_h, cy) + 26
+            pdf.text((L + R) / 2, cy, ln, 8.5 if ln != company else 10, ln == company, dark if ln == company else grey, "center")
+        y = cy + 26
+    else:
+        dx, align = (R, "right") if pos == "left" else (L, "left")
+        cy = y + 8
+        pdf.text(dx, cy, company, 10, True, dark, align)
+        for ln in details:
+            cy += 11
+            pdf.text(dx, cy, ln, 8.5, color=grey, align=align)
+        y = max(y + top_h, cy) + 26
 
-    pdf.text(L, y, title, 20, True, brand)
+    pdf.text(L, y, title, 20 * sc, True, brand)
     meta = ([("Invoice no.", info["number"]), ("Date", fmt_date(info["date"])), ("Due", fmt_date(info["due"])),
              ("Job", job["number"])] if doc == "invoice" else
             [("Quote no.", job["number"]), ("Date", fmt_date(dt.date.today().isoformat())), ("Status", STATUS_NAMES.get(job["status"], job["status"]))])
@@ -3330,62 +3536,73 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate):
         meta.append(("Your ref", job["reference"]))
     my = y - 12
     for k, v in meta:
-        pdf.text(R - 110, my, k, 8.5, color=grey, align="right")
-        pdf.text(R, my, v, 8.5, True, dark, "right")
-        my += 12
+        pdf.text(R - 110, my, k, 8.5 * sc, color=grey, align="right")
+        pdf.text(R, my, v, 8.5 * sc, True, dark, "right")
+        my += 12 * sc
     y = max(y + 14, my) + 10
+    if lay["header_text"].strip():
+        for ln in pdf_wrap(lay["header_text"], R - L, 9.5 * sc):
+            pdf.text(L, y, ln, 9.5 * sc, False, dark)
+            y += 12.5 * sc
+        y += 8
 
     c = job.get("contact") or {}
-    who = [c.get("company") or c.get("name") or "—"] + ([c["name"]] if c.get("company") and c.get("name") else []) + \
-          [x for x in (c.get("address") or "").split("\n") if x.strip()] + ([c["email"]] if c.get("email") else [])
+    who = [c.get("company") or c.get("name") or "—"] + ([c["name"]] if c.get("company") and c.get("name") else [])
+    if lay["show_client_contact"]:
+        who += [x for x in (c.get("address") or "").split("\n") if x.strip()] + ([c["email"]] if c.get("email") else [])
     hire = (dt.date.fromisoformat(job["end_date"]) - dt.date.fromisoformat(job["start_date"])).days + 1
     jl = [job["name"]] + ([job["venue"]] if job.get("venue") else []) + \
          [fmt_range(job["start_date"], job["end_date"]), f"Hire period: {hire} day{'s' if hire != 1 else ''}"]
     pdf.text(L, y, "INVOICE TO" if doc == "invoice" else "PREPARED FOR", 7.5, True, grey)
-    pdf.text(L + 270, y, "JOB", 7.5, True, grey)
-    yy = y
+    yy = yj = y
     for i, ln in enumerate(who):
-        for part in pdf_wrap(ln, 250, 9.5, i == 0):
-            yy += 12.5
-            pdf.text(L, yy, part, 9.5, i == 0, dark)
-    yj = y
-    for i, ln in enumerate(jl):
-        for part in pdf_wrap(ln, 240, 9.5, i == 0):
-            yj += 12.5
-            pdf.text(L + 270, yj, part, 9.5, i == 0, dark)
+        for part in pdf_wrap(ln, 250, 9.5 * sc, i == 0):
+            yy += 12.5 * sc
+            pdf.text(L, yy, part, 9.5 * sc, i == 0, dark)
+    if lay["show_job"]:
+        pdf.text(L + 270, y, "JOB", 7.5, True, grey)
+        for i, ln in enumerate(jl):
+            for part in pdf_wrap(ln, 240, 9.5 * sc, i == 0):
+                yj += 12.5 * sc
+                pdf.text(L + 270, yj, part, 9.5 * sc, i == 0, dark)
     state["y"] = max(yy, yj) + 22
 
     has_rental = any(i["kind"] == "rental" for i in job["items"])
     any_disc = any(i["discount_pct"] for i in job["items"])
-    cols = [("Description", None)]
     xr = R
     right_cols = []
-    for name, show, w in (("Total", True, 70), ("Disc", any_disc, 38), ("Days", has_rental, 36), ("Rate" if has_rental else "Price", True, 62), ("Qty", True, 36)):
+    for name, show, w in (("Total", lay["show_line_totals"], 70), ("Disc", any_disc and lay["show_discount"], 38),
+                          ("Days", has_rental and lay["show_days"], 36),
+                          ("Rate" if has_rental else "Price", lay["show_rate"], 62), ("Qty", True, 36),
+                          ("Code", lay["show_codes"], 70)):
         if show:
             right_cols.append((name, xr))
-            xr -= w
+            xr -= w * sc
     desc_w = xr - L - 10
+    fs = 9 * sc
+    lh = 11.5 * sc
 
     def table_head():
         y0 = state["y"]
-        pdf.rect(L, y0, R - L, 18, brand)
-        pdf.text(L + 6, y0 + 12.5, "Description", 8.5, True, (1, 1, 1))
+        hh = 18 * sc
+        pdf.rect(L, y0, R - L, hh, brand)
+        pdf.text(L + 6, y0 + hh - 5.5, "Description", 8.5 * sc, True, (1, 1, 1))
         for name, x in right_cols:
-            pdf.text(x - 6, y0 + 12.5, name, 8.5, True, (1, 1, 1), "right")
-        state["y"] = y0 + 18
+            pdf.text(x - 6, y0 + hh - 5.5, name, 8.5 * sc, True, (1, 1, 1), "right")
+        state["y"] = y0 + hh
 
-    def row(cells, desc, depth=0, bold=False, fill=None, size=9):
-        lines_ = pdf_wrap(("- " if depth else "") + desc, desc_w - depth * 10, size, bold)
-        h = 6 + 11.5 * len(lines_)
+    def row(cells, desc, depth=0, bold=False, fill=None):
+        lines_ = pdf_wrap(("- " if depth else "") + desc, desc_w - depth * 10, fs, bold)
+        h = 6 + lh * len(lines_)
         need(h)
         y0 = state["y"]
         if fill:
             pdf.rect(L, y0, R - L, h, fill)
         for i, ln in enumerate(lines_):
-            pdf.text(L + 6 + depth * 10, y0 + 12 + i * 11.5, ln, size, bold, dark if not depth else (0.3, 0.32, 0.31))
+            pdf.text(L + 6 + depth * 10, y0 + 3 + fs + i * lh, ln, fs, bold, dark if not depth else (0.3, 0.32, 0.31))
         for (name, x), v in zip(right_cols, cells):
             if v != "":
-                pdf.text(x - 6, y0 + 12, v, size, bold, dark, "right")
+                pdf.text(x - 6, y0 + 3 + fs, v, fs if name != "Code" else fs * 0.85, bold, dark, "right")
         pdf.line(L, y0 + h, R, y0 + h, 0.4, (0.88, 0.89, 0.88))
         state["y"] = y0 + h
 
@@ -3404,11 +3621,11 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate):
             included = bool(it.get("parent_item_id")) and not it["unit_price"] and not it["line_total"]
             if included and not show_incl:
                 continue
-            vals = {"Qty": fmt_num(it["quantity"])}
+            vals = {"Qty": fmt_num(it["quantity"]), "Code": it.get("product_sku") or ""}
             if run:
                 desc = f"{it['description']} (each: {m.get('summary', '')})"
             else:
-                desc = with_brand(it)
+                desc = with_brand(it) if lay["show_brand"] else (it.get("description") or "")
                 if included:
                     vals["Total"] = "Included"
                 else:
@@ -3417,11 +3634,12 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate):
                                  "Disc": f"{fmt_num(it['discount_pct'])}%" if it["discount_pct"] else "",
                                  "Total": money_(it["line_total"])})
             row([vals.get(n, "") for n, _ in right_cols], desc, depth)
-        need(18)
-        y0 = state["y"]
-        pdf.text(right_cols[1][1] - 6, y0 + 12, f"{labels[k]} subtotal", 8.5, False, grey, "right")
-        pdf.text(R - 6, y0 + 12, money_(t[k]), 9, True, dark, "right")
-        state["y"] = y0 + 18
+        if lay["show_subtotals"]:
+            need(18)
+            y0 = state["y"]
+            pdf.text(R - 110, y0 + 12, f"{labels[k]} subtotal", 8.5 * sc, False, grey, "right")
+            pdf.text(R - 6, y0 + 12, money_(t[k]), fs, True, dark, "right")
+            state["y"] = y0 + 18
 
     tot = []
     if t["discount"]:
@@ -3435,28 +3653,27 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate):
         if big:
             pdf.line(R - 200, y0 + 2, R, y0 + 2, 1.2, brand)
             y0 += 6
-        pdf.text(R - 110, y0 + 11, label, 11 if big else 9, big, dark, "right")
-        pdf.text(R - 6, y0 + 11, v, 11 if big else 9, big, dark, "right")
-        y0 += 16 if big else 14
+        pdf.text(R - 110, y0 + 11, label, (11 if big else 9) * sc, big, dark, "right")
+        pdf.text(R - 6, y0 + 11, v, (11 if big else 9) * sc, big, dark, "right")
+        y0 += (16 if big else 14) * sc
     state["y"] = y0 + 12
 
-    blocks = []
-    if job.get("notes"):
-        blocks.append(("NOTES", job["notes"]))
-    if doc == "invoice" and s.get("payment_details"):
-        blocks.append(("PAYMENT DETAILS", s["payment_details"]))
     terms = s.get("invoice_terms") if doc == "invoice" else s.get("quote_terms")
-    if terms:
-        blocks.append(("TERMS", terms))
-    for head, body in blocks:
-        lines_ = pdf_wrap(body, R - L, 8.5)
+    texts = {"notes": ("NOTES", job.get("notes") if lay["show_notes"] else ""),
+             "payment": ("PAYMENT DETAILS", s.get("payment_details") if doc == "invoice" and lay["show_payment"] else ""),
+             "terms": ("TERMS", terms if lay["show_terms"] else "")}
+    for key in lay["block_order"]:
+        head, body = texts[key]
+        if not body:
+            continue
+        lines_ = pdf_wrap(body, R - L, 8.5 * sc)
         need(16 + 11 * min(len(lines_), 6))
         pdf.text(L, state["y"] + 10, head, 7.5, True, grey)
         state["y"] += 14
         for ln in lines_:
-            need(11)
-            pdf.text(L, state["y"] + 9, ln, 8.5, False, dark)
-            state["y"] += 11
+            need(11 * sc)
+            pdf.text(L, state["y"] + 9, ln, 8.5 * sc, False, dark)
+            state["y"] += 11 * sc
         state["y"] += 8
 
 
@@ -3482,22 +3699,39 @@ def decode_logo(data_url):
     return None
 
 
+@route("POST", "/api/invoices/issue")
+def api_invoices_issue(req, conn):
+    """Printing an invoice from an HTML template layout: fix its number and date, as downloading the PDF does."""
+    d = req.json() or {}
+    jobs = jobs_for_invoicing(conn, d.get("ids") or [])
+    for j in jobs:
+        issue_invoice(conn, j)
+        if d.get("mark_invoiced") and j["status"] in ("confirmed", "out", "returned"):
+            conn.execute("UPDATE jobs SET status = 'invoiced', updated_at = ? WHERE id = ?", (now_iso(), j["id"]))
+    conn.commit()
+    return {"ok": True}
+
+
 @route("POST", "/api/invoices/pdf")
 def api_invoices_pdf(req, conn):
     d = req.json() or {}
     doc = "quote" if d.get("doc") == "quote" else "invoice"
     jobs = jobs_for_invoicing(conn, d.get("ids") or [])
     s = get_settings(conn)
-    if doc == "invoice":
+    if doc == "invoice" and not d.get("layout"):  # a layout preview doesn't issue anything
         for j in jobs:
             issue_invoice(conn, j)
             if d.get("mark_invoiced") and j["status"] in ("confirmed", "out", "returned"):
                 conn.execute("UPDATE jobs SET status = 'invoiced', updated_at = ? WHERE id = ?", (now_iso(), j["id"]))
         conn.commit()
     logo = decode_logo(d.get("logo"))
+    layout = None
+    if d.get("layout"):  # Settings' "Preview PDF": try a layout before saving it
+        require_admin(req, conn)
+        layout = dict(DOC_LAYOUT_DEFAULT, **clean_doc_layout(d["layout"]))
     pdf = PdfDoc(app_name(conn))
     for j in jobs:
-        render_invoice_pdf(pdf, j, s, doc, logo, vat_rate_of(conn))
+        render_invoice_pdf(pdf, j, s, doc, logo, vat_rate_of(conn), layout)
     word = "Invoice" if doc == "invoice" else "Quotation"
     if len(jobs) == 1:
         j = jobs[0]
@@ -4457,6 +4691,48 @@ def api_barcode_lookup(req, conn):
     if p:
         return {"kind": "item", "code": code, "product_id": p["parent_id"] or p["id"], "name": p["name"]}
     raise ApiError(404, f"“{code}” doesn't match any barcode")
+
+
+@route("GET", "/api/barcodes")
+def api_barcodes(req, conn):
+    """Codes to print as labels: each item's own code and every unit's (a cable's are on its lengths)."""
+    try:
+        ids = [int(x) for x in (req.q("ids") or "").split(",") if x.strip()][:2000]
+    except ValueError:
+        raise ApiError(400, "ids must be numbers")
+    out = []
+    for pid in ids:
+        p = one(conn.execute("SELECT id, name, brand, sku, item_type, parent_id FROM products WHERE id = ?", (pid,)))
+        if not p:
+            continue
+        rows_ = [p]
+        if p["item_type"] == "cable" and not p["parent_id"]:
+            rows_ = rows(conn.execute("SELECT id, name, brand, sku, item_type, parent_id FROM products WHERE parent_id = ? "
+                                      "AND archived = 0 ORDER BY length_m", (pid,))) or [p]
+        for r in rows_:
+            units = [x[0] for x in conn.execute("SELECT asset_number FROM assets WHERE product_id = ? AND sub_hire = 0 "
+                                                "ORDER BY asset_number", (r["id"],))]
+            out.append({"product_id": r["id"], "parent_id": r["parent_id"], "name": r["name"],
+                        "brand": r["brand"] or p["brand"] or "", "sku": r["sku"] or "", "units": units})
+    return out
+
+
+@route("POST", r"/api/products/(\d+)/make-code")
+def api_make_code(req, conn, pid):
+    """Give an item without a code one of its own, e.g. QSCK122-14, so it can have a barcode label."""
+    p = one(conn.execute("SELECT * FROM products WHERE id = ?", (pid,)))
+    if not p:
+        raise ApiError(404, "Product not found")
+    if p["sku"]:
+        return {"sku": p["sku"]}
+    base = re.sub(r"[^A-Za-z0-9]+", "", f"{p['brand'] or ''}{p['name']}".upper())[:10] or "ITEM"
+    n, code = 0, f"{base}-{p['id']}"
+    while barcode_in_use(conn, code):
+        n += 1
+        code = f"{base}-{p['id']}-{n}"
+    conn.execute("UPDATE products SET sku = ? WHERE id = ?", (code, p["id"]))
+    conn.commit()
+    return {"sku": code}
 
 
 @route("POST", r"/api/products/(\d+)/assets")

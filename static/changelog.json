@@ -2,6 +2,27 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.26.0",
+      "date": "2026-11-09",
+      "title": "Your own icons, scan sounds, document layouts and barcode labels",
+      "changes": [
+        {
+          "text": "Change any sidebar icon, and give each stock category an icon: pick from the built-in icons or upload an SVG or PNG (Settings → Customisation → Icons)."
+        },
+        {
+          "text": "Your own scan sounds for a successful scan, a warning and a failed scan: MP3, WAV, Ogg/Opus, FLAC or WebM (Settings → Customisation → Scan sounds)."
+        },
+        {
+          "text": "Lay out quotes and invoices your way: layout options with a live preview (logo position and size, colour, text size, title, header and footer text, which columns and details show, and the order of notes, payment details and terms), or your own HTML template with Refresh preview. Quotes and invoices can share one layout or have their own. The PDF download follows the layout."
+        },
+        {
+          "text": "Print barcode labels for items and units on A4 label sheets or a label printer, from an item's page or for everything listed on the Stock page. Items without a code can be given one."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.25.0",
       "date": "2026-11-09",
       "title": "Tidier settings, in tabs",
