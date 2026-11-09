@@ -1,6 +1,21 @@
 {
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
+    {
+      "version": "1.24.0",
+      "date": "2026-11-09",
+      "title": "VAT registration setting",
+      "changes": [
+        {
+          "text": "New setting: VAT registered (Settings → Money & numbering). Untick it if your business isn't registered for VAT: no VAT is added to or shown on jobs, quotes, invoices, PDFs or Zoho invoices, exports use \"No VAT\", and your VAT number is left off documents."
+        },
+        {
+          "text": "ROI calculator: the result cards no longer overlap when a figure is long; they wrap inside their box, and sit one per row when the column is narrow."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
   {
     "version": "1.23.0",
     "date": "2026-11-09",
