@@ -636,6 +636,7 @@ Linking only affects items added to a job *after* you set up the link.
 - "Days" defaults to every day of the hire. To charge a week as three days, set **Chargeable days** on the job.
 - Labour/service lines and sale lines cost quantity × price.
 - The job discount comes off the subtotal, then VAT is added.
+- **Not VAT registered?** Untick **VAT registered** in Settings → Money & numbering. No VAT is added or shown on jobs, quotes, invoices, PDFs or Zoho invoices, accounting exports use the program's "No VAT" code, and your VAT number is left off documents. Ticking it again brings VAT back for every job, at your VAT rate.
 
 ### How availability works
 
@@ -723,4 +724,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.23.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.24.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)

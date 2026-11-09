@@ -2,6 +2,13 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.24.0 — 2026-11-09 · VAT registration setting
+
+- New setting: VAT registered (Settings → Money & numbering). Untick it if your business isn't registered for VAT: no VAT is added to or shown on jobs, quotes, invoices, PDFs or Zoho invoices, exports use "No VAT", and your VAT number is left off documents.
+- ROI calculator: the result cards no longer overlap when a figure is long; they wrap inside their box, and sit one per row when the column is narrow.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.23.0 — 2026-11-09 · ROI calculator and day rate suggestions
 
 - Return on investment card on every equipment, power and flight case item: what it's earned (last 12 months, since its first hire, booked ahead), and a calculator for revenue, profit, payback time and return over its life.

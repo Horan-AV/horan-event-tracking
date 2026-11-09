@@ -1367,8 +1367,8 @@ function drawJob(view) {
             ${t.sale ? `<tr><td>Sales</td><td>${money(t.sale)}</td></tr>` : ''}
             ${t.service ? `<tr><td>Services &amp; labour</td><td>${money(t.service)}</td></tr>` : ''}
             ${t.discount ? `<tr><td>Discount (${num(j.discount_pct)}%)</td><td>−${money(t.discount)}</td></tr>` : ''}
-            <tr><td><strong>Net</strong></td><td><strong>${money(t.net)}</strong></td></tr>
-            <tr><td>VAT ${num(t.vat_rate)}%</td><td>${money(t.vat)}</td></tr>
+            ${t.vat_registered === false ? '' : `<tr><td><strong>Net</strong></td><td><strong>${money(t.net)}</strong></td></tr>
+            <tr><td>VAT ${num(t.vat_rate)}%</td><td>${money(t.vat)}</td></tr>`}
             <tr class="grand"><td>Total</td><td>${money(t.total)}</td></tr>
           </tbody></table></div></div>
         ${subHireJobCard(j)}
@@ -1439,8 +1439,8 @@ async function sendToZoho(view) {
   if (!j.contact) { toast('Add a client to this job first — Zoho needs a customer for the invoice.', 'error'); return; }
   const who = j.contact.company || j.contact.name;
   const ok = await confirmModal(updating
-    ? `Update Zoho invoice ${j.zoho_invoice_number} with this job's current lines and totals (${money(j.totals.total)} inc. VAT)?`
-    : `Create a draft invoice in Zoho Books for ${who} — ${money(j.totals.total)} inc. VAT? ${who} must already be a customer in Zoho Books; nothing is created on the customer side.`,
+    ? `Update Zoho invoice ${j.zoho_invoice_number} with this job's current lines and totals (${money(j.totals.total)}${j.totals.vat_registered === false ? '' : ' inc. VAT'})?`
+    : `Create a draft invoice in Zoho Books for ${who} — ${money(j.totals.total)}${j.totals.vat_registered === false ? '' : ' inc. VAT'}? ${who} must already be a customer in Zoho Books; nothing is created on the customer side.`,
   { title: updating ? 'Update Zoho invoice?' : 'Create Zoho invoice?', okLabel: updating ? 'Update invoice' : 'Create invoice', danger: false });
   if (!ok) return;
   const btn = $('[data-zoho]', view);
@@ -4546,7 +4546,9 @@ async function renderSettings(view) {
           </div>`}</div>
         <div class="card settings-section" id="zoho" data-zoho-card><header><h2>Zoho Books</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section"><header><h2>Money &amp; numbering</h2></header><div class="form-grid">
-          ${F('currency', 'Currency symbol', { half: true })}${F('vat_rate', 'VAT rate %', { type: 'number', step: 'any', min: 0, half: true })}
+          <label class="check" style="flex-basis:100%"><input type="checkbox" name="vat_registered" data-vat-reg ${s.vat_registered !== '0' ? 'checked' : ''}>
+            <span><strong>VAT registered</strong> — add VAT to quotes and invoices. Untick it if your business isn’t registered for VAT: no VAT is added or shown, and your VAT number is left off documents.</span></label>
+          ${F('currency', 'Currency symbol', { half: true })}<div class="field half" data-vat-rate-wrap ${s.vat_registered === '0' ? 'hidden' : ''} style="padding:0">${F('vat_rate', 'VAT rate %', { type: 'number', step: 'any', min: 0 })}</div>
           ${F('job_prefix', 'Job number prefix', { half: true })}${F('next_job_number', 'Next job number', { type: 'number', min: 1, step: 1, half: true })}
         </div></div>
 
@@ -4777,6 +4779,7 @@ async function renderSettings(view) {
   view.onkeydown = (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } };
   view.oninput = (e) => {
     if (e.target.type === 'color') previewLook(view);
+    if (e.target.matches('[data-vat-reg]')) { const w = $('[data-vat-rate-wrap]', view); if (w) w.hidden = !e.target.checked; }
     if (e.target.matches('[data-au-mode]')) { const tw = $('[data-au-time-wrap]', view); if (tw) tw.hidden = e.target.value === 'none'; }
     if (e.target.name === 'case_close_code') { const pv = $('[data-close-preview]', view); if (pv) pv.innerHTML = barcodeSVG(e.target.value.trim() || 'CLOSE-CASE'); }
     if (e.target.matches('[data-font-local]')) {
@@ -5684,14 +5687,14 @@ Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date)
       <tbody>${sections || `<tr><td colspan="${cols}">No items.</td></tr>`}</tbody></table>
     <div class="doc-totals"><table><tbody>
       ${t.discount ? `<tr><td>Subtotal</td><td>${money(t.gross)}</td></tr><tr><td>Discount (${num(job.discount_pct)}%)</td><td>−${money(t.discount)}</td></tr>` : ''}
-      <tr><td>Net</td><td>${money(t.net)}</td></tr>
-      <tr><td>VAT ${num(t.vat_rate)}%</td><td>${money(t.vat)}</td></tr>
+      ${t.vat_registered === false ? '' : `<tr><td>Net</td><td>${money(t.net)}</td></tr>
+      <tr><td>VAT ${num(t.vat_rate)}%</td><td>${money(t.vat)}</td></tr>`}
       <tr class="grand"><td>Total</td><td>${money(t.total)}</td></tr>
     </tbody></table></div>
     ${job.notes ? `<div class="doc-block"><h3>Notes</h3><p>${esc(job.notes)}</p></div>` : ''}
     ${doc === 'invoice' && s.payment_details ? `<div class="doc-block"><h3>Payment details</h3><p>${esc(s.payment_details)}</p></div>` : ''}
     ${(doc === 'invoice' ? s.invoice_terms : s.quote_terms) ? `<div class="doc-block"><h3>Terms</h3><p>${esc(doc === 'invoice' ? s.invoice_terms : s.quote_terms)}</p></div>` : ''}
-    <div class="doc-foot">${esc([s.company_name, s.company_number ? `Company no. ${s.company_number}` : '', s.vat_number ? `VAT no. ${s.vat_number}` : ''].filter(Boolean).join(' · '))}</div>`;
+    <div class="doc-foot">${esc([s.company_name, s.company_number ? `Company no. ${s.company_number}` : '', s.vat_number && s.vat_registered !== '0' ? `VAT no. ${s.vat_number}` : ''].filter(Boolean).join(' · '))}</div>`;
 }
 
 /* ---- colour pickers: a hex box next to every one, kept in step both ways */

@@ -871,10 +871,15 @@ tr.bc-row td { background: var(--bg); padding: 8px 12px 12px; }
 .roi h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 8px; }
 .roi-hist { border-bottom: 1px solid var(--border); padding-bottom: 10px; }
 .roi-hist h3 { margin-top: 0; }
-.roi-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
-.roi-stat { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.roi-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 10px; container-type: inline-size; }
+/* min-width: 0 lets a card shrink with its column; long figures (or text a browser extension adds) wrap inside it */
+.roi-stat { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 2px;
+  min-width: 0; overflow: hidden; overflow-wrap: anywhere; }
+.roi-stat > * { min-width: 0; max-width: 100%; }
 .roi-stat span { font-size: 12px; color: var(--muted); }
-.roi-stat strong { font-size: 20px; }
+.roi-stat strong { font-size: clamp(16px, 4.5cqi, 20px); line-height: 1.25; white-space: normal; }
+.roi-stat strong * { white-space: normal !important; overflow-wrap: anywhere; }
+.roi-sug > div { min-width: 0; overflow-wrap: anywhere; }
 .roi-stat small { color: var(--muted); font-size: 12px; }
 .roi-stat.ok { border-color: var(--ok); } .roi-stat.ok strong { color: var(--ok); }
 .roi-stat.warn { border-color: var(--warn); } .roi-stat.warn strong { color: var(--warn); }

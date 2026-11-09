@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.23.0"
+VERSION = "1.24.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -83,6 +83,7 @@ DEFAULT_SETTINGS = {
     "vat_number": "",
     "company_number": "",
     "vat_rate": "20",
+    "vat_registered": "1",   # 0 = not VAT registered: no VAT is added to quotes, invoices or exports
     "currency": "£",
     "job_prefix": "HAV-",
     "next_job_number": "1001",
@@ -729,7 +730,7 @@ def price_items(job, items):
     return items
 
 
-def totals(job, items, vat_rate):
+def totals(job, items, vat_rate, registered=True):
     by_kind = {k: 0.0 for k in KINDS}
     for it in items:
         by_kind[it["kind"]] = by_kind.get(it["kind"], 0.0) + it["line_total"]
@@ -745,13 +746,21 @@ def totals(job, items, vat_rate):
         "discount": round(discount, 2),
         "net": round(net, 2),
         "vat_rate": vat_rate,
+        "vat_registered": bool(registered),
         "vat": round(vat, 2),
         "total": round(net + vat, 2),
         "charge_days": charge_days(job),
     }
 
 
+def vat_registered(conn):
+    return get_settings(conn).get("vat_registered", "1") != "0"
+
+
 def vat_rate_of(conn):
+    """The VAT rate to charge: 0 when the business isn't VAT registered."""
+    if not vat_registered(conn):
+        return 0.0
     try:
         return float(get_settings(conn).get("vat_rate") or 0)
     except ValueError:
@@ -3264,8 +3273,9 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate):
     info = invoice_info(job, s)
     t = job["totals"]
     company = s.get("company_name", "")
+    registered = s.get("vat_registered", "1") != "0"
     foot = " · ".join(x for x in (company, f"Company no. {s['company_number']}" if s.get("company_number") else "",
-                                  f"VAT no. {s['vat_number']}" if s.get("vat_number") else "") if x)
+                                  f"VAT no. {s['vat_number']}" if s.get("vat_number") and registered else "") if x)
     title = "INVOICE" if doc == "invoice" else "QUOTATION"
     state = {"y": 0}
 
@@ -3406,7 +3416,9 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate):
     tot = []
     if t["discount"]:
         tot += [("Subtotal", money_(t["gross"]), False), (f"Discount ({fmt_num(job.get('discount_pct') or 0)}%)", money_(-t["discount"]), False)]
-    tot += [("Net", money_(t["net"]), False), (f"VAT {fmt_num(t['vat_rate'])}%", money_(t["vat"]), False), ("Total", money_(t["total"]), True)]
+    if registered:
+        tot += [("Net", money_(t["net"]), False), (f"VAT {fmt_num(t['vat_rate'])}%", money_(t["vat"]), False)]
+    tot += [("Total", money_(t["total"]), True)]
     need(16 * len(tot) + 20)
     y0 = state["y"] + 10
     for label, v, big in tot:
@@ -3493,7 +3505,7 @@ def api_job_zoho(req, conn, jid):
     if not job["contact"]:
         raise ApiError(400, "Add a client to this job first — Zoho needs a customer for the invoice")
     z = Zoho(conn)
-    tax_id = get_secret(conn, "zoho_tax_id")
+    tax_id = get_secret(conn, "zoho_tax_id") if vat_registered(conn) else ""
     cust = zoho_customer_id(z, conn, job["contact"])
     body = zoho_invoice_body(conn, job, cust, tax_id)
     if job.get("zoho_invoice_id"):
@@ -4781,10 +4793,10 @@ def api_contact_delete(req, conn, cid):
 
 def attach_totals(conn, jobs):
     items = load_items(conn, [j["id"] for j in jobs])
-    vat = vat_rate_of(conn)
+    vat, registered = vat_rate_of(conn), vat_registered(conn)
     for j in jobs:
         its = price_items(j, items.get(j["id"], []))
-        j["totals"] = totals(j, its, vat)
+        j["totals"] = totals(j, its, vat, registered)
         j["item_count"] = len(its)
     return jobs
 
@@ -4906,7 +4918,7 @@ def job_detail(conn, jid):
     job["items"] = items
     job["sections"] = job_sections(conn, job, items)
     job["checks"] = check_summary(conn, jid)
-    job["totals"] = totals(job, items, vat_rate_of(conn))
+    job["totals"] = totals(job, items, vat_rate_of(conn), vat_registered(conn))
     job["availability"] = job_availability(conn, job, items)
     if job.get("zoho_invoice_id") and get_secret(conn, "zoho_accounts_url"):
         host = urlparse(get_secret(conn, "zoho_accounts_url")).netloc.replace("accounts.", "books.", 1)
