@@ -2,6 +2,15 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.26.0 — 2026-11-09 · Your own icons, scan sounds, document layouts and barcode labels
+
+- Change any sidebar icon, and give each stock category an icon: pick from the built-in icons or upload an SVG or PNG (Settings → Customisation → Icons).
+- Your own scan sounds for a successful scan, a warning and a failed scan: MP3, WAV, Ogg/Opus, FLAC or WebM (Settings → Customisation → Scan sounds).
+- Lay out quotes and invoices your way: layout options with a live preview (logo position and size, colour, text size, title, header and footer text, which columns and details show, and the order of notes, payment details and terms), or your own HTML template with Refresh preview. Quotes and invoices can share one layout or have their own. The PDF download follows the layout.
+- Print barcode labels for items and units on A4 label sheets or a label printer, from an item's page or for everything listed on the Stock page. Items without a code can be given one.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.25.0 — 2026-11-09 · Tidier settings, in tabs
 
 - Settings is now in tabs: Users, Customisation, Company information, Electrical, External software and Updates. Save settings still saves every tab at once.
