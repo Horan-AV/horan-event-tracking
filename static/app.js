@@ -898,7 +898,7 @@ function importModal(kind) {
 
 /* ---------------------------------------------------------------- router */
 
-const NAV_OF = { plan: 'jobs', job: 'jobs', product: 'stock', contact: 'contacts', print: 'jobs', check: 'jobs', vendor: 'vendors' };
+const NAV_OF = { roi: 'stock', plan: 'jobs', job: 'jobs', product: 'stock', contact: 'contacts', print: 'jobs', check: 'jobs', vendor: 'vendors' };
 
 async function router() {
   document.body.classList.remove('printing');
@@ -917,6 +917,7 @@ async function router() {
       case 'availability': await renderAvailability(view); break;
       case 'stock': await renderStock(view); break;
       case 'product': await renderProduct(view, Number(a)); break;
+      case 'roi': await renderRoi(view); break;
       case 'contacts': await renderContacts(view); break;
       case 'quarantine': await renderQuarantine(view); break;
       case 'activity': await renderActivity(view, a); break;
@@ -2170,6 +2171,7 @@ async function renderStock(view) {
       <div class="actions">
         <button class="btn" data-import>Import CSV</button>
         <button class="btn" data-export>Export CSV</button>
+        <a class="btn" href="#/roi">ROI calculator</a>
         <button class="btn primary" data-add></button></div></div>
     <div class="toolbar">
       <div class="tabs">${Object.entries(TYPE_LABEL).map(([k, l]) => `<button data-tab="${k}" class="${S.stockTab === k ? 'active' : ''}">${l}</button>`).join('')}</div>
@@ -2616,8 +2618,17 @@ async function renderProduct(view, id) {
             <dt>Plugs into</dt><dd>${esc(p.plug_type || '—')}</dd>` : ''}
           ${p.notes ? `<dt>Notes</dt><dd class="notes-text">${esc(p.notes)}</dd>` : ''}
           ${p.accessory_of.length ? `<dt>Accessory of</dt><dd>${p.accessory_of.map((x) => `<a href="#/product/${x.product_id}">${esc(x.name)}</a> (${num(x.quantity)} each)`).join('<br>')}</dd>` : ''}
-        </dl></div></div><div data-prod-history></div></div>
+        </dl></div></div>${['equipment', 'power', 'case'].includes(p.item_type) ? `<div class="card" id="roi"><header><h2>Return on investment</h2><span class="muted small">and day rate help</span></header>
+          <div class="body" data-roi><p class="muted">Loading…</p></div></div>` : ''}<div data-prod-history></div></div>
     </div></div>`;
+  if (['equipment', 'power', 'case'].includes(p.item_type)) {
+    get(`/products/${id}/roi`).then((r) => {
+      const box = $('[data-roi]', view);
+      if (!box) return;
+      mountRoi(box, { values: roiStart(p, r.history), history: r.history, benchmark: r.benchmark, product: p,
+        onSaveRate: async (rate) => { await put(`/products/${p.id}`, { day_rate: rate }); toast(`Day rate set to ${money(rate)}`, 'ok'); } });
+    }).catch((ex) => { const box = $('[data-roi]', view); if (box) box.innerHTML = `<p class="muted">${esc(ex.message)}</p>`; });
+  }
   get(`/activity?product=${id}&limit=15`).then((list) => {
     const box = $('[data-prod-history]', view);
     if (box) box.innerHTML = historyCard(list);
@@ -5315,6 +5326,171 @@ async function prepareProductImage(file) {
     const tg = t.getContext('2d'); tg.fillStyle = '#ffffff'; tg.fillRect(0, 0, t.width, t.height); tg.drawImage(c, 0, 0, t.width, t.height);
     return { data_url, thumb_url: t.toDataURL('image/jpeg', 0.8) };
   } finally { URL.revokeObjectURL(url); }
+}
+
+/* ---------------------------------------------------------------- return on investment & day rate */
+
+const ROI_RULE = [0.03, 0.05];  // rough guide: an AV hire day rate is often about 3–5% of the purchase price
+
+function roiNumber(v, fallback = 0) { const n = Number(v); return Number.isFinite(n) ? n : fallback; }
+
+/** All the sums, from the calculator's inputs. Prices are per unit; results are for all units. */
+function roiCalc(v) {
+  const price = Math.max(0, roiNumber(v.price)), units = Math.max(1, roiNumber(v.units, 1));
+  const rate = Math.max(0, roiNumber(v.rate)), days = Math.max(0, roiNumber(v.days));
+  const keep = 1 - Math.min(100, Math.max(0, roiNumber(v.disc))) / 100;
+  const costPct = Math.max(0, roiNumber(v.costs)) / 100, life = Math.max(0.5, roiNumber(v.life, 5));
+  const months = Math.max(1, roiNumber(v.payback, 12));
+  const outlay = price * units;
+  const revenue = units * rate * days * keep;
+  const running = outlay * costPct;
+  const profit = revenue - running;
+  const paybackMonths = profit > 0 ? (outlay / profit) * 12 : null;
+  const lifeProfit = profit * life - outlay;
+  const perUnitDay = rate * keep;
+  return {
+    outlay, revenue, running, profit, paybackMonths, lifeProfit,
+    roiPct: outlay > 0 ? (lifeProfit / outlay) * 100 : null,
+    // hire days per unit each year to pay for itself (and its running costs) within its life / the target time
+    breakEvenDays: perUnitDay > 0 ? (price * (1 + costPct * life)) / (life * perUnitDay) : null,
+    targetDays: perUnitDay > 0 ? (price * (1 + costPct * months / 12)) / ((months / 12) * perUnitDay) : null,
+    // the day rate that pays it back in the target time at this many hire days
+    rateForTarget: days > 0 && keep > 0 ? (price * (1 + costPct * months / 12)) / ((months / 12) * days * keep) : null,
+    utilisation: days / 365 * 100,
+  };
+}
+
+function roiSuggestions(v, benchmark) {
+  const c = roiCalc(v);
+  const price = roiNumber(v.price);
+  const out = [];
+  if (c.rateForTarget) {
+    out.push({ key: 'target', rate: c.rateForTarget, title: `Pays back in ${num(roiNumber(v.payback, 12))} months`,
+      why: `At ${num(roiNumber(v.days))} hire days a year per unit${roiNumber(v.disc) ? `, ${num(roiNumber(v.disc))}% average discount` : ''} and ${num(roiNumber(v.costs))}% a year running costs.` });
+  }
+  if (benchmark && price > 0) {
+    out.push({ key: 'stock', rate: benchmark.ratio * price,
+      title: benchmark.scope === 'category' ? `Like your other ${benchmark.category}` : 'Like the rest of your stock',
+      why: `Your ${plural(benchmark.count, 'item')} ${benchmark.scope === 'category' ? 'in this category ' : ''}charge a median ${num(+(benchmark.ratio * 100).toFixed(2))}% of their purchase price per day.` });
+  }
+  if (price > 0) {
+    out.push({ key: 'rule', rate: price * (ROI_RULE[0] + ROI_RULE[1]) / 2, range: [price * ROI_RULE[0], price * ROI_RULE[1]],
+      title: 'Rule of thumb', why: 'AV hire day rates are often about 3–5% of the purchase price — a starting point, not a rule. Check what others charge locally.' });
+  }
+  return out;
+}
+
+const roiRound = (r) => (r >= 100 ? Math.round(r) : r >= 10 ? Math.round(r * 2) / 2 : Math.round(r * 100) / 100);
+
+/**
+ * The calculator, drawn into `el`. opts: { values, history, benchmark, product, onSaveRate(rate), getBenchmark(category) }.
+ * It looks after its own events, so it can sit on any page.
+ */
+function mountRoi(el, opts) {
+  const v = { price: '', units: 1, rate: '', days: 40, disc: 0, costs: 5, life: 5, payback: 12, category: '', ...opts.values };
+  let benchmark = opts.benchmark || null;
+  const h = opts.history;
+  const field = (name, label, attrs, help) => `<label class="field third"><span>${label}</span>
+      <input type="number" name="${name}" value="${esc(v[name])}" ${attrs}>${help ? `<small>${help}</small>` : ''}</label>`;
+  const histHTML = () => {
+    if (!h) return '';
+    const y = h.year, a = h.all;
+    const ahead = h.ahead && h.ahead.jobs ? `<dt>Booked ahead</dt><dd><strong>${money(h.ahead.revenue)}</strong> from ${plural(h.ahead.jobs, 'confirmed job')} not started yet</dd>` : '';
+    if (!a.jobs) return `<div class="roi-hist">${ahead ? `<dl class="kv">${ahead}</dl>` : ''}<p class="muted small">No hires have started yet, so there’s no history to go on — the hire days below are a guess to change.</p></div>`;
+    const owned = Math.max(1, roiNumber(opts.product && opts.product.quantity, 1));
+    const price = roiNumber(opts.product && opts.product.replacement_value);
+    return `<div class="roi-hist"><h3>What it’s earned</h3><dl class="kv">
+      <dt>Last 12 months</dt><dd><strong>${money(y.revenue)}</strong> from ${plural(y.jobs, 'job')} · ${num(Math.round(y.unit_days))} unit-days out
+        <span class="muted">(${num(Math.round(y.unit_days / owned))} days each, ${num(Math.round(100 * y.unit_days / owned / 365))}% of the year)</span></dd>
+      <dt>Since ${esc(fmtDate(h.first_hire))}</dt><dd><strong>${money(a.revenue)}</strong> from ${plural(a.jobs, 'job')}${price > 0 ? ` <span class="muted">— ${num(Math.round(100 * a.revenue / (price * owned)))}% of what ${owned > 1 ? `the ${num(owned)} units` : 'it'} cost</span>` : ''}</dd>
+      ${ahead}
+      ${a.avg_discount_pct != null ? `<dt>Average discount</dt><dd>${num(a.avg_discount_pct)}% off the list rate <span class="muted small">(line and job discounts, and free days)</span></dd>` : ''}
+    </dl><p class="muted small">From confirmed, on-hire, returned and invoiced jobs. Package prices count towards the package, not the items in it.</p></div>`;
+  };
+  el.innerHTML = `<div class="roi">
+    ${histHTML()}
+    <form class="form-grid roi-inputs" onsubmit="return false">
+      ${opts.product ? '' : `<label class="field third"><span>Category</span><input name="category" list="roi-cats" value="${esc(v.category)}" placeholder="e.g. Audio">
+        <datalist id="roi-cats">${(opts.categories || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist><small>To compare with your stock.</small></label>`}
+      ${field('price', 'Purchase price (each)', 'min="0" step="0.01"')}
+      ${field('units', 'Units', 'min="1" step="1"')}
+      ${field('rate', 'Day rate', 'min="0" step="0.01"', 'What you charge per unit per day.')}
+      ${field('days', 'Hire days a year (per unit)', 'min="0" max="365" step="1"', h && h.all.jobs >= 3 ? (h.window_days < 365 ? `From its hires since ${esc(fmtDate(h.first_hire))}, scaled to a year.` : 'From the last 12 months.') : h && h.all.jobs ? `Only ${plural(h.all.jobs, 'hire')} so far, so 40 is a guess (about one weekend in six) — change it.` : 'A guess — 40 is about one weekend in six.')}
+      ${field('disc', 'Average discount %', 'min="0" max="100" step="0.5"', 'Discounts and free days, on average.')}
+      ${field('costs', 'Running costs a year %', 'min="0" max="100" step="0.5"', 'Of the price: servicing, PAT, insurance, repairs.')}
+      ${field('life', 'Useful life (years)', 'min="0.5" max="30" step="0.5"')}
+      ${field('payback', 'Pay back within (months)', 'min="1" max="120" step="1"', 'Used to suggest a day rate.')}
+    </form>
+    <div data-roi-out></div></div>`;
+  const out = $('[data-roi-out]', el);
+  const draw = () => {
+    const c = roiCalc(v);
+    const good = c.paybackMonths != null && c.paybackMonths <= roiNumber(v.payback, 12);
+    const sug = roiSuggestions(v, benchmark);
+    out.innerHTML = `<div class="roi-results">
+        <div class="roi-stat"><span>Revenue a year</span><strong>${money(c.revenue)}</strong><small>${num(Math.round(c.utilisation))}% of days out</small></div>
+        <div class="roi-stat"><span>Profit a year</span><strong>${money(c.profit)}</strong><small>after ${money(c.running)} running costs</small></div>
+        <div class="roi-stat ${c.paybackMonths == null ? 'bad' : good ? 'ok' : 'warn'}"><span>Pays for itself in</span><strong>${c.paybackMonths == null ? 'Never' : c.paybackMonths < 24 ? `${num(Math.ceil(c.paybackMonths))} months` : `${num(+(c.paybackMonths / 12).toFixed(1))} years`}</strong><small>${money(c.outlay)} to buy</small></div>
+        <div class="roi-stat ${c.roiPct == null ? '' : c.roiPct >= 0 ? 'ok' : 'bad'}"><span>Return over ${num(roiNumber(v.life, 5))} years</span><strong>${c.roiPct == null ? '—' : `${num(Math.round(c.roiPct))}%`}</strong><small>${money(c.lifeProfit)} ${c.lifeProfit >= 0 ? 'profit' : 'loss'}</small></div>
+      </div>
+      <p class="small roi-break">${c.breakEvenDays != null ? `To pay for itself within its life it needs <strong>${num(Math.ceil(c.breakEvenDays))} hire days a year</strong> per unit; within ${num(roiNumber(v.payback, 12))} months, <strong>${num(Math.ceil(c.targetDays))}</strong>${c.targetDays > 365 ? ' — more days than a year has, so raise the rate or the time' : ''}.` : 'Enter a day rate to see how many hire days it needs.'}</p>
+      ${sug.length ? `<h3>Suggested day rate</h3><div class="roi-sugs">${sug.map((x) => `<div class="roi-sug">
+          <div><strong>${money(roiRound(x.rate))}</strong>${x.range ? ` <span class="muted small">(${money(roiRound(x.range[0]))}–${money(roiRound(x.range[1]))})</span>` : ''}<br><span class="small">${esc(x.title)}</span>
+            <div class="muted small">${esc(x.why)}</div>
+            ${x.key === 'target' && roiNumber(v.price) > 0 && x.rate > roiNumber(v.price) * ROI_RULE[1] * 2 ? '<div class="small" style="color:var(--warn)">⚠ Much higher than usual for kit at this price — it may not win work. More hire days or a longer payback is probably more realistic.</div>' : ''}</div>
+          <button type="button" class="btn small" data-roi-use="${roiRound(x.rate)}">Use</button></div>`).join('')}</div>` : '<p class="muted small">Enter a purchase price to get day rate suggestions.</p>'}
+      ${opts.onSaveRate ? `<div class="actions" style="margin-top:10px"><button type="button" class="btn primary small" data-roi-save ${roiNumber(v.rate) === roiNumber(opts.product.day_rate) ? 'disabled' : ''}>Save ${money(roiNumber(v.rate))} as the day rate</button>
+        <span class="muted small">Changes the rate for new quotes; quotes already made keep theirs.</span></div>` : ''}`;
+  };
+  let catTimer = null;
+  el.addEventListener('input', (e) => {
+    const n = e.target.name;
+    if (!n || !(n in v)) return;
+    v[n] = e.target.value;
+    if (n === 'category' && opts.getBenchmark) {
+      clearTimeout(catTimer);
+      catTimer = setTimeout(async () => { benchmark = await opts.getBenchmark(v.category.trim()); draw(); }, 300);
+    }
+    draw();
+  });
+  el.addEventListener('click', async (e) => {
+    const use = e.target.closest('[data-roi-use]');
+    if (use) {
+      v.rate = use.dataset.roiUse;
+      $('[name="rate"]', el).value = v.rate;
+      draw();
+      return;
+    }
+    if (e.target.closest('[data-roi-save]') && opts.onSaveRate) {
+      try { await opts.onSaveRate(roiNumber(v.rate)); opts.product.day_rate = roiNumber(v.rate); draw(); } catch (ex) { toast(ex.message, 'error'); }
+    }
+  });
+  draw();
+}
+
+/** Values to start the calculator with, for an item in stock. */
+function roiStart(p, history) {
+  const owned = Math.max(1, roiNumber(p.quantity, 1));
+  const y = history && history.year;
+  const enough = history && history.all.jobs >= 3;  // one or two hires say little about a whole year
+  return {
+    price: p.replacement_value || '', units: owned, rate: p.day_rate || '',
+    days: enough && y.jobs ? Math.min(365, Math.round(y.unit_days / owned * 365 / (history.window_days || 365))) : 40,
+    disc: history && history.all.avg_discount_pct != null ? Math.max(0, Math.round(history.all.avg_discount_pct)) : 0,
+  };
+}
+
+async function renderRoi(view) {
+  const [prods, b] = await Promise.all([get('/products'), get('/roi/benchmark')]);
+  const cats = [...new Set(prods.filter((p) => ['equipment', 'power', 'case'].includes(p.item_type)).map((p) => p.category).filter(Boolean))].sort((x, y) => x.localeCompare(y));
+  view.innerHTML = `<div class="page">
+    <div class="page-head"><div><a class="crumb" href="#/stock">← Stock</a><h1>ROI calculator</h1>
+      <div class="sub">Is it worth buying? What should it hire for? For something already in stock, open it and use its <strong>Return on investment</strong> card — it uses its real hire history.</div></div></div>
+    <div class="card"><div class="body" data-roi></div></div></div>`;
+  mountRoi($('[data-roi]', view), {
+    values: { price: '', units: 1, rate: '' }, benchmark: b.benchmark, categories: cats,
+    getBenchmark: async (cat) => (await get('/roi/benchmark?category=' + encodeURIComponent(cat))).benchmark,
+  });
 }
 
 /* ---------------------------------------------------------------- print */

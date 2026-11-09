@@ -519,6 +519,39 @@ Add them under **Stock → Flight cases**. Each case has an outside size, an ins
 - **Weight.** Each case shows its packed weight: the empty case plus everything in it.
 - **Prep list.** Packed cases are listed at the bottom, with identifier, room, contents and weight. The total weight adds the general cases' own weight.
 
+## Return on investment and day rates
+
+Every equipment, power and flight case item has a **Return on investment** card on its page. For kit you haven't bought yet, use **Stock → ROI calculator**.
+
+**What it's earned** (for items in stock). This comes from confirmed, on-hire, returned and invoiced jobs:
+- revenue and unit-days out over the last 12 months, and since its first hire;
+- how much of its purchase price it has earned back;
+- the average discount given;
+- firm bookings that haven't started yet.
+
+**The calculator.** Change any of these and the results update straight away:
+- purchase price, units and day rate;
+- hire days a year per unit;
+- average discount;
+- running costs a year (servicing, PAT, insurance);
+- useful life;
+- how soon you want it to pay back.
+
+Hire days are filled in from the item's history once it has 3 or more hires. Otherwise it starts at a guess of 40 for you to change.
+
+It shows:
+- revenue and profit a year;
+- how long it takes to pay for itself;
+- the return over its life;
+- how many hire days a year it needs to break even.
+
+**Suggested day rate.** Three suggestions, each with a **Use** button:
+- **Pays back in your target time**, at the hire days and discount you entered. You're warned if that's far above the usual range.
+- **Like your other stock**: the median day rate as a share of purchase price for your items in the same category, or across all your stock.
+- **Rule of thumb**: about 3–5% of the purchase price per day. This is a starting point only, so check what others charge locally.
+
+On an item's page, **Save as the day rate** updates its rate for new quotes. Quotes already made keep their prices.
+
 ## Client job numbers
 
 A client can have their own job number prefix and count. Edit the client and fill in **Job number prefix** (e.g. `ACME-`) and, if you like, **Their next job number**. Their new jobs are then numbered ACME-1, ACME-2… and everyone else's keep your usual numbering. A job keeps its number if you change its client later.
@@ -690,4 +723,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.22.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.23.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
