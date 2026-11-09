@@ -920,7 +920,7 @@ async function router() {
       case 'roi': await renderRoi(view); break;
       case 'contacts': await renderContacts(view); break;
       case 'quarantine': await renderQuarantine(view); break;
-      case 'activity': await renderActivity(view, a); break;
+      case 'activity': await renderActivity(view, a, b); break;
       case 'requests': await renderRequests(view); break;
       case 'changelog': await renderChangelog(view); break;
       case 'scan': await renderScan(view); break;
@@ -1387,7 +1387,7 @@ function drawJob(view) {
             ${S.meta && S.meta.users_enabled ? `<div><dt>Who can edit</dt><dd>${j.edit_lock ? `🔒 ${esc([...(j.created_by ? [j.created_by] : []), ...j.editor_names.filter((n) => n !== j.created_by)].join(', ') || 'Its creator')} <span class="muted">and admins</span>` : 'Anyone'}
               ${canEditJob(j) ? ' <a href="#" data-lock>Change</a>' : ''}</dd></div>` : ''}
           </dl></div></div>
-        <div data-job-history>${S.jobHistory && S.jobHistory.id === j.id ? historyCard(S.jobHistory.list, `#/activity`) : ''}</div>
+        <div data-job-history>${S.jobHistory && S.jobHistory.id === j.id ? historyCard(S.jobHistory.list, `#/activity/job/${j.id}`) : ''}</div>
       </div>
     </div></div>`;
   if (!canEditJob(j)) {
@@ -1401,7 +1401,7 @@ function drawJob(view) {
       const list = await get(`/activity?job=${j.id}&limit=20`);
       S.jobHistory = { id: j.id, list };
       const box = $('[data-job-history]', view);
-      if (box && S.job && S.job.id === j.id) box.innerHTML = historyCard(list);
+      if (box && S.job && S.job.id === j.id) box.innerHTML = historyCard(list, `#/activity/job/${j.id}`);
     } catch { /* not essential */ }
   }, 150);
 
@@ -2338,7 +2338,7 @@ async function renderPackage(view, p) {
         <div data-prod-history></div>
       </div>
     </div></div>`;
-  get(`/activity?product=${id}&limit=15`).then((list) => { const b = $('[data-prod-history]', view); if (b) b.innerHTML = historyCard(list); }).catch(() => {});
+  get(`/activity?product=${id}&limit=15`).then((list) => { const b = $('[data-prod-history]', view); if (b) b.innerHTML = historyCard(list, `#/activity/product/${id}`); }).catch(() => {});
   const again = () => renderProduct(view, id);
   wireImages(view, p, again);
   rowLinks(view);
@@ -2634,7 +2634,7 @@ async function renderProduct(view, id) {
   }
   get(`/activity?product=${id}&limit=15`).then((list) => {
     const box = $('[data-prod-history]', view);
-    if (box) box.innerHTML = historyCard(list);
+    if (box) box.innerHTML = historyCard(list, `#/activity/product/${id}`);
   }).catch(() => {});
   wireImages(view, p, () => renderProduct(view, id));
   rowLinks(view);
@@ -3992,14 +3992,25 @@ function activityHTML(list, { showJob = true, showProduct = false } = {}) {
 }
 
 function historyCard(list, link) {
-  return `<div class="card"><header><h2>History</h2>${link ? `<a class="small" href="${link}">See all</a>` : ''}</header>${activityHTML(list, { showJob: false })}</div>`;
+  return `<div class="card"><header><h2>History</h2>${link && list.length ? `<a class="small" href="${link}">See all</a>` : ''}</header>${activityHTML(list, { showJob: false })}</div>`;
 }
 
-async function renderActivity(view) {
+async function renderActivity(view, scope, scopeId) {
   const users = await get('/users').catch(() => []);
   const f = (S.actFilter ||= { user: '', kind: '', q: '' });
+  // #/activity/job/12 or #/activity/product/34: only that job's (or item's) history
+  const only = (scope === 'job' || scope === 'product') && Number(scopeId) ? { key: scope, id: Number(scopeId) } : null;
+  let title = 'Activity', sub = 'Who created jobs, added kit, scanned items out and in, and changed stock or settings.', crumb = '';
+  if (only) {
+    try {
+      const o = await get(`/${only.key === 'job' ? 'jobs' : 'products'}/${only.id}`);
+      title = `History — ${only.key === 'job' ? `${o.number} ${o.name}` : o.name}`;
+      crumb = `<a class="crumb" href="#/${only.key}/${only.id}">← ${esc(only.key === 'job' ? `${o.number} ${o.name}` : o.name)}</a>`;
+    } catch { title = 'History'; }
+    sub = `Only what happened on this ${only.key === 'job' ? 'job' : 'item'}. <a href="#/activity">See all activity</a>`;
+  }
   view.innerHTML = `<div class="page">
-    <div class="page-head"><div><h1>Activity</h1><div class="sub">Who created jobs, added kit, scanned items out and in, and changed stock or settings.</div></div></div>
+    <div class="page-head"><div>${crumb}<h1>${esc(title)}</h1><div class="sub">${sub}</div></div></div>
     <div class="toolbar">
       <input class="search" type="search" placeholder="Search activity…" value="${esc(f.q)}" data-q>
       <select data-user style="width:auto"><option value="">Everyone</option>${users.map((u) => `<option value="${u.id}" ${String(u.id) === f.user ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
@@ -4008,11 +4019,11 @@ async function renderActivity(view) {
     <div class="card" data-list><div class="empty">Loading…</div></div>
     <div class="actions" style="margin-top:12px"><button class="btn" data-more hidden>Show older</button></div></div>`;
   let list = [];
-  const qs = (extra = '') => `/activity?limit=150${f.user ? `&user=${f.user}` : ''}${f.kind ? `&kind=${f.kind}` : ''}${f.q ? `&q=${encodeURIComponent(f.q)}` : ''}${extra}`;
+  const qs = (extra = '') => `/activity?limit=150${only ? `&${only.key}=${only.id}` : ''}${f.user ? `&user=${f.user}` : ''}${f.kind ? `&kind=${f.kind}` : ''}${f.q ? `&q=${encodeURIComponent(f.q)}` : ''}${extra}`;
   const load = async (more) => {
     const got = await get(qs(more && list.length ? `&before=${list[list.length - 1].id}` : ''));
     list = more ? list.concat(got) : got;
-    $('[data-list]', view).innerHTML = activityHTML(list, { showJob: true, showProduct: true });
+    $('[data-list]', view).innerHTML = activityHTML(list, { showJob: !only || only.key !== 'job', showProduct: !only || only.key !== 'product' });
     $('[data-more]', view).hidden = got.length < 150;
   };
   view.onclick = (e) => { if (e.target.closest('[data-more]')) load(true); };
@@ -4708,7 +4719,10 @@ async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
     try {
       S.settings = await put('/settings', data);
       applyBrand();
-      toast('Settings saved', 'ok');
+      const lost = Object.keys(data).filter((k) => !(k in S.settings));
+      if (lost.length) {
+        toast(`Some settings weren’t saved (${lost.join(', ')}). The app may need restarting after an update — quit it and open it again.`, 'error');
+      } else toast('Settings saved', 'ok');
     } catch (ex) { toast(ex.message, 'error'); }
   };
   view.onclick = async (e) => {

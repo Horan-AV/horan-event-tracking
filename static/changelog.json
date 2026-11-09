@@ -2,6 +2,24 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.26.1",
+      "date": "2026-11-09",
+      "title": "Job history, VAT fixes",
+      "changes": [
+        {
+          "text": "A job's History card now links to that job's own history (See all), instead of the activity for everything. Items do the same."
+        },
+        {
+          "text": "Not VAT registered: accounting exports now always use the no-VAT code, even if a VAT code was typed in under External software → Accounting software."
+        },
+        {
+          "text": "Settings warns if something you saved didn't stick, which can happen if the app hasn't restarted properly after an update."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.26.0",
       "date": "2026-11-09",
       "title": "Your own icons, scan sounds, document layouts and barcode labels",

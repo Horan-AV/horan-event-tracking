@@ -2,6 +2,14 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.26.1 — 2026-11-09 · Job history, VAT fixes
+
+- A job's History card now links to that job's own history (See all), instead of the activity for everything. Items do the same.
+- Not VAT registered: accounting exports now always use the no-VAT code, even if a VAT code was typed in under External software → Accounting software.
+- Settings warns if something you saved didn't stick, which can happen if the app hasn't restarted properly after an update.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.26.0 — 2026-11-09 · Your own icons, scan sounds, document layouts and barcode labels
 
 - Change any sidebar icon, and give each stock category an icon: pick from the built-in icons or upload an SVG or PNG (Settings → Customisation → Icons).
