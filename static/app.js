@@ -929,7 +929,7 @@ async function router() {
       case 'contact': await renderContact(view, Number(a)); break;
       case 'vendors': await renderVendors(view); break;
       case 'vendor': await renderVendor(view, Number(a)); break;
-      case 'settings': await renderSettings(view); break;
+      case 'settings': await renderSettings(view, a); break;
       case 'print': await renderPrint(Number(a), b || 'quote'); break;
       default: location.hash = '#/dashboard';
     }
@@ -1453,7 +1453,7 @@ async function sendToZoho(view) {
     const m = openModal(`<header><h2>Invoice ${esc(r.invoice_number)} ${esc(r.action)}</h2></header>
       <div class="modal-body">
         <p>It's in Zoho Books as a ${r.action === 'created' ? 'draft' : 'updated invoice'}. Review it there, then send it to the customer from Zoho.</p>
-        ${mismatch ? `<p class="banner warn">Zoho's total is ${money(r.total)} but this job's total is ${money(S.job.totals.total)}. Check the VAT/tax choice in Settings → Zoho Books.</p>` : ''}
+        ${mismatch ? `<p class="banner warn">Zoho's total is ${money(r.total)} but this job's total is ${money(S.job.totals.total)}. Check the VAT/tax choice in Settings → External software → Zoho Books.</p>` : ''}
       </div>
       <footer><button class="btn" data-close>Close</button>
         <a class="btn primary" href="${esc(r.url)}" target="_blank" rel="noopener" data-close>Open in Zoho Books ↗</a></footer>`);
@@ -4095,6 +4095,8 @@ const ACCOUNTING = {
     how: 'In Sage 50: File → Import → Audit Trail Transactions. Each client needs an account in Sage: set its Accounts reference on the client (otherwise the first 8 letters of the company name are used).' },
   sagecloud: { label: 'Sage Accounting', tax: 'Standard 20%', account: '',
     how: 'In Sage Accounting: Sales → Quick Entries → Import, then check the column mapping. Client names must match your Sage customers.' },
+  generic: { label: 'Other software (generic CSV)', tax: '', account: '',
+    how: 'A plain CSV, one row per invoice line: invoice number, dates (DD/MM/YYYY), customer, description, quantity, unit price, net, VAT and gross. Use it with FreeAgent, KashFlow, Clear Books, QuickFile or any other software whose importer lets you match columns. Fill in the VAT code and nominal code above if your software needs them.' },
 };
 const accDefault = (k, f) => (ACCOUNTING[k] ? ACCOUNTING[k][f] : '');
 const accHow = (k) => (ACCOUNTING[k] ? esc(ACCOUNTING[k].how) : 'Choose the software you use, and invoices can be exported as a file it imports.');
@@ -4349,7 +4351,7 @@ async function renderRequests(view) {
             <label class="field"><span>Title</span><input name="title" maxlength="200" required placeholder="e.g. Subcategories for lighting"></label>
             <label class="field"><span>Details</span><textarea name="details" rows="5" maxlength="5000" placeholder="What would you like, and why? An example helps."></textarea></label>
             <p class="muted small" style="margin:0;flex-basis:100%">From <strong>${esc(me.who)}</strong>${me.alias || me.company ? ` (${esc([me.alias, me.company].filter(Boolean).join(', '))})` : ''}.
-              ${me.alias || me.company ? '' : 'Add your name / alias and company in <a href="#/settings">Settings → Your details</a> to be credited.'}</p>
+              ${me.alias || me.company ? '' : 'Add your name / alias and company in <a href="#/settings/me">Settings → Updates → Your details</a> to be credited.'}</p>
             <div class="actions" style="flex-basis:100%"><button class="btn primary" type="submit">Add request</button></div>
           </form></div>
         <div class="card"><header><h2>About exporting</h2></header><div class="body">
@@ -4406,7 +4408,63 @@ async function renderRequests(view) {
   };
 }
 
-async function renderSettings(view) {
+const SETTINGS_TABS = [
+  { key: 'users', label: 'Users', cards: ['users', 'network'], admin: true, save: false,
+    sub: 'Who can sign in, and using the app from other devices.' },
+  { key: 'customise', label: 'Customisation', cards: ['logo', 'appearance'], admin: true,
+    sub: 'Logos, app icon, colours, light and dark mode, and fonts.' },
+  { key: 'company', label: 'Company information', cards: ['company', 'invoicing', 'money', 'jobs-settings', 'documents'], admin: true,
+    sub: 'Your details, invoices, VAT and numbering, jobs and documents.' },
+  { key: 'electrical', label: 'Electrical', cards: ['power'], admin: true, sub: 'Venue supplies, voltage, safe load and cable runs.' },
+  { key: 'external', label: 'External software', cards: ['zoho', 'accounting'], admin: true,
+    sub: 'Zoho Books, and invoice exports for QuickBooks, Xero, Sage and other accounting / MTD software.' },
+  { key: 'updates', label: 'Updates', cards: ['me', 'update', 'changelog', 'data'], adminCards: ['update', 'data'],
+    sub: 'Your details, software updates, the change log and your data.' },
+];
+// Old links to a card (e.g. #/settings/zoho) open the tab it's on.
+const SETTINGS_CARD_TAB = Object.fromEntries(SETTINGS_TABS.flatMap((t) => t.cards.map((c) => [c, t.key])));
+
+/** Put the settings cards into tabs. Tabs (and cards) that only hold admin settings are hidden from everyone else. */
+function arrangeSettingsTabs(view, meta, want) {
+  const admin = !!meta.is_admin;
+  const tabs = SETTINGS_TABS.filter((t) => admin || !t.admin);
+  const form = $('[data-form]', view);
+  const grid = $('.grid-2', form);
+  for (const t of tabs) {
+    const panel = document.createElement('div');
+    panel.className = 'settings-panel';
+    panel.dataset.panel = t.key;
+    panel.setAttribute('role', 'tabpanel');
+    for (const id of t.cards) {
+      const card = $(`#${CSS.escape(id)}`, form);
+      if (!card) continue;
+      if (!admin && (t.adminCards || []).includes(id)) { card.remove(); continue; }
+      panel.appendChild(card);
+    }
+    form.appendChild(panel);
+  }
+  // Whatever's left over belongs to a hidden (admin-only) tab: take it off the page so nothing of it is sent on save.
+  grid.remove();
+  let key = SETTINGS_CARD_TAB[want] || want;
+  if (!tabs.some((t) => t.key === key)) key = tabs[0].key;
+  const bar = $('[data-settings-tabs]', view);
+  bar.innerHTML = tabs.map((t) => `<button type="button" role="tab" data-settings-tab="${t.key}">${esc(t.label)}</button>`).join('');
+  const show = (k) => {
+    const t = tabs.find((x) => x.key === k);
+    for (const b of $$('[data-settings-tab]', bar)) { const on = b.dataset.settingsTab === k; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); }
+    for (const p of $$('.settings-panel', form)) p.hidden = p.dataset.panel !== k;
+    $('[data-settings-sub]', view).textContent = t.sub;
+    const sv = $('[data-save]', view);
+    if (sv) sv.hidden = !admin || t.save === false;
+    // Keep the tab in the address without reloading the page (unsaved changes on other tabs are kept).
+    history.replaceState(null, '', `#/settings/${k}`);
+  };
+  bar.addEventListener('click', (e) => { const b = e.target.closest('[data-settings-tab]'); if (b) show(b.dataset.settingsTab); });
+  show(key);
+  if (want && SETTINGS_CARD_TAB[want] && want !== key) setTimeout(() => $(`#${CSS.escape(want)}`, form)?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 100);
+}
+
+async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
   try { S.fonts = await get('/fonts'); } catch { S.fonts = []; }
   const [st, meta] = await Promise.all([get('/settings'), get('/meta')]);
   const s = S.settings = st;
@@ -4414,8 +4472,9 @@ async function renderSettings(view) {
   const F = (name, label, opts = {}) => fieldHTML({ name, label, ...opts }, s[name]);
   const backups = meta.app_backups || [];
   view.innerHTML = `<div class="page">
-    <div class="page-head"><div><h1>Settings</h1><div class="sub">Your logo, company details, documents, power, Zoho Books and software updates.</div></div>
+    <div class="page-head"><div><h1>Settings</h1><div class="sub" data-settings-sub></div></div>
       <div class="actions"><button class="btn primary" data-save>Save settings</button></div></div>
+    <div class="tabs settings-tabs" role="tablist" aria-label="Settings sections" data-settings-tabs></div>
     <form data-form novalidate>
     <div class="grid-2">
       <div>
@@ -4471,7 +4530,7 @@ async function renderSettings(view) {
             <button type="button" class="btn small danger" data-font-del="${f.id}">Remove</button></li>`).join('')}</ul>` : ''}
           <style>${fontFaces((S.fonts || []).map((f) => `upload:${f.id}`))}</style>
         </div></div>
-        <div class="card settings-section"><header><h2>Company</h2></header><div class="form-grid">
+        <div class="card settings-section" id="company"><header><h2>Company</h2></header><div class="form-grid">
           ${F('app_name', 'App name', { help: 'What this app is called in the sidebar, the browser tab, the sign-in page and on phones’ home screens. Your documents use the company name below.' })}
           ${F('company_name', 'Company name (printed on documents)')}
           ${F('company_address', 'Address', { type: 'textarea', rows: 3 })}
@@ -4479,19 +4538,22 @@ async function renderSettings(view) {
           ${F('company_website', 'Website', { half: true })}${F('company_number', 'Company number', { half: true })}
           ${F('vat_number', 'VAT number', { half: true })}
         </div></div>
-        <div class="card settings-section"><header><h2>Documents</h2></header><div class="form-grid">
+        <div class="card settings-section" id="documents"><header><h2>Documents</h2></header><div class="form-grid">
           ${F('quote_terms', 'Quotation terms', { type: 'textarea', rows: 4 })}
           <label class="check"><input type="checkbox" name="show_included_accessories" ${s.show_included_accessories === '1' ? 'checked' : ''}>
             List free (included) linked accessories on quotations. They always appear on the prep list.</label>
         </div></div>
-        <div class="card settings-section" id="invoicing"><header><h2>Invoices &amp; accounting software</h2></header><div class="form-grid">
+        <div class="card settings-section" id="invoicing"><header><h2>Invoices</h2></header><div class="form-grid">
           ${F('invoice_prefix', 'Invoice number prefix', { half: true, placeholder: 'e.g. INV-', help: 'Invoice numbers are this plus the job number, e.g. INV-HAV-1001.' })}
           ${F('payment_terms_days', 'Payment terms (days)', { type: 'number', min: 0, max: 365, step: 1, half: true, help: 'Sets each invoice’s due date.' })}
           ${F('payment_details', 'Payment details (printed on invoices)', { type: 'textarea', rows: 3, placeholder: 'Bank, sort code, account number…' })}
           ${F('invoice_terms', 'Invoice terms', { type: 'textarea', rows: 2 })}
+        </div></div>
+        <div class="card settings-section" id="accounting"><header><h2>Accounting software</h2><span class="muted small">invoice exports</span></header><div class="form-grid">
+          <p class="muted small" style="flex-basis:100%;margin:0">Export invoices as a file your accounting or Making Tax Digital software imports — from <strong>Jobs → Invoices…</strong> or an invoice’s print page. Zoho Books can also be connected directly (above).</p>
           <label class="field half"><span>Accounting software</span><select name="accounting_software" data-acc-sw>
             <option value="">Not set</option>${Object.entries(ACCOUNTING).map(([k, a]) => `<option value="${k}" ${s.accounting_software === k ? 'selected' : ''}>${esc(a.label)}</option>`).join('')}</select>
-            <small>Invoices export as a file this software can import. You can still choose another when exporting.</small></label>
+            <small>The format used by default. You can still choose another when exporting.</small></label>
           <label class="field half"><span>Item names in the export</span><select name="acc_item_names">
             <option value="kind" ${s.acc_item_names !== 'item' ? 'selected' : ''}>By type: Equipment hire, Sales, Services</option>
             <option value="item" ${s.acc_item_names === 'item' ? 'selected' : ''}>Each item’s own name</option></select>
@@ -4508,7 +4570,7 @@ async function renderSettings(view) {
           <div class="field" style="flex-basis:100%"><div class="close-code-label" data-close-preview>${barcodeSVG(s.case_close_code || 'CLOSE-CASE')}</div>
             <div class="actions" style="margin-top:6px"><button type="button" class="btn small" data-print-close>Print close-code label</button></div></div>
         </div></div>
-        <div class="card settings-section"><header><h2>Power &amp; cable runs</h2></header><div class="form-grid">
+        <div class="card settings-section" id="power"><header><h2>Power &amp; cable runs</h2></header><div class="form-grid">
           <label class="field half"><span>Default venue supply</span><select name="default_supply">${(meta.power_supplies || []).map((x) =>
             `<option value="${x.key}" ${x.key === s.default_supply ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
             <small>Each job can choose its own supply on its Power card.</small></label>
@@ -4545,14 +4607,14 @@ async function renderSettings(view) {
             ${backups.length ? `<p class="muted" style="margin-bottom:0;font-size:12px">Previous version available: ${esc(backupLabel(backups[0]))}</p>` : ''}
           </div>`}</div>
         <div class="card settings-section" id="zoho" data-zoho-card><header><h2>Zoho Books</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
-        <div class="card settings-section"><header><h2>Money &amp; numbering</h2></header><div class="form-grid">
+        <div class="card settings-section" id="money"><header><h2>Money &amp; numbering</h2></header><div class="form-grid">
           <label class="check" style="flex-basis:100%"><input type="checkbox" name="vat_registered" data-vat-reg ${s.vat_registered !== '0' ? 'checked' : ''}>
             <span><strong>VAT registered</strong> — add VAT to quotes and invoices. Untick it if your business isn’t registered for VAT: no VAT is added or shown, and your VAT number is left off documents.</span></label>
           ${F('currency', 'Currency symbol', { half: true })}<div class="field half" data-vat-rate-wrap ${s.vat_registered === '0' ? 'hidden' : ''} style="padding:0">${F('vat_rate', 'VAT rate %', { type: 'number', step: 'any', min: 0 })}</div>
           ${F('job_prefix', 'Job number prefix', { half: true })}${F('next_job_number', 'Next job number', { type: 'number', min: 1, step: 1, half: true })}
         </div></div>
 
-        <div class="card settings-section"><header><h2>Your data</h2></header><div class="body">
+        <div class="card settings-section" id="data"><header><h2>Your data</h2></header><div class="body">
           <p class="muted" style="margin-top:0">Everything lives on this computer. A snapshot is saved automatically each day the app runs (the last 14 are kept in the <code>backups</code> folder), and before every update.
             To move to another computer (e.g. Bazzite → Mac), download a backup here and use <strong>Restore from backup</strong> there.</p>
           <dl class="kv"><dt>Data folder</dt><dd class="mono">${esc(meta.data_dir)}</dd></dl>
@@ -4564,6 +4626,7 @@ async function renderSettings(view) {
       </div>
     </div></form></div>`;
 
+  arrangeSettingsTabs(view, meta, tab);
   drawZohoCard(view);
   drawNetworkCard(view);
   drawUsersCard(view);
@@ -4587,11 +4650,9 @@ async function renderSettings(view) {
     im.onload = () => { cap.textContent = `Saved at ${im.naturalWidth} × ${im.naturalHeight} px (${(im.naturalWidth / Math.max(1, im.naturalHeight)).toFixed(1)} : 1)`; };
     im.src = `/logo?variant=${vr}&v=${S.logoVersion || 0}`;
   }
-  if (!meta.is_admin) {
-    $('.page-head', view).insertAdjacentHTML('afterend', '<p class="banner warn">Only an admin can change settings. You can look, but changes won’t be saved.</p>');
+  if (!meta.is_admin) {  // only their own details and the change log are shown; the rest is for admins
     const sv = $('[data-save]', view); if (sv) sv.disabled = true;
   }
-  if (location.hash.endsWith('/zoho')) setTimeout(() => $('#zoho')?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 100);
 
   const save = async () => {
     const form = $('[data-form]', view);

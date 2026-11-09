@@ -2,6 +2,15 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.25.0 — 2026-11-09 · Tidier settings, in tabs
+
+- Settings is now in tabs: Users, Customisation, Company information, Electrical, External software and Updates. Save settings still saves every tab at once.
+- Tabs that only hold admin settings are hidden from everyone else. Non-admins see Updates, with their own details and the change log.
+- Downloading a database backup or the JSON export is now for admins only. A backup holds everything, including PINs and connection details, so other users could previously download it.
+- New accounting export: Other software (generic CSV), with plain columns that FreeAgent, KashFlow, Clear Books, QuickFile and other accounting / Making Tax Digital software can map when importing. Choose it under Settings → External software.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.24.0 — 2026-11-09 · VAT registration setting
 
 - New setting: VAT registered (Settings → Money & numbering). Untick it if your business isn't registered for VAT: no VAT is added to or shown on jobs, quotes, invoices, PDFs or Zoho invoices, exports use "No VAT", and your VAT number is left off documents.

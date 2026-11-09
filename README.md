@@ -20,7 +20,7 @@ Everything else below is AI generated
 
 Prep and event tracking for AV and event hire companies, made by Horan AV. It runs entirely on your own computer or server, on **macOS** or **Linux**, with no account and no subscription. Phones and other computers on your network can use it too.
 
-> **Open source, written with AI.** This project is published under the [MIT licence](LICENSE). Almost all of its code and documentation was written by an AI model, Anthropic's Claude, directed and tested by James Horan (Horan AV). The full details, including which model wrote each version, are in [AI_DISCLOSURE.md](AI_DISCLOSURE.md) and in the app under **Settings → Change log**.
+> **Open source, written with AI.** This project is published under the [MIT licence](LICENSE). Almost all of its code and documentation was written by an AI model, Anthropic's Claude, directed and tested by James Horan (Horan AV). The full details, including which model wrote each version, are in [AI_DISCLOSURE.md](AI_DISCLOSURE.md) and in the app under **Settings → Updates → Change log**.
 
 - **Stock**: what you own, day rates, replacement values and weights.
 - **Units**: track individual units by scanning their existing barcodes, or number them automatically (e.g. K12-001 to K12-010). You can then add, remove or quarantine a specific one without creating new stock items.
@@ -46,7 +46,7 @@ Prep and event tracking for AV and event hire companies, made by Horan AV. It ru
 - **Server mode**: run it on a Linux server with no screen (Ubuntu, Debian, Fedora…), and everyone uses it from their own browser.
 - **Settings**: company details, Zoho Books, network access, and **update the software** from a file.
 - **Import and export**: CSV import that recognises Current RMS export columns, CSV export, a JSON export and a one-click database backup.
-- **Requests and change log**: suggest features or report problems in the app and export them as a CSV; every version's changes are in Settings → Change log, crediting whoever suggested them.
+- **Requests and change log**: suggest features or report problems in the app and export them as a CSV; every version's changes are in Settings → Updates → Change log, crediting whoever suggested them.
 
 It needs no internet connection and no account. Only the optional Zoho Books button goes online. It uses only Python 3.9+ and SQLite. They come with Bazzite; on a Mac, the installer fetches them with Apple's free developer tools if needed.
 
@@ -69,7 +69,7 @@ Notes:
 
 - A small background helper starts at login. macOS may show a **"Background Items Added"** notification for it.
 - **To uninstall,** drag Horan Event Tracking from Applications to the Bin. The background helper removes itself, and your data is kept in your Library folder.
-- **To update,** use a newer `.pkg` or the app's own **Settings → Software update**.
+- **To update,** use a newer `.pkg` or the app's own **Settings → Updates → Software update**.
 - Your brand font, **Myanmar MN**, comes with macOS. Safari, Chrome and Firefox all work.
 
 | What | Where (Mac) |
@@ -105,8 +105,8 @@ Everything installs into your home folder. It does not need `sudo` or `rpm-ostre
 
 ## Moving to another computer (e.g. Bazzite → Mac)
 
-1. On the old computer: **Settings → Your data → Download database backup**.
-2. On the new computer, install the app, then use **Settings → Your data → Restore from backup…** and choose that file.
+1. On the old computer: **Settings → Updates → Your data → Download database backup**.
+2. On the new computer, install the app, then use **Settings → Updates → Your data → Restore from backup…** and choose that file.
 
 Everything comes across: stock, units, images, vendors, jobs, clients, settings, logos, app icon, fonts and the Zoho connection. A copy of what was on the new computer is kept in its backups folder first.
 
@@ -114,7 +114,7 @@ Everything comes across: stock, units, images, vendors, jobs, clients, settings,
 
 The easy way is in the app:
 
-1. Go to **Settings → Software update**.
+1. Go to **Settings → Updates → Software update**.
 2. Choose **Install update from file…** and pick the new `.zip`.
 
 Before installing, the app takes three safety steps:
@@ -127,7 +127,7 @@ If something isn't right afterwards, use **Roll back to previous version**. Your
 
 Re-running `./install.sh` from a newer zip also works.
 
-**From GitHub.** **Settings → Software update → Check for updates** looks at the project's GitHub releases:
+**From GitHub.** **Settings → Updates → Software update → Check for updates** looks at the project's GitHub releases:
 - If there's a newer version, **Install from GitHub** downloads it and installs it with the same checks, backups and roll back as a file.
 - It works on a server too, from any admin's device.
 - Set the repository (`owner/name`) in the same card if yours isn't built in.
@@ -152,13 +152,28 @@ If the app is off at that time, it runs when it's next started that day. If GitH
 
    Every install's **Check for updates** then offers it.
 
+## Settings
+
+Settings is split into tabs:
+
+| Tab | What's in it |
+|---|---|
+| **Users** | Users, and network access for other devices |
+| **Customisation** | Logo & app icon, appearance (light/dark mode, colours, fonts) |
+| **Company information** | Company details, invoices, money & numbering (VAT), jobs, documents |
+| **Electrical** | Power & cable runs |
+| **External software** | Zoho Books, and invoice exports for other accounting / MTD software |
+| **Updates** | Your details, software update, change log, your data (backups) |
+
+Anyone who isn't an admin only sees **Updates**, with their own details and the change log. The other tabs, software updates and backups are for admins. **Save settings** saves every tab at once, so you can change things on several tabs before saving.
+
 ## Your logo, icon, colours and fonts
 
 Everything here is saved with your data, so it's in every backup and shows the same on every device.
 
 **The app's own logo and icon.** Until you add your own, the sidebar and sign-in page show the app's logo (a flight case, in light and dark mode versions), and the app uses the matching flight case icon. These are temporary, and better designs are welcome: open an issue or pull request with your logo. Quotes, invoices and prep lists only ever show a logo you've uploaded; otherwise they show your company name.
 
-**Logos** (Settings → Logo & app icon). Add a **light mode logo**, and optionally a **dark mode logo** that reads well on dark backgrounds. PNG, JPG, WebP or SVG all work.
+**Logos** (Settings → Customisation → Logo & app icon). Add a **light mode logo**, and optionally a **dark mode logo** that reads well on dark backgrounds. PNG, JPG, WebP or SVG all work.
 - **Best size:** a wide logo about 3 : 1, e.g. **1200 × 400 px** (at least 600 px wide), or an SVG.
 - It's shown up to 200 × 96 px in the sidebar, 220 × 64 px on documents and 160 × 40 px on phones. Settings shows the size of the logo you saved.
 - Logos are scaled to fit and never cropped. Empty see-through edges are trimmed off so the logo fills its space.
@@ -174,7 +189,7 @@ Everything here is saved with your data, so it's in every backup and shows the s
 - the app menu on Bazzite;
 - Finder and the Dock on a Mac.
 
-**Light and dark mode** (Settings → Appearance). Choose whether every device follows its own light/dark setting, or is always light or always dark.
+**Light and dark mode** (Settings → Customisation → Appearance). Choose whether every device follows its own light/dark setting, or is always light or always dark.
 - Anyone can switch just their own device with the moon button at the bottom of the sidebar.
 - Each mode has its own colours for the background, cards, text, sidebar and sidebar text. Changes preview straight away; press **Save settings** to keep them.
 - **Reset** goes back to the standard colours.
@@ -187,11 +202,14 @@ Everything here is saved with your data, so it's in every backup and shows the s
 
 ## Invoices, PDFs and accounting software
 
-**Settings → Invoices & accounting software** sets up how invoices are numbered and exported:
+**Settings → Company information → Invoices** sets up how invoices are numbered:
 - **Invoice number prefix:** invoice numbers are the prefix plus the job number, e.g. `INV-HAV-1001`.
 - **Payment terms (days):** set each invoice's due date.
 - **Payment details** and **Invoice terms** are printed on every invoice.
-- **Accounting software:** choose QuickBooks Online, Xero, Zoho Books, Sage 50 Accounts or Sage Accounting.
+
+**Settings → External software → Accounting software** sets how invoices are exported. Choose QuickBooks Online, Xero, Zoho Books, Sage 50 Accounts, Sage Accounting, or **Other software (generic CSV)**.
+- The generic CSV has one row per invoice line, with plain columns: invoice number, dates (DD/MM/YYYY), customer, description, quantity, unit price, net, VAT and gross.
+- Use it with FreeAgent, KashFlow, Clear Books, QuickFile or any other accounting / Making Tax Digital software whose importer lets you match columns.
 
 **One job.** Open the job and click **Invoice** under Documents:
 - **Download PDF** saves the invoice as a PDF file. Quotations have the same button.
@@ -221,7 +239,7 @@ How the lines are built:
 
 ## Renaming the app
 
-**Settings → Company → App name** changes what the app is called everywhere you see it, e.g. "Smith Hire Desk":
+**Settings → Company information → Company → App name** changes what the app is called everywhere you see it, e.g. "Smith Hire Desk":
 - the sidebar, the browser tab, the sign-in page and phones' home screens;
 - messages in the app (updates, network access, restarting);
 - the app-menu entry on Bazzite/Linux (changed when you save on the computer running the app);
@@ -233,7 +251,7 @@ Once renamed, the app's own "Event Tracker" logo and the "Horan AV" credit under
 
 ### Connect once
 
-Go to **Settings → Zoho Books** and follow the four steps shown there:
+Go to **Settings → External software → Zoho Books** and follow the four steps shown there:
 
 1. Pick your Zoho region. It matches the address you sign in at; for example, `books.zoho.eu` means Europe.
 2. Open the Zoho API Console, choose **Add Client → Self Client → Create**, and copy the Client ID and Client Secret into the app.
@@ -302,7 +320,7 @@ People can edit or withdraw their own requests; admins can change any.
 
 **Your details** (Settings, optional) are a **Name / alias** and a **Company**. They're added to every request you make. If you fill them in, the change log credits you when your idea is built ("💡 Idea from Jess · Horan AV"). With users, each person has their own details. Without users, they apply to the install.
 
-**Change log** (Settings → Change log, or click the version number at the bottom of the sidebar) lists everything that changed in every version, from 1.0.0 onwards. It's kept up to date with each new version.
+**Change log** (Settings → Updates → Change log, or click the version number at the bottom of the sidebar) lists everything that changed in every version, from 1.0.0 onwards. It's kept up to date with each new version.
 
 ## Users and activity
 
@@ -410,7 +428,7 @@ Stock from older versions is sorted into kinds automatically, e.g. a deck size m
 
 **Suitable alternatives.** On a stock item's page, add the items that can stand in for it, e.g. a K10 for a K12. **Both ways** also lists it the other way round. When you add something to a job and there aren't enough free, its alternatives are offered with how many of each are free. Choose one and how many, then press the **Swap** button to confirm. **Keep as it is** leaves the job unchanged. Nothing is ever swapped without you confirming. Short lines on a job also get an **Alternatives** button. This covers linked items and what's inside packages too. If the stands linked to a speaker, or the PSUs in a package, are short, you're offered the alternatives for those, one at a time (**Skip the rest** stops asking). A swapped linked item stays under its parent and keeps following its quantity, and stays included if it was included. Swapping inside a package only changes that job, not the package itself. Parts a stage or cable run adds for itself (legs, clamps, skirts) are changed on the stage instead.
 
-**Power draw.** Enter watts *or* amps and the other is worked out at your mains voltage (Settings → Power).
+**Power draw.** Enter watts *or* amps and the other is worked out at your mains voltage (Settings → Electrical).
 
 **Plugs in.** Tick this for anything that needs a mains socket. Every ticked item counts as one socket when a job works out how many extension leads it needs, even if you don't know its wattage. You'll get a warning that the load may be higher.
 
@@ -446,7 +464,7 @@ In the cable-run window, choose how much a join matters:
 - **Less excess cable**: one join is worth about 1m of spare. With 3, 5, 10 and 20m stock, 28m gives 1 × 20m + 1 × 5m + 1 × 3m (exact).
 - **Fewer joins**: one join is worth about 3m of spare. The same 28m gives 1 × 20m + 1 × 10m (2m spare).
 
-Set the default in **Settings → Power & cable runs**. You can still switch for each run.
+Set the default in **Settings → Electrical → Power & cable runs**. You can still switch for each run.
 
 ## Stage decks
 
@@ -489,7 +507,7 @@ A job goes **Overdue** automatically when kit is still out after its return date
 - on the dashboard, under **Overdue returns**;
 - stamped on the printed prep list.
 
-To give some grace, set **Settings → Jobs → Days' grace before a hire is overdue**, e.g. 2. To clear it, check the kit in and set the job to Returned. If the hire was extended, change the end date instead.
+To give some grace, set **Settings → Company information → Jobs → Days' grace before a hire is overdue**, e.g. 2. To clear it, check the kit in and set the job to Returned. If the hire was extended, change the end date instead.
 
 ## Checking out and in (scanning)
 
@@ -514,7 +532,7 @@ Add them under **Stock → Flight cases**. Each case has an outside size, an ins
 
 - **Made for an item** (e.g. an SQ5 case for the SQ5). The case becomes a free linked accessory of that item, so it goes on a job with it, shows under it on the prep list and is scanned like any other item.
 - **General** (a trunk, a cable case). At **check out**, scanning it asks **Load flight case?**. Everything you scan after that is recorded as packed in it. A banner shows the case being packed, with its item count and weight.
-- **Closing a case.** Press **Close case**, or scan the close code. One close code works for every case. It's `CLOSE-CASE` unless you change it under **Settings → Jobs**, where you can also print it as a barcode label.
+- **Closing a case.** Press **Close case**, or scan the close code. One close code works for every case. It's `CLOSE-CASE` unless you change it under **Settings → Company information → Jobs**, where you can also print it as a barcode label.
 - **Identifier and room.** In the **Flight cases** card under check out, give each case an identifier (e.g. "Case 3") and a room. **Pack into it** carries on packing a closed case, and **Unload** forgets the case (its items stay checked out).
 - **Weight.** Each case shows its packed weight: the empty case plus everything in it.
 - **Prep list.** Packed cases are listed at the bottom, with identifier, room, contents and weight. The total weight adds the general cases' own weight.
@@ -619,7 +637,7 @@ From then on, adding K12s to a job adds the accessories underneath them automati
 - Removing the K12 line removes its accessories.
 - You can still edit or delete an individual accessory line on a job.
 
-Free accessories are hidden on quotations by default and never sent to Zoho. To show them on quotations as "Included", turn this on in **Settings → Documents**. They always appear on the prep list.
+Free accessories are hidden on quotations by default and never sent to Zoho. To show them on quotations as "Included", turn this on in **Settings → Company information → Documents**. They always appear on the prep list.
 
 Linking only affects items added to a job *after* you set up the link.
 
@@ -636,7 +654,7 @@ Linking only affects items added to a job *after* you set up the link.
 - "Days" defaults to every day of the hire. To charge a week as three days, set **Chargeable days** on the job.
 - Labour/service lines and sale lines cost quantity × price.
 - The job discount comes off the subtotal, then VAT is added.
-- **Not VAT registered?** Untick **VAT registered** in Settings → Money & numbering. No VAT is added or shown on jobs, quotes, invoices, PDFs or Zoho invoices, accounting exports use the program's "No VAT" code, and your VAT number is left off documents. Ticking it again brings VAT back for every job, at your VAT rate.
+- **Not VAT registered?** Untick **VAT registered** in Settings → Company information → Money & numbering. No VAT is added or shown on jobs, quotes, invoices, PDFs or Zoho invoices, accounting exports use the program's "No VAT" code, and your VAT number is left off documents. Ticking it again brings VAT back for every job, at your VAT rate.
 
 ### How availability works
 
@@ -649,8 +667,8 @@ Linking only affects items added to a job *after* you set up the link.
 ## Backups
 
 - An automatic snapshot is saved each day the app runs (the last 14 are kept) and before every update. They are in `data/backups/`.
-- **Settings → Download database backup** gives you a single `.db` file to keep somewhere safe.
-- To restore one, use **Settings → Your data → Restore from backup…** and choose the `.db` file.
+- **Settings → Updates → Your data → Download database backup** gives you a single `.db` file to keep somewhere safe. Only admins can download backups and exports, because a backup holds everything, including PINs and connection details.
+- To restore one, use **Settings → Updates → Your data → Restore from backup…** and choose the `.db` file.
 
 ## Try it with sample data
 
@@ -665,7 +683,7 @@ The sample data includes a K12 speaker with linked accessories.
 
 The computer where Horan Event Tracking is installed acts as the server. Phones, tablets and other computers on the same Wi-Fi or network can open it in their web browser. They all see and edit the same jobs and stock, live. Nothing needs installing on them.
 
-1. On the server computer, go to **Settings → Network access**.
+1. On the server computer, go to **Settings → Users → Network access**.
 2. Tick **Let other devices on this network connect**, choose a **passcode** of at least 6 characters, and click **Save network access**. The app restarts in a few seconds.
 3. The card then lists the address to use, e.g. `http://192.168.1.20:8765/`. Open that on the other device and enter the passcode once. The device stays signed in.
 
@@ -705,13 +723,13 @@ Manage it over SSH with the `horan-rms` command:
 | `horan-rms reset-pin "Name" --admin` | Give someone a new PIN (and make them an admin) |
 | `horan-rms headless on\|off` | Server mode: lets admins install updates from any device. The installer turns it on; it's remembered however the server is restarted |
 
-**Updating a server.** From version 1.15, an admin can update it from any signed-in device. Go to **Settings → Software update → Install update from file…** and choose the new zip. The server backs up its data and the current version, installs the update and restarts, and every device then uses the new version. **Roll back** and **Restore from backup** work the same way. (Without users, anyone signed in with the passcode counts as the admin.)
+**Updating a server.** From version 1.15, an admin can update it from any signed-in device. Go to **Settings → Updates → Software update → Install update from file…** and choose the new zip. The server backs up its data and the current version, installs the update and restarts, and every device then uses the new version. **Roll back** and **Restore from backup** work the same way. (Without users, anyone signed in with the passcode counts as the admin.)
 
 To get a server running an older version onto 1.15 the first time, update it over SSH: copy the zip to the server, then run `unzip -o horan-event-tracking-1.15.0.zip && cd horan-event-tracking && bash install.sh --headless`. Your data and passcode are kept. After that, use Settings. If Settings still says updates are installed on the server itself, it isn't in server mode: run `horan-rms headless on` on the server once (this also restarts it).
 
 In a container without `sudo` (common with Debian on Proxmox), the installer still installs and starts it but can't make it start at boot. Run the installer as root, or install sudo and add yourself to the sudo group, then run it again.
 
-Network access and the passcode are still changed over SSH, with `horan-rms network on|off` and `horan-rms passcode`. That way nobody can lock everyone out from a browser. Backups are in `~/.local/share/horan-rms/data/backups`; download one any time from **Settings → Your data**.
+Network access and the passcode are still changed over SSH, with `horan-rms network on|off` and `horan-rms passcode`. That way nobody can lock everyone out from a browser. Backups are in `~/.local/share/horan-rms/data/backups`; download one any time from **Settings → Updates → Your data**.
 
 ## Removing
 
@@ -724,4 +742,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.24.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.25.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
