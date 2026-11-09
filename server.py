@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.26.0"
+VERSION = "1.26.1"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -3168,7 +3168,8 @@ def account_ref(contact):
 
 def accounting_rows(fmt, jobs, s, vat_rate):
     meta = ACCOUNTING[fmt]
-    tax = (s.get("acc_tax_code") or "").strip() or (meta["tax"] if vat_rate else meta["tax0"])
+    # Not VAT registered (rate 0): always the no-VAT code, even if a VAT code was typed in for when you were.
+    tax = ((s.get("acc_tax_code") or "").strip() or meta["tax"]) if vat_rate else meta["tax0"]
     account = (s.get("acc_sales_account") or "").strip() or meta["account"]
     by_item = s.get("acc_item_names") == "item"
     cur = s.get("currency", "£")
