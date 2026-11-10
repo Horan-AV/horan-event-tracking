@@ -5050,19 +5050,21 @@ async function drawTailscaleCard(view, fresh = true) {
   try { t = await get(`/tailscale${fresh ? '?fresh=1' : ''}`); } catch (ex) { $('.body', card).innerHTML = `<p class="form-error">${esc(ex.message)}</p>`; return; }
   const step = (n, done, title, body) => `<li class="ts-step ${done ? 'done' : ''}"><span class="ts-n">${done ? '✓' : n}</span><div><strong>${title}</strong>${body ? `<div class="small">${body}</div>` : ''}</div></li>`;
   const local = t.is_local;
-  const only = local ? '' : ' <span class="muted">(do this on the computer running the app)</span>';
+  const can = local || t.remote_ok;   // on a server with no screen, an admin can do it from here over HTTPS
+  const only = can ? (local ? '' : ' <span class="muted">You’ll be asked for the server’s admin password.</span>')
+    : ` <span class="muted">(${esc(t.remote_why || 'do this on the computer running the app')})</span>`;
   const manual = `<details class="net-help"><summary>Do it by hand instead</summary><ul class="small">${t.manual.map((m) => `<li><code>${esc(m)}</code></li>`).join('')}</ul></details>`;
   const urls = t.ips.map((ip) => `${t.scheme}://${ip}:${t.port}/`).concat(t.name && t.scheme === 'http' ? [`http://${t.name}:${t.port}/`] : []);
   const s1 = t.installed ? '' : `Tailscale is a free app that links your devices into your own private, encrypted network.${only}
-      <div class="actions" style="margin-top:6px"><button type="button" class="btn primary small" data-ts="install" ${local && !t.busy ? '' : 'disabled'}>Install Tailscale</button>
+      <div class="actions" style="margin-top:6px"><button type="button" class="btn primary small" data-ts="install" ${can && !t.busy ? '' : 'disabled'}>Install Tailscale</button>
         <a class="btn small" href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com ↗</a></div>
-      <span class="muted">${t.platform === 'mac' ? 'It downloads the official installer and opens it; follow its steps.' : 'It runs Tailscale’s official installer. This computer asks for its password.'}</span>`;
+      <span class="muted">${t.platform === 'mac' ? 'It downloads the official installer and opens it; follow its steps.' : local ? 'It runs Tailscale’s official installer. This computer asks for its password.' : 'It runs Tailscale’s official installer on the server.'}</span>`;
   const s2 = !t.installed ? '' : t.state === 'connected' ? '' : t.state === 'needs_login' && t.auth_url
     ? `Sign in with a Google, Microsoft, Apple or GitHub account — or make a free Tailscale account.
       <div class="actions" style="margin-top:6px"><a class="btn primary small" href="${esc(t.auth_url)}" target="_blank" rel="noopener">Sign in to Tailscale ↗</a></div>
       <span class="muted">This page updates by itself once you’ve signed in.</span>`
-    : `${t.platform === 'mac' ? 'Open Tailscale and sign in from its icon in the menu bar.' : 'Start Tailscale on this computer. It asks for this computer’s password, then gives you a sign-in link.'}${only}
-      <div class="actions" style="margin-top:6px"><button type="button" class="btn primary small" data-ts="start" ${local && !t.busy ? '' : 'disabled'}>${t.platform === 'mac' ? 'Open Tailscale' : 'Turn on Tailscale'}</button></div>`;
+    : `${t.platform === 'mac' ? 'Open Tailscale and sign in from its icon in the menu bar.' : local ? 'Start Tailscale on this computer. It asks for this computer’s password, then gives you a sign-in link.' : 'Start Tailscale on the server, then you get a sign-in link.'}${only}
+      <div class="actions" style="margin-top:6px"><button type="button" class="btn primary small" data-ts="start" ${can && !t.busy ? '' : 'disabled'}>${t.platform === 'mac' ? 'Open Tailscale' : 'Turn on Tailscale'}</button></div>`;
   const connected = t.state === 'connected';
   const s3 = !connected ? 'Install the Tailscale app on your phone, tablet or laptop and sign in with the <strong>same account</strong>.'
     : `Install the Tailscale app on each phone, tablet or laptop (<a href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com/download</a>) and sign in with the <strong>same account</strong>. Then open:
@@ -5082,12 +5084,27 @@ async function drawTailscaleCard(view, fresh = true) {
     if (cp) { try { await navigator.clipboard.writeText(cp.dataset.copy); toast('Copied', 'ok'); } catch { toast(cp.dataset.copy); } return; }
     const b = e.target.closest('[data-ts]');
     if (!b) return;
-    if (b.dataset.ts === 'install' && !await confirmModal(t.platform === 'mac'
+    const action = b.dataset.ts;
+    if (!local) {
+      // A server with no screen: its admin password is typed here, sent over HTTPS, used once and never kept.
+      clearTimeout(tsTimer);
+      const ok = await formModal({
+        title: action === 'install' ? 'Install Tailscale on the server' : 'Turn on Tailscale on the server',
+        fields: [{ name: 'password', label: `Server admin password${t.account ? ` (for the account “${t.account}”)` : ''}`, type: 'password', required: true,
+          help: `${action === 'install' ? 'This downloads Tailscale’s official installer from tailscale.com and runs it on the server. ' : ''}It’s the password you’d type after “sudo” on the server — not your password for this app. It’s sent over this encrypted connection, used once and never saved.` }],
+        submitLabel: action === 'install' ? 'Install' : 'Turn on',
+        onSubmit: (v) => post(`/tailscale/${action}`, { password: v.password }),
+      });
+      drawTailscaleCard(view);
+      if (ok) toast(action === 'install' ? 'Installing Tailscale on the server…' : 'Turning Tailscale on…', 'ok');
+      return;
+    }
+    if (action === 'install' && !await confirmModal(t.platform === 'mac'
       ? 'Download Tailscale’s official installer from tailscale.com and open it on this Mac?'
       : 'Download Tailscale’s official installer from tailscale.com and run it? This computer will ask for its password to allow it.',
       { title: 'Install Tailscale?', okLabel: 'Install', danger: false })) return;
     b.disabled = true;
-    try { await post(`/tailscale/${b.dataset.ts}`, {}); } catch (ex) { toast(ex.message, 'error'); }
+    try { await post(`/tailscale/${action}`, {}); } catch (ex) { toast(ex.message, 'error'); }
     drawTailscaleCard(view);
   };
   // While something is in progress (installing, waiting for a sign-in), keep the card up to date.

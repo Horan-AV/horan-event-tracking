@@ -9,6 +9,7 @@ Every version of Horan Event Tracking. The same list is in the app under **Setti
 - Old http:// links from other devices are sent to the https:// address, and sign-ins are never accepted over plain http while HTTPS is on. The computer running the app works exactly as before.
 - The app's certificate only works for local names and private addresses, so it can't be misused for websites on the internet.
 - Remote access with Tailscale: Settings → Users → Remote access walks you through installing Tailscale, turning it on, signing in and adding your other devices, so you can use the app from anywhere without opening it to the internet. The computer asks for its own password when needed; the app never sees it.
+- On a server with no screen, an admin can install and turn on Tailscale from another device by entering the server's admin password — only over HTTPS and as a named admin. The password is used once and never saved.
 
 🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
 

@@ -777,7 +777,14 @@ You do this once per device. After that there are no warnings, even if the compu
 - Only devices signed in to your Tailscale account can reach the app. People still sign in to the app as usual.
 - If HTTPS is on, the app's certificate covers the Tailscale address too.
 - The app never sees the computer's password; the computer's own prompt asks for it.
-- On a server with no screen, or if no password prompt appears, the card shows the commands to run by hand.
+- If no password prompt appears, the card shows the commands to run by hand.
+
+**On a server with no screen**, an admin can do steps 1 and 2 from a browser on another device. The card asks for the server's admin password (the one you'd type after `sudo`), because the server can't show a prompt. This only works when:
+- the app is in server mode;
+- the connection is HTTPS (`horan-rms https on`), so the password is encrypted on its way;
+- you're signed in as a named admin user, not just with the shared network passcode.
+
+The password is used once and never saved. After five wrong tries, it waits 15 minutes.
 
 ## Running it on a server (no screen)
 

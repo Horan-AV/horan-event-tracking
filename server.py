@@ -7358,8 +7358,50 @@ def tailscale_run(job):
     threading.Thread(target=go, daemon=True, name="tailscale").start()
 
 
-def as_root(command, what):
-    """Run a command with the computer's admin rights. The system shows its own password prompt (pkexec)."""
+def sudo_run(command, password, timeout=900):
+    """Run a command through sudo, giving it the password once on its input. The password is never written anywhere."""
+    exe = shutil.which("sudo")
+    if not exe:
+        raise ApiError(400, "This server has no “sudo”, so it can't be done from here. Run these on the server instead: "
+                            + "  ·  ".join(tailscale_manual()))
+    try:
+        # -S: read the password from input; -k: always ask (ignore and don't reuse a remembered one); -p '': no prompt text
+        r = subprocess.run([exe, "-S", "-k", "-p", "", "--"] + command, input=password + "\n",
+                           capture_output=True, text=True, timeout=timeout)
+    finally:
+        subprocess.run([exe, "-k"], capture_output=True, timeout=10)   # forget it straight away
+    return r
+
+
+def check_admin_password(password):
+    """Is this the server's admin password? Wrong guesses are limited, so the app can't be used to guess it."""
+    now = time.time()
+    with LOGIN_LOCK:
+        fails = [t for t in LOGIN_FAILS.get("sudo", []) if now - t < 900]
+        LOGIN_FAILS["sudo"] = fails
+        if len(fails) >= 5:
+            raise ApiError(429, "Too many wrong passwords. Wait 15 minutes and try again.")
+    if not password or len(password) > PASSWORD_MAX or "\n" in password or "\r" in password:
+        raise ApiError(400, "Enter the server's admin password")
+    r = sudo_run(["true"], password, timeout=60)
+    if r.returncode != 0:
+        with LOGIN_LOCK:
+            LOGIN_FAILS.setdefault("sudo", []).append(now)
+        err = (r.stderr or "").lower()
+        if "not in the sudoers" in err or "not allowed" in err:
+            raise ApiError(400, f"The account that runs this app ({tailscale_user() or 'this account'}) isn't allowed to "
+                                "install software on this server. Run the commands on the server as an administrator instead.")
+        raise ApiError(400, "That isn't the server's admin password")
+
+
+def as_root(command, what, password=None):
+    """Run a command with the computer's admin rights: with the password given from the browser (a server with no
+    screen), or else through the system's own password prompt (pkexec)."""
+    if password is not None:
+        r = sudo_run(command, password)
+        if r.returncode != 0:
+            raise ApiError(500, f"Couldn't {what}: " + ((r.stderr or r.stdout).strip()[-300:] or f"exit code {r.returncode}"))
+        return
     pk = shutil.which("pkexec")
     if not pk:
         raise ApiError(400, f"This computer can't show a password prompt to {what}. Run these in a terminal instead: "
@@ -7387,7 +7429,7 @@ def fetch_official(url, limit):
     return body
 
 
-def tailscale_install_job():
+def tailscale_install_job(password=None):
     if tailscale_bin():
         return
     if sys.platform == "darwin":
@@ -7415,9 +7457,10 @@ def tailscale_install_job():
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700)
     with os.fdopen(fd, "wb") as f:
         f.write(script)
-    TAILSCALE_JOB["step"] = "Enter this computer's password in the prompt to install Tailscale…"
+    TAILSCALE_JOB["step"] = ("Installing Tailscale on the server…" if password is not None
+                             else "Enter this computer's password in the prompt to install Tailscale…")
     try:
-        as_root(["/bin/sh", path], "install Tailscale")
+        as_root(["/bin/sh", path], "install Tailscale", password)
     finally:
         try:
             os.remove(path)
@@ -7427,7 +7470,7 @@ def tailscale_install_job():
         raise ApiError(500, "The installer finished but Tailscale wasn't found. See https://tailscale.com/download/linux")
 
 
-def tailscale_start_job():
+def tailscale_start_job(password=None):
     exe = tailscale_bin()
     if not exe:
         raise ApiError(400, "Install Tailscale first")
@@ -7436,10 +7479,11 @@ def tailscale_start_job():
         subprocess.run(["open", "-a", "Tailscale"], timeout=60)
         return
     user = tailscale_user()
-    TAILSCALE_JOB["step"] = "Enter this computer's password in the prompt to turn Tailscale on…"
+    TAILSCALE_JOB["step"] = ("Turning Tailscale on…" if password is not None
+                             else "Enter this computer's password in the prompt to turn Tailscale on…")
     # Start its background service now and at every boot, and let this account sign in without the password again.
     script = "systemctl enable --now tailscaled && sleep 2" + (f" && tailscale set --operator={user}" if user else "")
-    as_root(["/bin/sh", "-c", script], "turn Tailscale on")
+    as_root(["/bin/sh", "-c", script], "turn Tailscale on", password)
     TAILSCALE_JOB["step"] = "Waiting for the Tailscale sign-in link…"
     # "tailscale up" waits for the sign-in to finish; leave it going and let Settings pick up the link.
     subprocess.Popen([exe, "up", "--timeout=600s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -7455,11 +7499,41 @@ def tailscale_info(conn, req):
     local = not req.remote
     if st["ips"] and TLS_CTX is not None:
         tls_refresh()  # so the https certificate covers this computer's Tailscale address straight away
-    st.update(busy=TAILSCALE_JOB["busy"], step=TAILSCALE_JOB["step"], error=TAILSCALE_JOB["error"], is_local=local,
+    why = "" if local else tailscale_remote_blocked(conn, req)
+    st.update(remote_ok=not local and not why, remote_why=why, account=tailscale_user(),
+              busy=TAILSCALE_JOB["busy"], step=TAILSCALE_JOB["step"], error=TAILSCALE_JOB["error"], is_local=local,
               platform="mac" if sys.platform == "darwin" else "linux", manual=tailscale_manual(), port=PORT,
               scheme="https" if TLS_CTX is not None else "http",
               network_on=HOST not in ("127.0.0.1", "localhost", "::1"))
     return st
+
+
+def tailscale_remote_blocked(conn, req):
+    """Why another device can't run the setup - or "" if it can: a server with no screen, an encrypted connection,
+    and a named admin (not just the shared passcode)."""
+    if not HEADLESS or sys.platform == "darwin":
+        return "This can only be done on the computer running the app."
+    if not getattr(req.handler, "tls", False):
+        return ("Turn on HTTPS first (on the server: horan-rms https on), so the server's admin password "
+                "isn't sent unencrypted.")
+    u = current_user(conn, req)
+    if not (u and u["is_admin"]):
+        return "Sign in as a named admin user (Settings → Users) to do this from another device."
+    return ""
+
+
+def tailscale_password(conn, req):
+    """Who may start the setup, and how it gets admin rights: None = the computer's own prompt; else the password
+    typed into the browser, checked first."""
+    require_admin(req, conn)
+    if not req.remote:
+        return None
+    why = tailscale_remote_blocked(conn, req)
+    if why:
+        raise ApiError(403, why)
+    password = str((req.json() or {}).get("password") or "")
+    check_admin_password(password)
+    return password
 
 
 @route("GET", "/api/tailscale")
@@ -7471,18 +7545,16 @@ def api_tailscale(req, conn):
 @route("POST", "/api/tailscale/install")
 def api_tailscale_install(req, conn):
     """Install Tailscale with its official installer. Only from the computer itself, which asks for its password."""
-    require_admin(req, conn)
-    local_only(req)
-    tailscale_run(tailscale_install_job)
+    password = tailscale_password(conn, req)
+    tailscale_run(lambda: tailscale_install_job(password))
     return tailscale_info(conn, req)
 
 
 @route("POST", "/api/tailscale/start")
 def api_tailscale_start(req, conn):
     """Turn Tailscale on and begin signing in. Only from the computer itself."""
-    require_admin(req, conn)
-    local_only(req)
-    tailscale_run(tailscale_start_job)
+    password = tailscale_password(conn, req)
+    tailscale_run(lambda: tailscale_start_job(password))
     return tailscale_info(conn, req)
 
 

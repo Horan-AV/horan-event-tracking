@@ -12,7 +12,8 @@ Horan Event Tracking is built to run on your own computer or a server on a netwo
   - Its keys stay in the data folder (`tls/`), readable only by the account running the app. They aren't in database backups or exports.
   - To use the app across the internet, put it behind a VPN such as Tailscale rather than opening it to the internet.
 - **Tailscale setup (Settings → Users → Remote access):**
-  - Installing or turning on Tailscale can only be started by an admin on the computer running the app, never from another device.
+  - Installing or turning on Tailscale is started by an admin on the computer running the app.
+  - **From another device, only on a server with no screen**, and only when all of these hold: server mode, an HTTPS connection, and a named admin user (the shared passcode isn't enough). The admin types the server's `sudo` password, which is checked, passed once to `sudo`, and never stored or logged. Wrong passwords are limited to five in 15 minutes.
   - The app downloads only Tailscale's official installer, over verified `https`, from `tailscale.com`.
   - Anything needing admin rights goes through the computer's own password prompt. The app never sees or stores that password.
 - **Sign-in:** other devices need a passcode, or a user name and password.
