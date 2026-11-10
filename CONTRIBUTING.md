@@ -30,3 +30,13 @@ These are welcome, and most of this project was written with AI (see [AI_DISCLOS
 ## Releasing (maintainers)
 
 See "Publishing a new version" in the [README](README.md#publishing-a-new-version-for-maintainers).
+
+## Tests
+
+Run the tests before opening a pull request. They start the real app on a throwaway data folder and need nothing installed beyond Python:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+GitHub runs the same tests on every pull request (on Python 3.9 and a current version), and again before a release is published.

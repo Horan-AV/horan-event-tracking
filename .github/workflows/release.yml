@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # still offers Python 3.9, the oldest the app supports
     steps:
       - uses: actions/checkout@v5
 
@@ -32,8 +32,11 @@ jobs:
       - name: Check the code (Python 3.9 and JavaScript)
         run: |
           python -m py_compile server.py
-          node --check static/app.js
+          for f in static/*.js; do node --check "$f"; done
           python -c "import json; json.load(open('static/changelog.json'))"
+
+      - name: Run the tests
+        run: python -m unittest discover -s tests
 
       - name: Build the zip
         run: |
