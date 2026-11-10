@@ -123,6 +123,17 @@ class TestSecurity(ServerCase):
             self.assertFalse(re.search(r"<script(?![^>]*\bsrc=)", html), f"{name} has an inline script")
             self.assertFalse(re.search(r"\son[a-z]+\s*=", html), f"{name} has an inline event handler")
 
+    def test_page_addresses_have_no_hash(self):
+        # /jobs, /job/12 … are served the app itself, so a reload or a bookmark on any page works.
+        for path in ("/jobs", "/job/12", "/settings/company", "/print/3/quote"):
+            status, r, data = self.c.request("GET", path, raw=True)
+            self.assertEqual(status, 200, path)
+            self.assertIn(b'<script src="/static/app.js">', data, path)
+        self.assertEqual(self.c.request("GET", "/api/nonsense")[0], 404)
+        for name in ("app.js", "index.html"):
+            with open(os.path.join(ROOT, "static", name), encoding="utf-8") as f:
+                self.assertNotIn('href="#/', f.read(), name)
+
     def test_changes_need_the_app_header(self):
         # A hostile web page can't add this header to a cross-site request.
         status, body = self.c.request("POST", "/api/jobs", {"name": "x"}, headers={"Content-Type": "application/json"})

@@ -23,6 +23,9 @@
         },
         {
           "text": "On a server with no screen, an admin can install and turn on Tailscale from another device by entering the server's admin password — only over HTTPS and as a named admin. The password is used once and never saved."
+        },
+        {
+          "text": "Cleaner addresses: pages are now /jobs, /job/12 and so on, without the # in the middle. Old bookmarks and links with a # still work."
         }
       ],
       "fulfils": [],
