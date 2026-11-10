@@ -5549,7 +5549,7 @@ const libSVG = (name, cls = '') => (ICON_LIB[name] ? `<svg class="${cls}" viewBo
 function iconHTML(target, fallback = '', cls = '') {
   const spec = customIcons()[target];
   if (spec && spec.file) {
-    const url = `/uicon?t=${encodeURIComponent(target)}&v=${spec.v || 0}`;
+    const url = `/uicon?t=${encodeURIComponent(target).replace(/['()*!]/g, (ch) => '%' + ch.charCodeAt(0).toString(16).toUpperCase())}&v=${spec.v || 0}`;
     return spec.tint ? `<span class="uicon tint ${cls}" style="--u:url('${url}')" aria-hidden="true"></span>`
       : `<img class="uicon ${cls}" src="${url}" alt="" aria-hidden="true">`;
   }
@@ -5753,7 +5753,7 @@ function mountRoi(el, opts) {
   };
   el.innerHTML = `<div class="roi">
     ${histHTML()}
-    <form class="form-grid roi-inputs" onsubmit="return false">
+    <form class="form-grid roi-inputs">
       ${opts.product ? '' : `<label class="field third"><span>Category</span><input name="category" list="roi-cats" value="${esc(v.category)}" placeholder="e.g. Audio">
         <datalist id="roi-cats">${(opts.categories || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist><small>To compare with your stock.</small></label>`}
       ${field('price', 'Purchase price (each)', 'min="0" step="0.01"')}
@@ -5787,6 +5787,7 @@ function mountRoi(el, opts) {
         <span class="muted small">Changes the rate for new quotes; quotes already made keep theirs.</span></div>` : ''}`;
   };
   let catTimer = null;
+  el.addEventListener('submit', (e) => e.preventDefault());
   el.addEventListener('input', (e) => {
     const n = e.target.name;
     if (!n || !(n in v)) return;

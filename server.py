@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.26.1"
+VERSION = "1.27.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -1132,13 +1132,14 @@ def api_meta(req, conn):
     if not req.signed_in:  # before signing in: just enough for the launchers to see it's running
         return {"version": VERSION, "signed_in": False}
     u = current_user(conn, req)
-    return {"version": VERSION, "data_dir": DATA_DIR, "db_path": DB_PATH, "app_dir": APP_DIR, "signed_in": True,
+    admin = (not users_exist(conn)) or bool(u and u["is_admin"])
+    return {"version": VERSION, "data_dir": DATA_DIR if admin else "", "signed_in": True,
             "remote": req.remote, "server_name": socket.gethostname(), "users_enabled": users_exist(conn),
             "user": u and {"id": u["id"], "name": u["name"], "is_admin": bool(u["is_admin"])},
             "is_admin": (not users_exist(conn)) or bool(u and u["is_admin"]),
             "headless": HEADLESS, "can_update": (not req.remote) or HEADLESS,
             "github_repo": GITHUB_REPO,
-            "app_backups": list_app_backups(),
+            "app_backups": list_app_backups() if admin else [],
             "statuses": STATUSES, "kinds": list(KINDS), "power_supplies": POWER_SUPPLIES,
             "today": dt.date.today().isoformat()}
 
@@ -1197,6 +1198,8 @@ def api_settings_put(req, conn):
             raise ApiError(400, "Item names must be 'kind' or 'item'")
         if k == "update_repo":
             v = v.strip()
+            if v != (get_settings(conn).get("update_repo") or "") and req.remote and not HEADLESS:
+                raise ApiError(403, "Where updates come from can only be changed on the computer running this app")
             if v.startswith("https://github.com/"):
                 v = v[len("https://github.com/"):].strip("/")
             if v.endswith(".git"):
@@ -1331,7 +1334,11 @@ def local_only(req, headless_ok=False):
 
 @route("GET", "/api/network")
 def api_network(req, conn):
-    return network_info(conn, req)
+    info = network_info(conn, req)
+    if not is_admin(conn, req):  # who's signed in, and from where, is for admins
+        info["devices"] = [d for d in info["devices"] if d["current"]]
+        info["urls"] = []
+    return info
 
 
 @route("PUT", "/api/network")
@@ -1360,6 +1367,7 @@ def api_network_put(req, conn):
 @route("DELETE", "/api/network/devices")
 def api_network_devices_delete(req, conn):
     """Sign out every other device."""
+    require_admin(req, conn)
     mine = req.session["token_hash"] if req.session else ""
     conn.execute("DELETE FROM sessions WHERE token_hash != ?", (mine,))
     conn.commit()
@@ -1378,8 +1386,15 @@ def api_login(req, conn):
     d = req.json() or {}
     remote_blocked = req.remote and get_settings(conn)["network_access"] != "1"
     user = None
+    target = None
     if users_exist(conn):
         uid = as_int(d.get("user_id"), "user_id", allow_none=True)
+        target = f"user:{uid}"
+        with LOGIN_LOCK:
+            ufails = [t for t in LOGIN_FAILS.get(target, []) if now - t < 900]
+            LOGIN_FAILS[target] = ufails
+            if len(ufails) >= 10:
+                raise ApiError(429, "Too many wrong PINs for this person. Wait 15 minutes, or ask an admin to reset the PIN.")
         user = None if remote_blocked or not uid else check_user_pin(conn, uid, str(d.get("pin") or ""))
         ok = user is not None
         msg = "That PIN isn't right"
@@ -1389,6 +1404,8 @@ def api_login(req, conn):
     if not ok:
         with LOGIN_LOCK:
             LOGIN_FAILS.setdefault(ip, []).append(now)
+            if target:
+                LOGIN_FAILS.setdefault(target, []).append(now)
         time.sleep(0.5)
         raise ApiError(401, msg)
     if req.session:  # switching person on this device: replace the old sign-in
@@ -1401,6 +1418,8 @@ def api_login(req, conn):
     conn.commit()
     with LOGIN_LOCK:
         LOGIN_FAILS.pop(ip, None)
+        if target:
+            LOGIN_FAILS.pop(target, None)
     return {"ok": True}
 
 
@@ -1522,6 +1541,13 @@ def api_job_lock(req, conn, jid):
     conn.execute("UPDATE jobs SET edit_lock = ?, editors = ? WHERE id = ?", (locked, json.dumps(editors), jid))
     conn.commit()
     return job_detail(conn, int(jid))
+
+
+def is_admin(conn, req):
+    if not users_exist(conn):
+        return True
+    u = current_user(conn, req)
+    return bool(u and u["is_admin"])
 
 
 def require_admin(req, conn):
@@ -2852,6 +2878,7 @@ def zoho_status(conn):
 
 @route("GET", "/api/zoho")
 def api_zoho(req, conn):
+    require_admin(req, conn)
     return zoho_status(conn)
 
 
@@ -2890,6 +2917,7 @@ def api_zoho_connect(req, conn):
 
 @route("GET", "/api/zoho/options")
 def api_zoho_options(req, conn):
+    require_admin(req, conn)
     z = Zoho(conn)
     orgs = [{"id": o["organization_id"], "name": o.get("name", "")}
             for o in z.call("GET", "/organizations", org=False).get("organizations", [])]
@@ -3264,7 +3292,7 @@ def api_invoices_export(req, conn):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(header)
-    w.writerows(out)
+    w.writerows([[csv_safe(c) for c in row] for row in out])
     name = ACCOUNTING[fmt]["label"].replace(" ", "-").lower()
     one_ = jobs[0]["number"] if len(jobs) == 1 else f"{len(jobs)}-invoices"
     body = ("\ufeff" + buf.getvalue()).encode("utf-8") if fmt != "sage50" else buf.getvalue().encode("cp1252", "replace")
@@ -7051,12 +7079,19 @@ def api_import_contacts(req, conn):
     return {"added": added, "updated": updated, "skipped": skipped, "columns": mapping}
 
 
+def csv_safe(v):
+    """A cell a spreadsheet would run as a formula (=, +, -, @ first) gets a leading ' so it stays text. Numbers are left alone."""
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") and not re.match(r"^[+-]?\d+(\.\d+)?$", v):
+        return "'" + v
+    return v
+
+
 def csv_response(filename, header, data):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(header)
     for r in data:
-        w.writerow([r.get(h, "") for h in header])
+        w.writerow([csv_safe(r.get(h, "")) for h in header])
     return Raw("﻿" + buf.getvalue(), "text/csv; charset=utf-8", filename=filename)
 
 
@@ -7138,7 +7173,22 @@ class Request:
             raise ApiError(400, "Body is not valid JSON")
 
 
+# Sent with every response. The policy only lets the page run the app's own script files, so even if some
+# text were ever shown without being made safe, a script hidden in it could not run or send data elsewhere.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                               "img-src 'self' data: blob: https:; media-src 'self' blob:; font-src 'self' data:; "
+                               "connect-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; "
+                               "form-action 'self'; frame-ancestors 'none'",
+    "X-Frame-Options": "DENY",                 # no other site may show the app inside a frame
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+}
+
+
 class Handler(BaseHTTPRequestHandler):
+    timeout = 120   # drop connections that stall, so they can't tie up the server
     server_version = f"HoranEventTracking/{VERSION}"
 
     def log_message(self, fmt, *args):
@@ -7181,7 +7231,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
-        for k, v in (extra or {}).items():
+        headers = dict(SECURITY_HEADERS, **(extra or {}))
+        for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
@@ -7249,7 +7300,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(401, {"error": "Please sign in", "login": True})
         ACTOR.user_id, ACTOR.name = (user["id"], user["name"]) if user else (None, "")
 
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._json(400, {"error": "Bad request"})
+        if length < 0:
+            return self._json(400, {"error": "Bad request"})
         if length > 25 * 1024 * 1024:
             return self._json(413, {"error": "Request too large"})
         body = self.rfile.read(length) if length else b""
@@ -7327,6 +7383,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ---------------------------------------------------------------- startup
+
+def lock_down_data():
+    """Other accounts on this computer shouldn't be able to read the database (PINs, connection tokens) or its backups."""
+    if os.name != "posix":
+        return
+    try:
+        os.chmod(DATA_DIR, 0o700)
+        for base in (DATA_DIR, os.path.join(DATA_DIR, "backups")):
+            if os.path.isdir(base):
+                for fn in os.listdir(base):
+                    full = os.path.join(base, fn)
+                    if os.path.isfile(full) and (fn.endswith((".db", ".db-wal", ".db-shm"))):
+                        os.chmod(full, 0o600)
+    except OSError:
+        pass
+
 
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -7580,6 +7652,7 @@ def main():
         finally:
             c.close()
     daily_backup()
+    lock_down_data()
     threading.Thread(target=auto_update_loop, daemon=True, name="auto-update").start()
     if args.demo:
         load_demo()

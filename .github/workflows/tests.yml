@@ -1,0 +1,27 @@
+# Runs the tests on every pull request and on main, so a problem is caught before it's released.
+name: Tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.13"]   # the oldest the app supports, and a current one
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Check the code compiles
+        run: |
+          python -m py_compile server.py macos/build_pkg.py
+          for f in static/*.js; do node --check "$f"; done
+          python -c "import json; json.load(open('static/changelog.json'))"
+      - name: Run the tests
+        run: python -m unittest discover -s tests -v

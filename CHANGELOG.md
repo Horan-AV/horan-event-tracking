@@ -2,6 +2,20 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.27.0 — 2026-11-10 · Security hardening and automated tests
+
+- Browser protection: the app now only lets its own script files run and can't be shown inside another website, so code hidden in a name or note could never run.
+- Admins only: signing out other devices, seeing which devices are signed in, the Zoho Books connection details, and the server's folder locations. Before, any signed-in user could do or see these.
+- Sign-in: wrong PINs are now also limited per person (10 in 15 minutes), not just per device.
+- Where updates come from can only be changed on the computer running the app (or a server in server mode), not by an admin on another device.
+- The data folder and database are now private to the account running the app (Mac and Linux).
+- CSV exports: text a spreadsheet would run as a formula is exported as plain text.
+- Stalled connections are dropped after two minutes so they can't tie up the app.
+- Fixed: a tinted icon on a stock category with an apostrophe or brackets in its name didn't show.
+- For contributors: an automated test suite, run by GitHub on every pull request and before each release.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.26.1 — 2026-11-09 · Job history, VAT fixes
 
 - A job's History card now links to that job's own history (See all), instead of the activity for everything. Items do the same.
