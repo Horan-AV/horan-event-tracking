@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.27.0"
+VERSION = "1.28.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -121,13 +121,14 @@ DEFAULT_SETTINGS = {
     # automatic updates: none | check (look at a set time, offer it on the next page load) | install (at a set time)
     "auto_update_mode": "none", "auto_update_time": "03:00",
     # {"nav:jobs": {"lib": "speaker"} | {"file": 1, "tint": true}, "cat:audio": ...} - set with /api/icons
+    "https": "0",   # 1 = other devices connect over https, with the app's own certificate - set with /api/network/https
     "custom_icons": "{}",
     "custom_sounds": "{}",   # {"ok": {"name": "ding.mp3", "v": 123}, ...} - set with /api/sounds
     # quote / invoice layouts (JSON): one shared, or one each - see DOC_LAYOUT_DEFAULT
     "doc_layout_shared": "1", "doc_layout_quote": "", "doc_layout_invoice": "",
 }
 # Settings only the computer running the app may change (never from a phone or another computer).
-LOCAL_ONLY_SETTINGS = {"network_access", "auto_update_mode", "auto_update_time", "custom_icons", "custom_sounds"}  # set elsewhere  # auto-update: /api/update/auto
+LOCAL_ONLY_SETTINGS = {"network_access", "https", "auto_update_mode", "auto_update_time", "custom_icons", "custom_sounds"}  # set elsewhere  # auto-update: /api/update/auto
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -1313,7 +1314,8 @@ def lan_addresses():
                 ips.append(ip)
     except OSError:
         pass
-    return [ip for ip in ips if not ip.startswith("127.") and not ip.startswith("169.254.")]
+    ips = [ip for ip in ips if not ip.startswith("127.") and not ip.startswith("169.254.")]
+    return ips + [ip for ip in tailscale_ips() if ip not in ips]   # and its address on Tailscale, if that's set up
 
 
 def session_for(conn, token):
@@ -1338,9 +1340,10 @@ def network_info(conn, req):
     enabled = get_settings(conn)["network_access"] == "1"
     listening = HOST not in ("127.0.0.1", "localhost", "::1")
     hostname = socket.gethostname().split(".")[0]
-    urls = [f"http://{ip}:{PORT}/" for ip in lan_addresses()]
+    scheme = "https" if TLS_CTX is not None else "http"
+    urls = [f"{scheme}://{ip}:{PORT}/" for ip in lan_addresses()]
     if hostname:
-        urls.append(f"http://{hostname}.local:{PORT}/")
+        urls.append(f"{scheme}://{hostname}.local:{PORT}/")
     sess = rows(conn.execute("SELECT s.token_hash, s.created_at, s.last_seen, s.ip, s.agent, u.name AS user_name FROM sessions s "
                              "LEFT JOIN users u ON u.id = s.user_id ORDER BY s.last_seen DESC"))
     mine = req.session["token_hash"] if req.session else None
@@ -1354,6 +1357,7 @@ def network_info(conn, req):
                      "ip": x["ip"], "agent": x["agent"], "user_name": x["user_name"],
                      "current": x["token_hash"] == mine} for x in sess],
         "users": users_exist(conn),
+        "https": tls_info(conn),
     }
 
 
@@ -1626,7 +1630,8 @@ def new_session(conn, req, user_id=None):
     insert(conn, "sessions", {"token_hash": hashlib.sha256(token.encode()).hexdigest(), "created_at": now_iso(),
                               "last_seen": now_iso(), "ip": req.handler.client_address[0],
                               "agent": (req.handler.headers.get("User-Agent") or "")[:300], "user_id": user_id})
-    req.set_cookie = f"{SESSION_COOKIE}={token}; Path=/; Max-Age={SESSION_DAYS * 86400}; HttpOnly; SameSite=Strict"
+    req.set_cookie = (f"{SESSION_COOKIE}={token}; Path=/; Max-Age={SESSION_DAYS * 86400}; HttpOnly; SameSite=Strict"
+                      + ("; Secure" if getattr(req.handler, "tls", False) else ""))  # over https: never sent over http
 
 
 USER_PIN_MIN = 8   # new passwords; shorter PINs set before 1.27 keep working until they're changed
@@ -7254,6 +7259,543 @@ class Request:
             raise ApiError(400, "Body is not valid JSON")
 
 
+# ---------------------------------------------------------------- remote access with Tailscale
+#
+# Tailscale is a free app that joins your devices into a private, encrypted network, so a phone at a venue can
+# reach this computer at home or in the office without opening anything to the internet. The app helps set it up:
+# it finds Tailscale, runs the official installer or turns it on (the computer asks for its own password - the app
+# never sees it), shows the sign-in link, and then lists the address other devices use.
+
+TAILSCALE_MAC_APP = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+TAILSCALE_MAC_PKG = "https://pkgs.tailscale.com/stable/Tailscale-latest-macos.pkg"
+TAILSCALE_LINUX_SCRIPT = "https://tailscale.com/install.sh"
+TAILSCALE_JOB = {"busy": False, "step": "", "error": ""}   # what the last install / turn-on is doing
+TAILSCALE_CACHE = {"at": 0.0, "status": None}
+
+
+def tailscale_bin():
+    exe = shutil.which("tailscale")
+    if not exe and sys.platform == "darwin" and os.path.isfile(TAILSCALE_MAC_APP):
+        exe = TAILSCALE_MAC_APP
+    return exe
+
+
+def tailscale_status(fresh=False):
+    """Is Tailscale installed, on and signed in - and this computer's address on it."""
+    now = time.time()
+    if not fresh and TAILSCALE_CACHE["status"] is not None and now - TAILSCALE_CACHE["at"] < 20:
+        return TAILSCALE_CACHE["status"]
+    exe = tailscale_bin()
+    out = {"installed": bool(exe), "state": "missing", "auth_url": "", "ips": [], "name": ""}
+    if exe:
+        out["state"] = "stopped"
+        try:
+            r = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=6)
+            data = json.loads(r.stdout) if r.stdout.strip().startswith("{") else {}
+        except (OSError, ValueError, subprocess.SubprocessError):
+            data = {}
+        backend = data.get("BackendState") or ""
+        me = data.get("Self") or {}
+        if backend == "Running":
+            out["state"] = "connected"
+            for ip in me.get("TailscaleIPs") or []:
+                try:
+                    if ipaddress.ip_address(ip).version == 4:
+                        out["ips"].append(ip)
+                except ValueError:
+                    pass
+            out["name"] = str(me.get("DNSName") or "").rstrip(".")[:200]
+        elif backend in ("NeedsLogin", "NeedsMachineAuth"):
+            out["state"] = "needs_login"
+            url = str(data.get("AuthURL") or "")
+            out["auth_url"] = url if url.startswith("https://login.tailscale.com/") else ""
+        elif backend in ("Stopped", "Starting", "NoState"):
+            out["state"] = "stopped" if backend != "Starting" else "needs_login"
+    TAILSCALE_CACHE.update(at=now, status=out)
+    return out
+
+
+def tailscale_ips():
+    try:
+        return tailscale_status()["ips"]
+    except Exception:  # noqa: BLE001 - never let this break listing addresses
+        return []
+
+
+def tailscale_user():
+    import getpass
+    u = getpass.getuser()
+    return u if re.match(r"^[a-z_][a-z0-9_-]{0,31}$", u) else ""
+
+
+def tailscale_manual():
+    """The same steps as commands, for when the computer can't show its password prompt (e.g. a server)."""
+    if sys.platform == "darwin":
+        return ["Download Tailscale from https://tailscale.com/download/mac, open it, and sign in."]
+    steps = []
+    if not tailscale_bin():
+        steps.append("curl -fsSL https://tailscale.com/install.sh | sh")
+    steps += ["sudo systemctl enable --now tailscaled", "sudo tailscale up"]
+    return steps
+
+
+def tailscale_run(job):
+    """Run an install / turn-on in the background; Settings polls /api/tailscale to follow it."""
+    def go():
+        try:
+            job()
+            TAILSCALE_JOB.update(error="")
+        except ApiError as e:
+            TAILSCALE_JOB.update(error=e.message)
+        except Exception as e:  # noqa: BLE001
+            TAILSCALE_JOB.update(error=str(e)[:300])
+        finally:
+            TAILSCALE_JOB.update(busy=False, step="")
+            TAILSCALE_CACHE["status"] = None
+    if TAILSCALE_JOB["busy"]:
+        raise ApiError(409, "Tailscale setup is already running — give it a moment")
+    TAILSCALE_JOB.update(busy=True, error="")
+    threading.Thread(target=go, daemon=True, name="tailscale").start()
+
+
+def sudo_run(command, password, timeout=900):
+    """Run a command through sudo, giving it the password once on its input. The password is never written anywhere."""
+    exe = shutil.which("sudo")
+    if not exe:
+        raise ApiError(400, "This server has no “sudo”, so it can't be done from here. Run these on the server instead: "
+                            + "  ·  ".join(tailscale_manual()))
+    try:
+        # -S: read the password from input; -k: always ask (ignore and don't reuse a remembered one); -p '': no prompt text
+        r = subprocess.run([exe, "-S", "-k", "-p", "", "--"] + command, input=password + "\n",
+                           capture_output=True, text=True, timeout=timeout)
+    finally:
+        subprocess.run([exe, "-k"], capture_output=True, timeout=10)   # forget it straight away
+    return r
+
+
+def check_admin_password(password):
+    """Is this the server's admin password? Wrong guesses are limited, so the app can't be used to guess it."""
+    now = time.time()
+    with LOGIN_LOCK:
+        fails = [t for t in LOGIN_FAILS.get("sudo", []) if now - t < 900]
+        LOGIN_FAILS["sudo"] = fails
+        if len(fails) >= 5:
+            raise ApiError(429, "Too many wrong passwords. Wait 15 minutes and try again.")
+    if not password or len(password) > PASSWORD_MAX or "\n" in password or "\r" in password:
+        raise ApiError(400, "Enter the server's admin password")
+    r = sudo_run(["true"], password, timeout=60)
+    if r.returncode != 0:
+        with LOGIN_LOCK:
+            LOGIN_FAILS.setdefault("sudo", []).append(now)
+        err = (r.stderr or "").lower()
+        if "not in the sudoers" in err or "not allowed" in err:
+            raise ApiError(400, f"The account that runs this app ({tailscale_user() or 'this account'}) isn't allowed to "
+                                "install software on this server. Run the commands on the server as an administrator instead.")
+        raise ApiError(400, "That isn't the server's admin password")
+
+
+def as_root(command, what, password=None):
+    """Run a command with the computer's admin rights: with the password given from the browser (a server with no
+    screen), or else through the system's own password prompt (pkexec)."""
+    if password is not None:
+        r = sudo_run(command, password)
+        if r.returncode != 0:
+            raise ApiError(500, f"Couldn't {what}: " + ((r.stderr or r.stdout).strip()[-300:] or f"exit code {r.returncode}"))
+        return
+    pk = shutil.which("pkexec")
+    if not pk:
+        raise ApiError(400, f"This computer can't show a password prompt to {what}. Run these in a terminal instead: "
+                            + "  ·  ".join(tailscale_manual()))
+    r = subprocess.run([pk] + command, capture_output=True, text=True, timeout=900)
+    if r.returncode in (126, 127):
+        raise ApiError(400, "The password prompt was cancelled or isn't available. Nothing was changed.")
+    if r.returncode != 0:
+        raise ApiError(500, f"Couldn't {what}: " + ((r.stderr or r.stdout).strip()[-300:] or f"exit code {r.returncode}"))
+
+
+def fetch_official(url, limit):
+    """Download from Tailscale's own site over verified https (only the two addresses above are ever fetched)."""
+    req = urllib.request.Request(url, headers={"User-Agent": f"Horan-Event-Tracking/{VERSION}"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            host = (urlparse(r.geturl()).hostname or "").lower()
+            if urlparse(r.geturl()).scheme != "https" or not (host == "tailscale.com" or host.endswith(".tailscale.com")):
+                raise ApiError(502, "The download was sent somewhere unexpected, so it was stopped")
+            body = r.read(limit + 1)
+    except (urllib.error.URLError, OSError) as e:
+        raise ApiError(502, f"Couldn't reach tailscale.com — is this computer online? ({getattr(e, 'reason', e)})")
+    if len(body) > limit:
+        raise ApiError(502, "The download was larger than expected, so it was stopped")
+    return body
+
+
+def tailscale_install_job(password=None):
+    if tailscale_bin():
+        return
+    if sys.platform == "darwin":
+        # The official installer package, opened with the Mac's own Installer (which checks Apple's signature on it).
+        TAILSCALE_JOB["step"] = "Downloading Tailscale…"
+        body = fetch_official(TAILSCALE_MAC_PKG, 200 * 1024 * 1024)
+        if not body.startswith(b"xar!"):
+            raise ApiError(502, "The download wasn't a Mac installer. Get Tailscale from https://tailscale.com/download/mac instead.")
+        path = os.path.join(DATA_DIR, "Tailscale-installer.pkg")
+        with open(path, "wb") as f:
+            f.write(body)
+        TAILSCALE_JOB["step"] = "Follow the Tailscale installer that has opened on this Mac…"
+        subprocess.run(["open", "-W", path], timeout=1800)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    # Linux: Tailscale's own install script, run with admin rights after the system's password prompt.
+    TAILSCALE_JOB["step"] = "Downloading the Tailscale installer…"
+    script = fetch_official(TAILSCALE_LINUX_SCRIPT, 2 * 1024 * 1024)
+    if not script.startswith(b"#!/bin/sh") or b"tailscale" not in script:
+        raise ApiError(502, "The download wasn't Tailscale's installer. See https://tailscale.com/download/linux instead.")
+    path = os.path.join(DATA_DIR, "tailscale-install.sh")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700)
+    with os.fdopen(fd, "wb") as f:
+        f.write(script)
+    TAILSCALE_JOB["step"] = ("Installing Tailscale on the server…" if password is not None
+                             else "Enter this computer's password in the prompt to install Tailscale…")
+    try:
+        as_root(["/bin/sh", path], "install Tailscale", password)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    if not tailscale_bin():
+        raise ApiError(500, "The installer finished but Tailscale wasn't found. See https://tailscale.com/download/linux")
+
+
+def tailscale_start_job(password=None):
+    exe = tailscale_bin()
+    if not exe:
+        raise ApiError(400, "Install Tailscale first")
+    if sys.platform == "darwin":
+        TAILSCALE_JOB["step"] = "Opening Tailscale — sign in from its icon in the menu bar…"
+        subprocess.run(["open", "-a", "Tailscale"], timeout=60)
+        return
+    user = tailscale_user()
+    TAILSCALE_JOB["step"] = ("Turning Tailscale on…" if password is not None
+                             else "Enter this computer's password in the prompt to turn Tailscale on…")
+    # Start its background service now and at every boot, and let this account sign in without the password again.
+    script = "systemctl enable --now tailscaled && sleep 2" + (f" && tailscale set --operator={user}" if user else "")
+    as_root(["/bin/sh", "-c", script], "turn Tailscale on", password)
+    TAILSCALE_JOB["step"] = "Waiting for the Tailscale sign-in link…"
+    # "tailscale up" waits for the sign-in to finish; leave it going and let Settings pick up the link.
+    subprocess.Popen([exe, "up", "--timeout=600s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(40):
+        time.sleep(0.5)
+        st = tailscale_status(fresh=True)
+        if st["state"] == "connected" or st["auth_url"]:
+            return
+
+
+def tailscale_info(conn, req):
+    st = dict(tailscale_status(fresh=req.q("fresh") == "1"))
+    local = not req.remote
+    if st["ips"] and TLS_CTX is not None:
+        tls_refresh()  # so the https certificate covers this computer's Tailscale address straight away
+    why = "" if local else tailscale_remote_blocked(conn, req)
+    st.update(remote_ok=not local and not why, remote_why=why, account=tailscale_user(),
+              busy=TAILSCALE_JOB["busy"], step=TAILSCALE_JOB["step"], error=TAILSCALE_JOB["error"], is_local=local,
+              platform="mac" if sys.platform == "darwin" else "linux", manual=tailscale_manual(), port=PORT,
+              scheme="https" if TLS_CTX is not None else "http",
+              network_on=HOST not in ("127.0.0.1", "localhost", "::1"))
+    return st
+
+
+def tailscale_remote_blocked(conn, req):
+    """Why another device can't run the setup - or "" if it can: a server with no screen, an encrypted connection,
+    and a named admin (not just the shared passcode)."""
+    if not HEADLESS or sys.platform == "darwin":
+        return "This can only be done on the computer running the app."
+    if not getattr(req.handler, "tls", False):
+        return ("Turn on HTTPS first (on the server: horan-rms https on), so the server's admin password "
+                "isn't sent unencrypted.")
+    u = current_user(conn, req)
+    if not (u and u["is_admin"]):
+        return "Sign in as a named admin user (Settings → Users) to do this from another device."
+    return ""
+
+
+def tailscale_password(conn, req):
+    """Who may start the setup, and how it gets admin rights: None = the computer's own prompt; else the password
+    typed into the browser, checked first."""
+    require_admin(req, conn)
+    if not req.remote:
+        return None
+    why = tailscale_remote_blocked(conn, req)
+    if why:
+        raise ApiError(403, why)
+    password = str((req.json() or {}).get("password") or "")
+    check_admin_password(password)
+    return password
+
+
+@route("GET", "/api/tailscale")
+def api_tailscale(req, conn):
+    require_admin(req, conn)
+    return tailscale_info(conn, req)
+
+
+@route("POST", "/api/tailscale/install")
+def api_tailscale_install(req, conn):
+    """Install Tailscale with its official installer. Only from the computer itself, which asks for its password."""
+    password = tailscale_password(conn, req)
+    tailscale_run(lambda: tailscale_install_job(password))
+    return tailscale_info(conn, req)
+
+
+@route("POST", "/api/tailscale/start")
+def api_tailscale_start(req, conn):
+    """Turn Tailscale on and begin signing in. Only from the computer itself."""
+    password = tailscale_password(conn, req)
+    tailscale_run(lambda: tailscale_start_job(password))
+    return tailscale_info(conn, req)
+
+
+# ---------------------------------------------------------------- HTTPS with the app's own certificate
+#
+# Turning HTTPS on makes the app its own small certificate authority (kept in the data folder, never sent anywhere),
+# which signs a certificate for this computer's names and addresses. Devices get a warning until they're told to
+# trust the authority's certificate (downloaded from /ca.crt) - after that, no warnings, even if this computer's
+# address changes. The authority is limited to local names and private addresses, so it can never vouch for a
+# website on the internet.
+
+TLS_CTX = None          # the TLS settings while HTTPS is on (None = plain http)
+TLS_LOCK = threading.Lock()
+CA_DAYS, LEAF_DAYS, LEAF_RENEW_DAYS = 3650, 800, 30
+LOCAL_SUFFIXES = ("local", "lan", "home", "internal", "home.arpa")
+PRIVATE_NETS = ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10",
+                "::1/128", "fc00::/7", "fe80::/10")
+
+
+def tls_dir():
+    return os.path.join(DATA_DIR, "tls")
+
+
+def tls_path(name):
+    return os.path.join(tls_dir(), name)
+
+
+def tls_own_cert():
+    """Your own certificate, if you've put one in the data folder: tls/own-cert.pem and tls/own-key.pem."""
+    c, k = tls_path("own-cert.pem"), tls_path("own-key.pem")
+    return (c, k) if os.path.isfile(c) and os.path.isfile(k) else None
+
+
+def tls_hostname():
+    h = socket.gethostname().split(".")[0].lower()
+    return h if re.match(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", h) else ""
+
+
+def tls_wanted_names(ca_host):
+    """The names and addresses the certificate should cover: this computer, by name and by private address."""
+    host = tls_hostname()
+    dns = ["localhost"]
+    if host:
+        dns += [f"{host}.{sfx}" for sfx in LOCAL_SUFFIXES]
+        if host == ca_host:
+            dns.append(host)  # the bare name is only allowed if the authority was made for it
+    nets = [ipaddress.ip_network(n) for n in PRIVATE_NETS]
+    ips = ["127.0.0.1", "::1"]
+    for ip in lan_addresses():
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if any(a.version == n.version and a in n for n in nets) and ip not in ips:
+            ips.append(ip)
+    return {"dns": sorted(set(dns)), "ips": sorted(set(ips))}
+
+
+def run_openssl(args):
+    exe = shutil.which("openssl")
+    if not exe:
+        raise ApiError(400, "HTTPS needs the “openssl” tool to make a certificate, and it isn't installed on this computer. "
+                            "Install it (Linux: your package manager; Mac: it's built in), or put your own certificate in the "
+                            "data folder as tls/own-cert.pem and tls/own-key.pem.")
+    r = subprocess.run([exe] + args, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise ApiError(500, "Couldn't make the certificate: " + (r.stderr or r.stdout or "openssl failed").strip()[-300:])
+
+
+def write_private(path, text):
+    """Write a file only this account can read (certificate keys)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+
+
+def tls_make_ca():
+    """The app's own certificate authority: made once, valid 10 years, limited to local names and private addresses."""
+    host = tls_hostname()
+    permitted = ["localhost"] + list(LOCAL_SUFFIXES) + ([host] if host else [])
+    nc = [f"permitted;DNS.{i} = {n}" for i, n in enumerate(permitted)]
+    for i, n in enumerate(PRIVATE_NETS):
+        net = ipaddress.ip_network(n)
+        nc.append(f"permitted;IP.{i} = {net.network_address.exploded}/{net.netmask.exploded}")
+    label = re.sub(r"[^A-Za-z0-9 ._-]", "", host or "this computer")
+    cnf = "\n".join([
+        "[req]", "distinguished_name = dn", "x509_extensions = v3", "prompt = no", "",
+        "[dn]", f"CN = Horan Event Tracking local certificate ({label})", "O = Horan Event Tracking", "",
+        "[v3]", "basicConstraints = critical, CA:TRUE, pathlen:0", "keyUsage = critical, keyCertSign, cRLSign",
+        "subjectKeyIdentifier = hash", "nameConstraints = critical, @nc", "", "[nc]"] + nc) + "\n"
+    write_private(tls_path("ca.cnf"), cnf)
+    run_openssl(["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", tls_path("ca-key.pem")])
+    os.chmod(tls_path("ca-key.pem"), 0o600)
+    run_openssl(["req", "-new", "-x509", "-sha256", "-days", str(CA_DAYS), "-key", tls_path("ca-key.pem"),
+                 "-config", tls_path("ca.cnf"), "-out", tls_path("ca.pem")])
+    with open(tls_path("ca.json"), "w") as f:
+        json.dump({"host": host, "created": now_iso(),
+                   "expires": (dt.date.today() + dt.timedelta(days=CA_DAYS)).isoformat()}, f)
+
+
+def tls_make_leaf(names):
+    """This computer's certificate, signed by the app's authority. Renewed by itself before it runs out or when
+    the computer's address changes - devices that trust the authority don't notice."""
+    alt = [f"DNS.{i} = {n}" for i, n in enumerate(names["dns"])] + [f"IP.{i} = {n}" for i, n in enumerate(names["ips"])]
+    cnf = "\n".join([
+        "[req]", "distinguished_name = dn", "prompt = no", "",
+        "[dn]", f"CN = {tls_hostname() + '.local' if tls_hostname() else 'localhost'}", "O = Horan Event Tracking", "",
+        "[v3]", "basicConstraints = critical, CA:FALSE", "keyUsage = critical, digitalSignature",
+        "extendedKeyUsage = serverAuth", "subjectAltName = @alt", "authorityKeyIdentifier = keyid", "", "[alt]"] + alt) + "\n"
+    write_private(tls_path("leaf.cnf"), cnf)
+    run_openssl(["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", tls_path("key.pem.new")])
+    os.chmod(tls_path("key.pem.new"), 0o600)
+    run_openssl(["req", "-new", "-sha256", "-key", tls_path("key.pem.new"), "-config", tls_path("leaf.cnf"),
+                 "-out", tls_path("leaf.csr")])
+    run_openssl(["x509", "-req", "-sha256", "-days", str(LEAF_DAYS), "-in", tls_path("leaf.csr"),
+                 "-CA", tls_path("ca.pem"), "-CAkey", tls_path("ca-key.pem"), "-set_serial", "0x" + secrets.token_hex(12),
+                 "-extfile", tls_path("leaf.cnf"), "-extensions", "v3", "-out", tls_path("cert.pem.new")])
+    os.replace(tls_path("key.pem.new"), tls_path("key.pem"))
+    os.replace(tls_path("cert.pem.new"), tls_path("cert.pem"))
+    with open(tls_path("leaf.json"), "w") as f:
+        json.dump({"names": names, "expires": (dt.date.today() + dt.timedelta(days=LEAF_DAYS)).isoformat()}, f)
+    for junk in ("leaf.csr",):
+        try:
+            os.remove(tls_path(junk))
+        except OSError:
+            pass
+
+
+def tls_read_json(name):
+    try:
+        with open(tls_path(name)) as f:
+            v = json.load(f)
+        return v if isinstance(v, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def tls_ensure():
+    """Make sure there's a usable certificate; returns (cert_file, key_file) and whether it was (re)made."""
+    os.makedirs(tls_dir(), exist_ok=True)
+    if os.name == "posix":
+        os.chmod(tls_dir(), 0o700)
+    own = tls_own_cert()
+    if own:
+        return own, False
+    with TLS_LOCK:
+        made = False
+        if not (os.path.isfile(tls_path("ca.pem")) and os.path.isfile(tls_path("ca-key.pem"))):
+            tls_make_ca()
+            made = True
+        names = tls_wanted_names(tls_read_json("ca.json").get("host", ""))
+        leaf = tls_read_json("leaf.json")
+        try:
+            days_left = (dt.date.fromisoformat(leaf.get("expires", "")) - dt.date.today()).days
+        except ValueError:
+            days_left = -1
+        if (made or leaf.get("names") != names or days_left < LEAF_RENEW_DAYS
+                or not os.path.isfile(tls_path("cert.pem")) or not os.path.isfile(tls_path("key.pem"))):
+            tls_make_leaf(names)
+            made = True
+        return (tls_path("cert.pem"), tls_path("key.pem")), made
+
+
+def tls_context():
+    import ssl
+    (cert, key), _made = tls_ensure()
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(cert, key)
+    return ctx
+
+
+def tls_refresh():
+    """Renew the certificate if it's running out or this computer's addresses changed. New connections use it at once."""
+    try:
+        if TLS_CTX is not None and not tls_own_cert():
+            (cert, key), made = tls_ensure()
+            if made:
+                TLS_CTX.load_cert_chain(cert, key)
+    except Exception as e:  # noqa: BLE001
+        print(f"Couldn't renew the HTTPS certificate: {getattr(e, 'message', e)}", file=sys.stderr)
+
+
+def tls_keep_fresh():
+    """While HTTPS is on: check the certificate a few times a day."""
+    while True:
+        time.sleep(6 * 3600)
+        tls_refresh()
+
+
+def tls_info(conn):
+    """For Settings: is HTTPS on, and the details someone needs to trust the certificate."""
+    import ssl
+    wanted = get_settings(conn).get("https") == "1"
+    own = bool(tls_own_cert())
+    info = {"enabled": wanted, "active": TLS_CTX is not None, "own": own, "has_ca": False,
+            "can_make": bool(shutil.which("openssl")) or own, "fingerprint": "", "ca_expires": "", "names": []}
+    if not own and os.path.isfile(tls_path("ca.pem")):
+        try:
+            with open(tls_path("ca.pem")) as f:
+                der = ssl.PEM_cert_to_DER_cert(f.read())
+            fp = hashlib.sha256(der).hexdigest().upper()
+            info.update(has_ca=True, fingerprint=":".join(fp[i:i + 2] for i in range(0, len(fp), 2)),
+                        ca_expires=tls_read_json("ca.json").get("expires", ""))
+            n = tls_read_json("leaf.json").get("names") or {}
+            info["names"] = (n.get("dns") or []) + (n.get("ips") or [])
+        except (OSError, ValueError):
+            pass
+    return info
+
+
+def set_https(conn, on):
+    """Turn HTTPS on (making the certificate first, so a problem is reported before anything changes) or off."""
+    if on:
+        tls_ensure()
+    set_secret(conn, "https", "1" if on else "0")
+    conn.commit()
+
+
+@route("PUT", "/api/network/https")
+def api_network_https(req, conn):
+    require_admin(req, conn)
+    local_only(req)
+    on = bool((req.json() or {}).get("enabled"))
+    set_https(conn, on)
+    info = network_info(conn, req)
+    if on != (TLS_CTX is not None):
+        info["restarting"] = True
+        restart_soon()
+    return info
+
+
+@route("GET", "/ca.crt")
+def ca_certificate(req, conn):
+    """The app's own certificate authority, to install on a device so it trusts this app's HTTPS. Public: it holds no secret."""
+    if tls_own_cert() or not os.path.isfile(tls_path("ca.pem")):
+        raise ApiError(404, "HTTPS with the app's own certificate isn't set up")
+    with open(tls_path("ca.pem"), "rb") as f:
+        return Raw(f.read(), "application/x-x509-ca-cert", filename="horan-event-tracking-ca.crt")
+
+
 # Sent with every response. The policy only lets the page run the app's own script files, so even if some
 # text were ever shown without being made safe, a script hidden in it could not run or send data elsewhere.
 SECURITY_HEADERS = {
@@ -7268,9 +7810,46 @@ SECURITY_HEADERS = {
 }
 
 
+class QuietServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # A device dropping the connection (or refusing the certificate) isn't worth a traceback in the log.
+        e = sys.exc_info()[1]
+        if isinstance(e, (ConnectionError, TimeoutError, OSError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(BaseHTTPRequestHandler):
     timeout = 120   # drop connections that stall, so they can't tie up the server
     server_version = f"HoranEventTracking/{VERSION}"
+
+    tls = False            # this connection is encrypted
+    plain_remote = False   # another device connected without encryption while HTTPS is on
+    dead = False           # the encrypted connection couldn't be set up (e.g. the device hasn't accepted the certificate)
+
+    def setup(self):
+        ctx = TLS_CTX
+        if ctx is not None:
+            sock = self.request
+            try:
+                sock.settimeout(self.timeout)
+                first = sock.recv(1, socket.MSG_PEEK)   # look at the first byte without taking it
+                if first == b"\x16":                     # a TLS hello: switch this connection to encrypted
+                    self.request = ctx.wrap_socket(sock, server_side=True)
+                    self.tls = True
+                elif not first:
+                    self.dead = True
+                elif not is_loopback(self.client_address[0]):
+                    self.plain_remote = True             # this computer itself may still use plain http
+            except OSError:                              # includes failed handshakes and timeouts
+                self.dead = True
+        super().setup()
+
+    def handle(self):
+        if not self.dead:
+            super().handle()
 
     def log_message(self, fmt, *args):
         if os.environ.get("HORAN_RMS_DEBUG"):
@@ -7291,6 +7870,8 @@ class Handler(BaseHTTPRequestHandler):
             return True
         except ValueError:
             pass
+        if host.endswith(".ts.net") and host == (tailscale_status().get("name") or "").lower():
+            return True   # this computer's own name on Tailscale (never anyone else's)
         me = socket.gethostname().lower().split(".")[0]
         return ("." not in host or host.split(".")[0] == me
                 or host.endswith((".local", ".lan", ".home", ".internal", ".home.arpa")))
@@ -7347,6 +7928,12 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         method = "GET" if self.command == "HEAD" else self.command
+        if self.plain_remote:
+            # HTTPS is on: send other devices to the encrypted address, and never take sign-ins or data over plain http.
+            if method == "GET":
+                return self._send(301, b"", "text/plain", {"Location": f"https://{self.headers.get('Host')}{self.path}",
+                                                           "Cache-Control": "no-store"})
+            return self._json(400, {"error": "This app now uses https — open it with https:// at the start of the address"})
 
         # Mutating requests must carry a custom header. Browsers can't add it to
         # cross-site requests without a CORS pre-flight, which we never grant.
@@ -7371,7 +7958,7 @@ class Handler(BaseHTTPRequestHandler):
         need_login = (has_users and not user) or (remote and not session)
         if need_login:
             public = (path in ("/api/login", "/api/login-options", "/api/meta", "/favicon", "/apple-touch-icon.png",
-                               "/manifest.webmanifest", "/app-icon-192.png", "/app-icon-512.png", "/logo")
+                               "/manifest.webmanifest", "/app-icon-192.png", "/app-icon-512.png", "/logo", "/ca.crt")
                       or path.startswith("/static/"))
             if not public:
                 if path.startswith("/api/"):
@@ -7686,6 +8273,8 @@ def main():
     ap.add_argument("--set-passcode", action="store_true",
                     help="set the passcode other devices sign in with (asks for it, or reads HORAN_RMS_PASSCODE), then exit")
     ap.add_argument("--network", choices=("on", "off"), help="turn network access on or off, then exit")
+    ap.add_argument("--https", choices=("on", "off"),
+                    help="turn https (with the app's own certificate) on or off for other devices, then exit")
     ap.add_argument("--status", action="store_true", help="show the version, data folder and network addresses, then exit")
     ap.add_argument("--list-users", action="store_true", help="list the people who can sign in, then exit")
     ap.add_argument("--reset-password", "--reset-pin", dest="reset_pin", metavar="NAME", help="give someone a new password (and make sure they're an active admin "
@@ -7702,7 +8291,7 @@ def main():
     init_db()
     if args.headless_mode:
         sys.exit(set_headless_marker(args.headless_mode == "on"))
-    if args.set_passcode or args.network or args.status or args.list_users or args.reset_pin:
+    if args.set_passcode or args.network or args.https or args.status or args.list_users or args.reset_pin:
         sys.exit(cli_admin(args))
     # Server mode is remembered in the data folder, so a restart that forgets --headless (the launcher, a
     # hand-started copy, an old service file) still runs as a server.
@@ -7740,10 +8329,24 @@ def main():
 
     mimetypes.add_type("application/javascript", ".js")
     mimetypes.add_type("image/svg+xml", ".svg")
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"Horan Event Tracking {VERSION} running at http://{'127.0.0.1' if HOST == '0.0.0.0' else HOST}:{PORT}")
+    global TLS_CTX
+    c = db()
+    try:
+        want_https = get_settings(c).get("https") == "1"
+    finally:
+        c.close()
+    if want_https:
+        try:
+            TLS_CTX = tls_context()
+            threading.Thread(target=tls_keep_fresh, daemon=True, name="tls").start()
+        except Exception as e:  # noqa: BLE001 - never refuse to start over a certificate problem
+            print(f"HTTPS is switched on but couldn't start, so the app is using plain http: {getattr(e, 'message', e)}", file=sys.stderr)
+    server = QuietServer((HOST, PORT), Handler)
+    print(f"Horan Event Tracking {VERSION} running at http://{'127.0.0.1' if HOST == '0.0.0.0' else HOST}:{PORT}"
+          + (" (https for other devices)" if TLS_CTX is not None else ""))
     if HOST == "0.0.0.0":
-        print("Other devices on your network can connect at: " + ", ".join(f"http://{ip}:{PORT}/" for ip in lan_addresses()))
+        print("Other devices on your network can connect at: "
+              + ", ".join(f"{'https' if TLS_CTX is not None else 'http'}://{ip}:{PORT}/" for ip in lan_addresses()))
     print(f"Data folder: {DATA_DIR}")
     try:
         server.serve_forever()
@@ -7780,6 +8383,16 @@ def cli_admin(args):
             set_secret(c, "network_access", "1" if args.network == "on" else "0")
             c.commit()
             print(f"Network access {args.network}. Restart Horan Event Tracking for it to take effect.")
+        if args.https:
+            try:
+                set_https(c, args.https == "on")
+            except ApiError as e:
+                print(e.message, file=sys.stderr)
+                return 1
+            print(f"HTTPS {args.https}. Restart Horan Event Tracking for it to take effect.")
+            if args.https == "on" and not tls_own_cert():
+                print("Devices show a warning until they trust the app's certificate: open https://<address>/ca.crt on each "
+                      f"device and install it.\nCertificate fingerprint (SHA-256): {tls_info(c)['fingerprint']}")
         if args.list_users:
             us = rows(c.execute("SELECT name, is_admin, active FROM users ORDER BY name COLLATE NOCASE"))
             if not us:
@@ -7818,10 +8431,12 @@ def cli_admin(args):
             print("Server mode:     " + ("on (admins can update from any device)" if headless_marked() else "off"))
             print(f"Passcode set:    {'yes' if get_secret(c, 'secret_passcode') else 'no'}")
             print(f"Network access:  {'on' if on else 'off'}")
+            https = st.get("https") == "1"
+            print(f"HTTPS:           {'on' if https else 'off'}")
             print(f"Signed-in devices: {c.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]}")
             if on:
                 for ip in lan_addresses():
-                    print(f"Open on other devices:  http://{ip}:{PORT}/")
+                    print(f"Open on other devices:  {'https' if https else 'http'}://{ip}:{PORT}/")
         return 0
     finally:
         c.close()

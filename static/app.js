@@ -510,7 +510,7 @@ async function newJob(prefill = {}) {
     submitLabel: 'Create job',
     onSubmit: async (v) => post('/jobs', jobPayload(await resolveNewContact(v))),
   });
-  if (job) { toast(`${job.number} created`, 'ok'); location.hash = `#/job/${job.id}`; }
+  if (job) { toast(`${job.number} created`, 'ok'); go(`/job/${job.id}`); }
 }
 
 const PLUG_TYPES = ['UK 13A', '16A CEE', '32A CEE', 'IEC C13', 'IEC C19', 'powerCON', 'powerCON TRUE1', 'Schuko', '15A Round Pin'];
@@ -900,10 +900,25 @@ function importModal(kind) {
 
 const NAV_OF = { roi: 'stock', plan: 'jobs', job: 'jobs', product: 'stock', contact: 'contacts', print: 'jobs', check: 'jobs', vendor: 'vendors' };
 
+// The app's pages, by the first part of the address.
+const APP_PAGES = new Set(['', 'dashboard', 'jobs', 'job', 'availability', 'stock', 'product', 'roi', 'contacts', 'contact', 'quarantine',
+  'activity', 'requests', 'changelog', 'scan', 'plan', 'check', 'vendors', 'vendor', 'settings', 'print']);
+function isAppPath(href) {
+  return typeof href === 'string' && href.startsWith('/') && !href.startsWith('//') && APP_PAGES.has(href.split(/[/?#]/)[1] || '');
+}
+/** Go to another page of the app (replace = don't add it to the Back history). */
+function go(path, replace = false) {
+  if (!isAppPath(path)) return;
+  if (path !== location.pathname) history[replace ? 'replaceState' : 'pushState'](null, '', path);
+  window.dispatchEvent(new Event('het:navigate'));
+  window.scrollTo(0, 0);
+  router();
+}
+
 async function router() {
   document.body.classList.remove('printing');
   $('#print-root').innerHTML = '';
-  const [page = 'dashboard', a, b] = location.hash.replace(/^#\/?/, '').split('/');
+  const [page = 'dashboard', a, b] = location.pathname.replace(/^\/+/, '').split('/').map((x, i) => (i ? x : x || 'dashboard'));
   const nav = NAV_OF[page] || page;
   $$('[data-nav]').forEach((el) => el.classList.toggle('active', el.dataset.nav === nav));
   const view = $('#view');
@@ -931,19 +946,19 @@ async function router() {
       case 'vendor': await renderVendor(view, Number(a)); break;
       case 'settings': await renderSettings(view, a); break;
       case 'print': await renderPrint(Number(a), b || 'quote'); break;
-      default: location.hash = '#/dashboard';
+      default: go('/dashboard', true);
     }
   } catch (e) {
     view.innerHTML = `<div class="page"><div class="card"><div class="body">
       <h2>Something went wrong</h2><p>${esc(e.message)}</p>
-      <a class="btn" href="#/dashboard">Back to dashboard</a></div></div></div>`;
+      <a class="btn" href="/dashboard">Back to dashboard</a></div></div></div>`;
   }
 }
 
 /* ---------------------------------------------------------------- dashboard */
 
 function jobRow(j, { showStatus = true } = {}) {
-  return `<tr class="click" data-href="#/job/${j.id}">
+  return `<tr class="click" data-href="/job/${j.id}">
     <td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong></td>
     <td>${esc(j.contact_company || j.contact_name || '')}${j.contact_company && j.contact_name ? `<br><span class="muted">${esc(j.contact_name)}</span>` : ''}</td>
     <td>${esc(fmtRange(j.start_date, j.end_date))}</td>
@@ -955,7 +970,7 @@ function jobRow(j, { showStatus = true } = {}) {
 function rowLinks(view) {
   view.onclick = (e) => {
     const tr = e.target.closest('[data-href]');
-    if (tr && !e.target.closest('a,button,input,select')) location.hash = tr.dataset.href;
+    if (tr && !e.target.closest('a,button,input,select')) go(tr.dataset.href);
   };
 }
 
@@ -968,15 +983,15 @@ async function renderDashboard(view) {
   view.innerHTML = `<div class="page">
     <div class="page-head">
       <div><h1>${greet}</h1><div class="sub">${esc(fmtDate(d.today, true))}</div></div>
-      <div class="actions"><a class="btn" href="#/availability">Check availability</a>
+      <div class="actions"><a class="btn" href="/availability">Check availability</a>
         <button class="btn primary" data-new-job>New job</button></div>
     </div>
     ${fresh ? `<div class="card welcome"><h2>Welcome to ${esc(appName())}</h2>
       <p class="muted">Everything is stored on this computer. To get going:</p>
       <ol>
-        <li><a href="#/stock">Add your stock</a> — or import a CSV exported from Current RMS.</li>
-        <li><a href="#/contacts">Add your clients</a> (you can also add them while creating a job).</li>
-        <li><a href="#/settings">Open Settings</a> to add your logo and company details, and connect Zoho Books for invoicing.</li>
+        <li><a href="/stock">Add your stock</a> — or import a CSV exported from Current RMS.</li>
+        <li><a href="/contacts">Add your clients</a> (you can also add them while creating a job).</li>
+        <li><a href="/settings">Open Settings</a> to add your logo and company details, and connect Zoho Books for invoicing.</li>
         <li>Create a job, add equipment, and print the prep list.</li>
       </ol></div><div style="height:16px"></div>` : ''}
     <div class="tiles">
@@ -986,14 +1001,14 @@ async function renderDashboard(view) {
         <div class="note">${plural(d.counts.out || 0, 'job')} dispatched</div></div>
       <div class="card tile ${d.overdue.length ? 'alert' : ''}"><div class="label">Overdue returns</div>
         <div class="value">${d.overdue.length}</div><div class="note">Past their return date</div></div>
-      <a class="card tile tile-link ${d.quarantine_units ? 'warn' : ''}" href="#/quarantine"><div class="label">In quarantine</div>
+      <a class="card tile tile-link ${d.quarantine_units ? 'warn' : ''}" href="/quarantine"><div class="label">In quarantine</div>
         <div class="value">${num(d.quarantine_units)}</div><div class="note">Units out of service</div></a>
     </div>
     <div class="grid-2">
-      <div class="card"><header><h2>Next 14 days</h2><a href="#/jobs">All jobs →</a></header>
+      <div class="card"><header><h2>Next 14 days</h2><a href="/jobs">All jobs →</a></header>
         ${d.upcoming.length ? `<div class="table-wrap"><table class="table">
           <thead><tr><th>Job</th><th>Client</th><th>Dates</th><th>Status</th></tr></thead>
-          <tbody>${d.upcoming.map((j) => `<tr class="click" data-href="#/job/${j.id}">
+          <tbody>${d.upcoming.map((j) => `<tr class="click" data-href="/job/${j.id}">
             <td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong></td>
             <td>${esc(j.contact_company || j.contact_name || '')}</td>
             <td>${esc(fmtRange(j.start_date, j.end_date))}</td><td>${pill(j.status)}</td></tr>`).join('')}</tbody></table></div>`
@@ -1001,20 +1016,20 @@ async function renderDashboard(view) {
       </div>
       <div class="stack">
         ${d.overdue.length ? `<div class="card"><header><h2>Overdue returns</h2></header>
-          <table class="table"><tbody>${d.overdue.map((j) => `<tr class="click" data-href="#/job/${j.id}">
+          <table class="table"><tbody>${d.overdue.map((j) => `<tr class="click" data-href="/job/${j.id}">
             <td><strong>${esc(j.name)}</strong><br><span class="muted">${esc(j.contact_company || j.contact_name || '')}</span></td>
             <td class="n"><span class="badge bad">Due ${esc(fmtDate(j.end_date))}</span>${j.days_late ? `<br><span class="muted small">${plural(j.days_late, 'day')} late</span>` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}
         <div class="card"><header><h2>Stock warnings</h2><span class="muted">next 90 days</span></header>
           ${d.shortages.length ? `<table class="table"><tbody>${d.shortages.map((s) => `
-            <tr class="click" data-href="#/availability/${s.first_date}">
+            <tr class="click" data-href="/availability/${s.first_date}">
               <td><strong>${esc(s.name)}</strong><br><span class="muted">From ${esc(fmtDate(s.first_date, true))} · own ${num(s.owned)}${s.quarantined ? `, ${num(s.quarantined)} in quarantine` : ''}</span></td>
               <td class="n"><span class="badge ${s.firm ? 'bad' : 'warn'}">${s.firm ? 'Short' : 'Provisional'} ${num(s.short_by)}</span></td>
             </tr>`).join('')}</tbody></table>`
           : '<div class="empty">No shortages — everything booked is covered.</div>'}
         </div>
-        <div class="card"><header><h2>Ready to invoice</h2><span class="muted">${d.zoho_connected ? 'send from the job' : '<a href="#/settings/zoho">connect Zoho</a>'}</span></header>
+        <div class="card"><header><h2>Ready to invoice</h2><span class="muted">${d.zoho_connected ? 'send from the job' : '<a href="/settings/zoho">connect Zoho</a>'}</span></header>
           ${d.ready_to_invoice.length ? `<table class="table"><tbody>${d.ready_to_invoice.map((j) => `
-            <tr class="click" data-href="#/job/${j.id}"><td><strong>${esc(j.name)}</strong><br><span class="muted">${esc(j.contact_company || j.contact_name || 'No client')} · back ${esc(fmtDate(j.end_date))}</span></td>
+            <tr class="click" data-href="/job/${j.id}"><td><strong>${esc(j.name)}</strong><br><span class="muted">${esc(j.contact_company || j.contact_name || 'No client')} · back ${esc(fmtDate(j.end_date))}</span></td>
               <td class="n">${money(j.totals.net)}</td></tr>`).join('')}</tbody></table>`
           : '<div class="empty">Nothing waiting. Returned jobs not yet sent to Zoho appear here.</div>'}
         </div>
@@ -1051,7 +1066,7 @@ async function renderJobs(view) {
     const total = jobs.reduce((s, j) => s + j.totals.net, 0);
     $('[data-list]', view).innerHTML = jobs.length ? `<div class="table-wrap"><table class="table">
         <thead><tr><th>Job</th><th>Client</th><th>Dates</th><th>Venue</th><th>Status</th><th class="n">Net</th></tr></thead>
-        <tbody>${jobs.map((j) => `<tr class="click" data-href="#/job/${j.id}">
+        <tbody>${jobs.map((j) => `<tr class="click" data-href="/job/${j.id}">
           <td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong></td>
           <td>${esc(j.contact_company || j.contact_name || '—')}</td>
           <td>${esc(fmtRange(j.start_date, j.end_date))}</td>
@@ -1133,7 +1148,7 @@ function lineRow(job, it, rental) {
   const cdays = job.totals.charge_days;
   return `<tr data-item="${it.id}" class="${it.parent_item_id ? 'acc' : ''}" style="--depth:${it._depth || 0}">
       <td class="desc">${it.parent_item_id ? '<span class="acc-mark" aria-hidden="true">↳</span>' : ''}<input data-f="description" value="${esc(it.description)}" aria-label="Description">
-        <small>${it.added_by && !it.parent_item_id ? `<span class="by-note" title="Added by ${esc(it.added_by)}">${esc(initials(it.added_by))}</span> ` : ''}${it.product_brand ? `<span class="line-brand">${esc(it.product_brand)}</span> · ` : ''}${it.product_id ? `<a href="#/product/${it.product_id}">${esc(it.product_sku || 'View stock item')}</a>` : ''}${it.parent_item_id ? ` <span class="muted">· ${job.items.some((x) => x.id === it.parent_item_id && isRun(x)) ? `part of ${groupWord(job.items.find((x) => x.id === it.parent_item_id))}` : (metaOf(it).role === 'package' ? 'in package' : `linked accessory${isIncluded(it) ? ', included' : ''}`)}</span>` : ''}</small></td>
+        <small>${it.added_by && !it.parent_item_id ? `<span class="by-note" title="Added by ${esc(it.added_by)}">${esc(initials(it.added_by))}</span> ` : ''}${it.product_brand ? `<span class="line-brand">${esc(it.product_brand)}</span> · ` : ''}${it.product_id ? `<a href="/product/${it.product_id}">${esc(it.product_sku || 'View stock item')}</a>` : ''}${it.parent_item_id ? ` <span class="muted">· ${job.items.some((x) => x.id === it.parent_item_id && isRun(x)) ? `part of ${groupWord(job.items.find((x) => x.id === it.parent_item_id))}` : (metaOf(it).role === 'package' ? 'in package' : `linked accessory${isIncluded(it) ? ', included' : ''}`)}</span>` : ''}</small></td>
       <td class="n"><input data-f="quantity" type="number" step="any" min="0" value="${num(it.quantity)}" aria-label="Quantity"></td>
       <td class="n"><input data-f="unit_price" type="number" step="0.01" min="0" value="${num(it.unit_price)}" aria-label="Price"></td>
       ${rental ? `<td class="n"><input data-f="days" type="number" step="any" min="0" placeholder="${num(cdays)}" value="${it.days ?? ''}" aria-label="Days" title="Blank = job's chargeable days"></td>` : ''}
@@ -1214,7 +1229,7 @@ function subHireJobCard(j) {
   if (!list.length) return '';
   const total = list.reduce((a, v) => a + v.cost, 0);
   return `<div class="card subhire-card"><header><h2>Sub-hire to order</h2>${total ? `<span class="muted">cost ≈ ${money(total)}</span>` : ''}</header><div class="body">
-    ${list.map((v) => `<div class="vendor"><strong>${v.vendor_id ? `<a href="#/vendor/${v.vendor_id}">${esc(v.vendor_name)}</a>` : '<span class="muted">No vendor set</span>'}</strong>${v.cost ? ` <span class="muted small">≈ ${money(v.cost)}</span>` : ''}
+    ${list.map((v) => `<div class="vendor"><strong>${v.vendor_id ? `<a href="/vendor/${v.vendor_id}">${esc(v.vendor_name)}</a>` : '<span class="muted">No vendor set</span>'}</strong>${v.cost ? ` <span class="muted small">≈ ${money(v.cost)}</span>` : ''}
       <ul style="margin:4px 0 0;padding-left:18px">${v.items.map((x) => `<li>${num(x.quantity)} × ${esc(x.name)}${x.extra ? ' <span class="muted small">(on top of your own)</span>' : ''}</li>`).join('')}</ul></div>`).join('')}
     <p class="muted small" style="margin:8px 0 0">Out ${esc(fmtDate(j.start_date))}, back ${esc(fmtDate(j.end_date))}. Costs use each item’s “their price per day”.</p>
   </div></div>`;
@@ -1303,7 +1318,7 @@ function drawJob(view) {
   view.innerHTML = `<div class="page">
     <div class="page-head">
       <div>
-        <a class="crumb" href="#/jobs">← Jobs &amp; quotes</a>
+        <a class="crumb" href="/jobs">← Jobs &amp; quotes</a>
         <div class="job-title"><span class="job-number">${esc(j.number)}</span><h1>${esc(j.name)}</h1></div>
         <div class="sub">${esc(fmtRange(j.start_date, j.end_date))} · ${plural(days, 'day')} hire · due back ${esc(fmtDate(j.end_date))}${j.venue ? ' · ' + esc(j.venue) : ''}</div>
       </div>
@@ -1350,14 +1365,14 @@ function drawJob(view) {
       </div>
       <div class="stack">
         <div class="card"><header><h2>Documents</h2></header><div class="body actions">
-          <a class="btn" href="#/print/${j.id}/quote">Quotation</a>
-          <a class="btn" href="#/print/${j.id}/picklist">Prep list</a>
-          <a class="btn" href="#/print/${j.id}/invoice">Invoice</a>
-          <a class="btn" href="#/plan/${j.id}">Room plan</a>
+          <a class="btn" href="/print/${j.id}/quote">Quotation</a>
+          <a class="btn" href="/print/${j.id}/picklist">Prep list</a>
+          <a class="btn" href="/print/${j.id}/invoice">Invoice</a>
+          <a class="btn" href="/plan/${j.id}">Room plan</a>
         </div>
         <div class="check-box">
           ${['out', 'in'].map((d) => { const c = j.checks[d]; const pct = c.needed ? Math.round(100 * c.done / c.needed) : 0;
-            return `<a class="check-link ${c.needed && c.done >= c.needed ? 'done' : ''}" href="#/check/${j.id}/${d}">
+            return `<a class="check-link ${c.needed && c.done >= c.needed ? 'done' : ''}" href="/check/${j.id}/${d}">
               <span><strong>${d === 'out' ? 'Check out' : 'Check in'}</strong> <span class="muted small">scan or tick</span></span>
               <span class="check-prog"><span class="bar"><i style="width:${pct}%"></i></span><span class="small">${num(c.done)}/${num(c.needed)}</span></span></a>`; }).join('')}
         </div>${zohoJobBox(j)}</div>
@@ -1375,7 +1390,7 @@ function drawJob(view) {
         ${powerCard(j)}
         <div class="card"><header><h2>Details</h2></header><div class="body">
           <dl class="facts">
-            <div><dt>Client</dt><dd>${c ? `<a href="#/contact/${c.id}">${esc(c.name)}</a>${c.company ? `<br>${esc(c.company)}` : ''}` : '<span class="muted">None</span>'}</dd></div>
+            <div><dt>Client</dt><dd>${c ? `<a href="/contact/${c.id}">${esc(c.name)}</a>${c.company ? `<br>${esc(c.company)}` : ''}` : '<span class="muted">None</span>'}</dd></div>
             ${c && (c.email || c.phone) ? `<div><dt>Contact</dt><dd>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a><br>` : ''}${esc(c.phone)}</dd></div>` : ''}
             <div><dt>Out</dt><dd>${esc(fmtDate(j.start_date, true))}</dd></div>
             <div><dt>Return</dt><dd>${esc(fmtDate(j.end_date, true))}</dd></div>
@@ -1387,7 +1402,7 @@ function drawJob(view) {
             ${S.meta && S.meta.users_enabled ? `<div><dt>Who can edit</dt><dd>${j.edit_lock ? `🔒 ${esc([...(j.created_by ? [j.created_by] : []), ...j.editor_names.filter((n) => n !== j.created_by)].join(', ') || 'Its creator')} <span class="muted">and admins</span>` : 'Anyone'}
               ${canEditJob(j) ? ' <a href="#" data-lock>Change</a>' : ''}</dd></div>` : ''}
           </dl></div></div>
-        <div data-job-history>${S.jobHistory && S.jobHistory.id === j.id ? historyCard(S.jobHistory.list, `#/activity/job/${j.id}`) : ''}</div>
+        <div data-job-history>${S.jobHistory && S.jobHistory.id === j.id ? historyCard(S.jobHistory.list, `/activity/job/${j.id}`) : ''}</div>
       </div>
     </div></div>`;
   if (!canEditJob(j)) {
@@ -1401,7 +1416,7 @@ function drawJob(view) {
       const list = await get(`/activity?job=${j.id}&limit=20`);
       S.jobHistory = { id: j.id, list };
       const box = $('[data-job-history]', view);
-      if (box && S.job && S.job.id === j.id) box.innerHTML = historyCard(list, `#/activity/job/${j.id}`);
+      if (box && S.job && S.job.id === j.id) box.innerHTML = historyCard(list, `/activity/job/${j.id}`);
     } catch { /* not essential */ }
   }, 150);
 
@@ -1416,7 +1431,7 @@ function drawJob(view) {
 
 function zohoJobBox(j) {
   if (!S.settings.zoho_connected) {
-    return `<div class="zoho-box muted"><a href="#/settings/zoho">Connect Zoho Books</a> to send this job as an invoice in one click.</div>`;
+    return `<div class="zoho-box muted"><a href="/settings/zoho">Connect Zoho Books</a> to send this job as an invoice in one click.</div>`;
   }
   if (j.zoho_invoice_id) {
     const when = j.zoho_synced_at ? new Date(j.zoho_synced_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
@@ -1843,7 +1858,7 @@ function drawPicker() {
   const res = pickMatches();
   const runRows = runSuggestion();
   if (!res.length) {
-    box.innerHTML = runRows || `<div class="empty">${S.jobAvail.length ? 'No stock matches.' : 'You haven’t added any stock yet.'} <a href="#/stock">Manage stock</a></div>`;
+    box.innerHTML = runRows || `<div class="empty">${S.jobAvail.length ? 'No stock matches.' : 'You haven’t added any stock yet.'} <a href="/stock">Manage stock</a></div>`;
   } else {
     S.pickIdx = Math.min(S.pickIdx, res.length - 1);
     box.innerHTML = res.map((p, i) => {
@@ -1967,7 +1982,7 @@ function bindJob(view) {
           submitLabel: 'Duplicate',
           onSubmit: (v) => post(`/jobs/${S.job.id}/duplicate`, v),
         });
-        if (res) { toast(`${res.number} created`, 'ok'); location.hash = `#/job/${res.id}`; }
+        if (res) { toast(`${res.number} created`, 'ok'); go(`/job/${res.id}`); }
         return;
       }
       if (t.closest('[data-zoho]')) { await sendToZoho(view); return; }
@@ -2001,7 +2016,7 @@ function bindJob(view) {
         if (await confirmModal(`Delete ${S.job.number} “${S.job.name}” and all its lines? This can't be undone. (Tip: set the status to Cancelled or Lost to keep a record instead.)`)) {
           await del(`/jobs/${S.job.id}`);
           toast('Job deleted');
-          location.hash = '#/jobs';
+          go('/jobs');
         }
       }
     } catch (ex) { toast(ex.message, 'error'); }
@@ -2073,7 +2088,7 @@ function scrollPick() {
 /* ---------------------------------------------------------------- availability */
 
 async function renderAvailability(view) {
-  const fromHash = location.hash.split('/')[2];
+  const fromHash = location.pathname.split('/')[2];
   if (fromHash && /^\d{4}-\d{2}-\d{2}$/.test(fromHash)) S.avail.start = fromHash;
   if (!S.avail.start) S.avail.start = todayISO();
 
@@ -2115,7 +2130,7 @@ async function renderAvailability(view) {
       let row = '';
       if (cat !== lastCat) { row += `<tr class="grp"><td colspan="${g.dates.length + 1}">${esc(cat)}</td></tr>`; lastCat = cat; lastSub = ''; }
       if ((p.subcategory || '') !== lastSub) { if (p.subcategory) row += `<tr class="grp subgroup"><td colspan="${g.dates.length + 1}">› ${esc(p.subcategory)}</td></tr>`; lastSub = p.subcategory || ''; }
-      row += `<tr><td class="pname"><a href="#/product/${p.id}">${esc(p.name)}</a><small>${num(p.quantity)}</small></td>` +
+      row += `<tr><td class="pname"><a href="/product/${p.id}">${esc(p.name)}</a><small>${num(p.quantity)}</small></td>` +
         p.days.map(([hard, soft], i) => {
           const extra = p.extra ? p.extra[i] : 0;
           const free = p.quantity + extra - hard;
@@ -2137,7 +2152,7 @@ async function renderAvailability(view) {
         const first = d === j.start_date || i === 0, last = d === j.end_date || i === g.dates.length - 1;
         return `<td class="${wkClass[i]}"><span class="bar st-${j.status} ${first ? 'first' : ''} ${last ? 'last' : ''}" title="${esc(`${j.number} ${j.name} · ${STATUS[j.status]}`)}"></span></td>`;
       }).join('');
-      return `<tr><td class="pname"><a href="#/job/${j.id}">${esc(j.name)}</a><small>${esc(j.number)}</small></td>${cells}</tr>`;
+      return `<tr><td class="pname"><a href="/job/${j.id}">${esc(j.name)}</a><small>${esc(j.number)}</small></td>${cells}</tr>`;
     }).join('');
 
     $('[data-grid]', view).innerHTML = g.products.length ? `<table class="avail">
@@ -2146,7 +2161,7 @@ async function renderAvailability(view) {
         ${jobRows ? `<tr class="grp"><td colspan="${g.dates.length + 1}">Jobs in this window</td></tr>${jobRows}` : ''}
         ${prodRows}
       </tbody></table>`
-      : '<div class="empty">Add some stock first, then you can see availability here. <a href="#/stock">Go to stock</a></div>';
+      : '<div class="empty">Add some stock first, then you can see availability here. <a href="/stock">Go to stock</a></div>';
   };
 
   view.onclick = (e) => {
@@ -2171,7 +2186,7 @@ async function renderStock(view) {
       <div class="actions">
         <button class="btn" data-import>Import CSV</button>
         <button class="btn" data-export>Export CSV</button>
-        <a class="btn" href="#/roi">ROI calculator</a>
+        <a class="btn" href="/roi">ROI calculator</a>
         <button class="btn" data-print-labels="" data-stock-labels>Print barcodes</button>
         <button class="btn primary" data-add></button></div></div>
     <div class="toolbar">
@@ -2238,7 +2253,7 @@ async function renderStock(view) {
     const n = cols[tab].length;
     const lb = $('[data-stock-labels]', view);
     if (lb) { lb.dataset.printLabels = list.map((p) => p.id).join(','); lb.disabled = !list.length; lb.title = `Barcode labels for the ${plural(list.length, 'item')} listed`; }
-    const body = groupRows(list, n, (p) => `<tr class="click" data-href="#/product/${p.id}">${row(p)}</tr>`);
+    const body = groupRows(list, n, (p) => `<tr class="click" data-href="/product/${p.id}">${row(p)}</tr>`);
     $('[data-list]', view).innerHTML = mine.length ? `<div class="table-wrap"><table class="table">
       <thead><tr>${cols[tab].map((c, i) => `<th class="${i >= 2 && tab !== 'cable' ? 'n' : ''}">${c}</th>`).join('')}</tr></thead>
       <tbody>${body || `<tr><td colspan="${n}" class="empty">No matches.</td></tr>`}
@@ -2255,7 +2270,7 @@ async function renderStock(view) {
     if (e.target.closest('[data-add]')) {
       e.preventDefault();
       const p = await productModal(null, S.stockTab);
-      if (p) { toast(`${p.name} added`, 'ok'); if (p.item_type === 'cable') location.hash = `#/product/${p.id}`; else load(); }
+      if (p) { toast(`${p.name} added`, 'ok'); if (p.item_type === 'cable') go(`/product/${p.id}`); else load(); }
       return;
     }
     if (e.target.closest('[data-import]')) { e.preventDefault(); if (await importModal('products')) load(); return; }
@@ -2268,7 +2283,7 @@ async function renderStock(view) {
     e.preventDefault();
     try {
       const hit = await get('/barcodes/lookup?code=' + encodeURIComponent(e.target.value.trim()));
-      S.stockQuery = ''; location.hash = `#/product/${hit.product_id}`;
+      S.stockQuery = ''; go(`/product/${hit.product_id}`);
       if (hit.kind === 'unit') toast(`${hit.code} — ${hit.name}`, 'ok');
     } catch { /* no exact barcode: the search results stay */ }
   };
@@ -2300,7 +2315,7 @@ async function renderPackage(view, p) {
   for (const x of choices) (byCat[x.category || 'Uncategorised'] ||= []).push(x);
   const comps = p.components || [];
   view.innerHTML = `<div class="page">
-    <div class="page-head"><div><a class="crumb" href="#/stock">← Stock</a>
+    <div class="page-head"><div><a class="crumb" href="/stock">← Stock</a>
       <h1>${esc(p.name)}</h1><div class="sub">${esc(['Package', p.brand, catLabel(p), p.sku].filter(Boolean).join(' · '))}${p.archived ? ' · Archived' : ''}</div></div>
       <div class="actions"><button class="btn" data-print-labels="${p.id}">Print barcodes</button><button class="btn" data-edit>Edit</button>
         ${p.archived ? '<button class="btn" data-unarchive>Restore</button>' : '<button class="btn danger" data-remove>Delete</button>'}</div></div>
@@ -2310,7 +2325,7 @@ async function renderPackage(view, p) {
           <div class="body" style="padding-bottom:6px"><p class="muted" style="margin:0">Each item brings its linked items, as usual. <strong>Untick</strong> any this package doesn’t need,
             e.g. receiver PSUs when the rack has its own power. They’re then left off the prep list every time the package goes on a job.</p></div>
           ${comps.length ? comps.map((c) => `<div class="pkg-comp" data-comp="${c.id}">
-            <div class="pkg-head"><div class="name-cell">${thumbHTML(c)}<div><a href="#/product/${c.product_id}"><strong>${esc(c.name)}</strong></a>${c.archived ? ' <span class="pill">Archived</span>' : ''}
+            <div class="pkg-head"><div class="name-cell">${thumbHTML(c)}<div><a href="/product/${c.product_id}"><strong>${esc(c.name)}</strong></a>${c.archived ? ' <span class="pill">Archived</span>' : ''}
               <br><span class="muted small mono">${esc(c.sku || '')}</span></div></div>
               <span class="nowrap"><input type="number" min="0.01" step="any" value="${num(c.quantity)}" data-comp-qty="${c.id}" style="width:72px;text-align:right" aria-label="Quantity in the package">
               <button class="icon-btn" data-comp-del="${c.id}" title="Take out of the package" aria-label="Remove">×</button></span></div>
@@ -2324,7 +2339,7 @@ async function renderPackage(view, p) {
             <button class="btn primary small" data-comp-add>Add</button>
           </div></div>
         <div class="card"><header><h2>Upcoming bookings</h2></header>
-          ${p.bookings.length ? `<table class="table"><tbody>${p.bookings.map((b) => `<tr class="click" data-href="#/job/${b.id}">
+          ${p.bookings.length ? `<table class="table"><tbody>${p.bookings.map((b) => `<tr class="click" data-href="/job/${b.id}">
             <td><span class="mono muted">${esc(b.number)}</span> ${esc(b.name)}</td><td>${esc(fmtRange(b.start_date, b.end_date))}</td><td>${pill(b.status)}</td>
             <td class="n">${num(b.quantity)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Not on any upcoming jobs.</div>'}</div>
       </div>
@@ -2338,7 +2353,7 @@ async function renderPackage(view, p) {
         <div data-prod-history></div>
       </div>
     </div></div>`;
-  get(`/activity?product=${id}&limit=15`).then((list) => { const b = $('[data-prod-history]', view); if (b) b.innerHTML = historyCard(list, `#/activity/product/${id}`); }).catch(() => {});
+  get(`/activity?product=${id}&limit=15`).then((list) => { const b = $('[data-prod-history]', view); if (b) b.innerHTML = historyCard(list, `/activity/product/${id}`); }).catch(() => {});
   const again = () => renderProduct(view, id);
   wireImages(view, p, again);
   rowLinks(view);
@@ -2358,7 +2373,7 @@ async function renderPackage(view, p) {
       if (cd) { await del(`/components/${cd.dataset.compDel}`); again(); return; }
       if (e.target.closest('[data-remove]')) {
         if (await confirmModal(`Delete the package “${p.name}”? Jobs it’s already on keep their lines.`)) {
-          const r = await del(`/products/${id}`); toast(r.archived ? 'Archived (used on past jobs)' : 'Deleted'); location.hash = '#/stock';
+          const r = await del(`/products/${id}`); toast(r.archived ? 'Archived (used on past jobs)' : 'Deleted'); go('/stock');
         }
         return;
       }
@@ -2399,7 +2414,7 @@ async function renderCable(view, p) {
   const ql = p.quarantine || [];
   const activeLengths = p.lengths.filter((l) => !l.archived);
   view.innerHTML = `<div class="page">
-    <div class="page-head"><div><a class="crumb" href="#/stock">← Stock</a>
+    <div class="page-head"><div><a class="crumb" href="/stock">← Stock</a>
       <h1>${esc(p.name)}</h1><div class="sub">Cable · ${esc(p.cable_type)}${p.category ? ' · ' + esc(catLabel(p)) : ''}${p.archived ? ' · Archived' : ''}</div></div>
       <div class="actions"><button class="btn" data-print-labels="${p.id}">Print barcodes</button><button class="btn" data-edit>Edit</button>
         ${p.archived ? '<button class="btn" data-unarchive>Restore</button>' : '<button class="btn danger" data-remove>Delete</button>'}</div></div>
@@ -2432,7 +2447,7 @@ async function renderCable(view, p) {
           ${ql.map((q) => `<tr><td>${num(q.quantity)} × ${num(q.length_m)} m</td><td>${esc(q.reason)}</td><td class="muted">${esc(fmtDate(q.started_at.slice(0, 10)))}</td>
             <td class="n"><button class="btn small" data-release="${q.id}">Return to service</button></td></tr>`).join('')}</tbody></table></div>` : ''}
         <div class="card"><header><h2>Upcoming bookings</h2></header>
-          ${p.bookings.length ? `<table class="table"><tbody>${p.bookings.map((b) => `<tr class="click" data-href="#/job/${b.id}">
+          ${p.bookings.length ? `<table class="table"><tbody>${p.bookings.map((b) => `<tr class="click" data-href="/job/${b.id}">
             <td><span class="mono muted">${esc(b.number)}</span> ${esc(b.name)}<br><span class="muted small">${esc(b.lines || '')}</span></td>
             <td>${esc(fmtRange(b.start_date, b.end_date))}</td><td>${pill(b.status)}</td><td class="n">${num(b.quantity)}</td></tr>`).join('')}</tbody></table>`
             : '<div class="empty">Not on any upcoming jobs.</div>'}</div>
@@ -2442,7 +2457,7 @@ async function renderCable(view, p) {
         ${p.brand ? `<dt>Brand</dt><dd>${esc(p.brand)}</dd>` : ''}
         <dt>Cable type</dt><dd>${esc(p.cable_type)}</dd>
         <dt>Lengths</dt><dd>${activeLengths.map((l) => `${num(l.length_m)}m`).join(', ') || '—'}</dd>
-        <dt>Joins with</dt><dd>${p.joiner ? `<a href="#/product/${p.joiner.id}">${esc(p.joiner.name)}</a>${p.joiner.length_m ? ` <span class="muted">(adds ${num(p.joiner.length_m)}m)</span>` : ' <span class="muted">(connector — no length)</span>'}` : '<span class="muted">Nothing — plugs straight in</span>'}</dd>
+        <dt>Joins with</dt><dd>${p.joiner ? `<a href="/product/${p.joiner.id}">${esc(p.joiner.name)}</a>${p.joiner.length_m ? ` <span class="muted">(adds ${num(p.joiner.length_m)}m)</span>` : ' <span class="muted">(connector — no length)</span>'}` : '<span class="muted">Nothing — plugs straight in</span>'}</dd>
         ${p.power_cable ? `<dt>Power cable</dt><dd>${num(p.sockets)} × ${esc(p.socket_type || 'socket')} at the end${p.power_rating_a ? ` · rated ${num(p.power_rating_a)} A` : ''}${p.plug_type ? `<br><span class="muted">Plugs into ${esc(p.plug_type)}</span>` : ''}</dd>` : ''}
         <dt>Default rate</dt><dd>${money(p.day_rate)} / day</dd>
         <dt>Replacement</dt><dd>${money(p.replacement_value)} each</dd>
@@ -2461,7 +2476,7 @@ async function renderCable(view, p) {
       if (t.closest('[data-unarchive]')) { await put(`/products/${id}`, { archived: 0 }); again(); return; }
       if (t.closest('[data-remove]')) {
         if (await confirmModal(`Delete “${p.name}” and all its lengths? If any length has been on a job it's archived instead.`)) {
-          const r = await del(`/products/${id}`); toast(r.archived ? 'Archived (used on past jobs)' : 'Deleted'); location.hash = '#/stock';
+          const r = await del(`/products/${id}`); toast(r.archived ? 'Archived (used on past jobs)' : 'Deleted'); go('/stock');
         }
         return;
       }
@@ -2552,7 +2567,7 @@ async function renderCable(view, p) {
 
 async function renderProduct(view, id) {
   const p = await get(`/products/${id}`);
-  if (p.parent_id) { location.replace(`#/product/${p.parent_id}`); return; }
+  if (p.parent_id) { go(`/product/${p.parent_id}`, true); return; }
   if (p.item_type === 'cable') { await renderCable(view, p); return; }
   if (p.item_type === 'package') { await renderPackage(view, p); return; }
   const all = await get('/products?flat=1');
@@ -2567,7 +2582,7 @@ async function renderProduct(view, id) {
       Quantities are per one ${esc(p.name)} and round up to whole items (e.g. 0.5 receivers per mic: 3 mics → 2 receivers).</p></div>
     ${p.accessories.length ? `<table class="table"><thead><tr><th>Accessory</th><th class="n">Per unit</th><th>Pricing</th><th></th></tr></thead>
       <tbody>${p.accessories.map((a) => `<tr>
-        <td><a href="#/product/${a.accessory_id}">${esc(a.name)}</a>${a.archived ? ' <span class="pill">Archived</span>' : ''}<br><span class="muted mono">${esc(a.sku)}</span>
+        <td><a href="/product/${a.accessory_id}">${esc(a.name)}</a>${a.archived ? ' <span class="pill">Archived</span>' : ''}<br><span class="muted mono">${esc(a.sku)}</span>
           ${a.includes && a.includes.length ? `<div class="includes">which brings: ${incText(a.includes)}</div>` : ''}</td>
         <td class="n"><input type="number" min="0.01" step="any" value="${num(a.quantity)}" data-acc-qty="${a.id}" style="width:72px;text-align:right" aria-label="Quantity per unit"></td>
         <td><label class="check"><input type="checkbox" data-acc-charged="${a.id}" ${a.charged ? 'checked' : ''}> Charge ${money(a.day_rate)}/day</label></td>
@@ -2582,10 +2597,10 @@ async function renderProduct(view, id) {
       <button class="btn primary small" data-acc-add>Link</button>
     </div></div>`;
   view.innerHTML = `<div class="page">
-    <div class="page-head"><div><a class="crumb" href="#/stock">← Stock</a>
+    <div class="page-head"><div><a class="crumb" href="/stock">← Stock</a>
       <h1>${esc(p.name)}</h1><div class="sub">${esc([TYPE_ONE[p.item_type] ? (p.item_type === 'power' ? 'Power distribution' : p.item_type === 'case' ? 'Flight case' : (KIND_SHORT[p.equip_kind] || 'Equipment')) : '', p.brand, catLabel(p), p.sku].filter(Boolean).join(' · '))}${p.archived ? ' · Archived' : ''}</div></div>
       <div class="actions">
-        <a class="btn" href="#/availability">Availability grid</a>
+        <a class="btn" href="/availability">Availability grid</a>
         <button class="btn" data-print-labels="${p.id}">Print barcodes</button><button class="btn" data-edit>Edit</button>
         ${p.archived ? '<button class="btn" data-unarchive>Restore</button>' : '<button class="btn danger" data-remove>Delete</button>'}
       </div></div>
@@ -2593,7 +2608,7 @@ async function renderProduct(view, id) {
       <div class="stack">${p.sub_hire ? subHireCard(p) : unitsCard(p)}${accCard}${altCard(p, all)}
       <div class="card"><header><h2>Upcoming bookings</h2></header>
         ${p.bookings.length ? `<table class="table"><thead><tr><th>Job</th><th>Dates</th><th>Status</th><th class="n">Qty</th></tr></thead>
-          <tbody>${p.bookings.map((b) => `<tr class="click" data-href="#/job/${b.id}">
+          <tbody>${p.bookings.map((b) => `<tr class="click" data-href="/job/${b.id}">
             <td><span class="mono muted">${esc(b.number)}</span> ${esc(b.name)}</td>
             <td>${esc(fmtRange(b.start_date, b.end_date))}</td><td>${pill(b.status)}</td>
             <td class="n">${num(b.quantity)}</td></tr>`).join('')}</tbody></table>`
@@ -2605,12 +2620,12 @@ async function renderProduct(view, id) {
           ${p.brand ? `<dt>Brand</dt><dd>${esc(p.brand)}</dd>` : ''}
           ${p.item_type === 'equipment' && p.equip_kind ? `<dt>Kind</dt><dd>${esc(KIND_SHORT[p.equip_kind] || p.equip_kind)}</dd>` : ''}
           ${p.equip_kind === 'stand' ? `<dt>Stand</dt><dd>${standHeight(p) ? `Height ${esc(standHeight(p))}` : '<span class="muted">Height not set</span>'}${p.stand_height_mode === 'range' ? ' <span class="muted">(adjustable)</span>' : p.stand_height_mode === 'stepped' ? ' <span class="muted">(stepped)</span>' : ''}<br>${p.stand_load_kg ? `Max load <strong>${num(p.stand_load_kg)} kg</strong>` : '<span class="muted">Max load not set</span>'}</dd>` : ''}
-          ${p.sub_hire ? `<dt>Sub-hired from</dt><dd>${p.vendor ? `<a href="#/vendor/${p.vendor.id}">${esc(p.vendor.name)}</a>` : '<span class="muted">No vendor chosen</span>'}</dd>` : `<dt>Owned</dt><dd>${num(p.quantity)}</dd>`}
-          ${!p.sub_hire && p.vendor ? `<dt>Extra from</dt><dd><a href="#/vendor/${p.vendor.id}">${esc(p.vendor.name)}</a>${p.sub_hire_cost ? ` <span class="muted">· ${money(p.sub_hire_cost)}/day</span>` : ''} <span class="muted small">when a job needs more than you own</span></dd>` : ''}
+          ${p.sub_hire ? `<dt>Sub-hired from</dt><dd>${p.vendor ? `<a href="/vendor/${p.vendor.id}">${esc(p.vendor.name)}</a>` : '<span class="muted">No vendor chosen</span>'}</dd>` : `<dt>Owned</dt><dd>${num(p.quantity)}</dd>`}
+          ${!p.sub_hire && p.vendor ? `<dt>Extra from</dt><dd><a href="/vendor/${p.vendor.id}">${esc(p.vendor.name)}</a>${p.sub_hire_cost ? ` <span class="muted">· ${money(p.sub_hire_cost)}/day</span>` : ''} <span class="muted small">when a job needs more than you own</span></dd>` : ''}
           <dt>Day rate</dt><dd>${money(p.day_rate)}</dd>
           <dt>Replacement</dt><dd>${money(p.replacement_value)} each</dd>
           <dt>${p.item_type === 'case' ? 'Empty weight' : 'Weight'}</dt><dd>${p.weight_kg ? num(p.weight_kg) + ' kg' : '—'}</dd>
-          ${p.item_type === 'case' ? `<dt>Made for</dt><dd>${caseFor ? `<a href="#/product/${caseFor.id}">${esc(caseFor.name)}</a>` : '<span class="muted">General — scan it at check-out to load it</span>'}</dd>
+          ${p.item_type === 'case' ? `<dt>Made for</dt><dd>${caseFor ? `<a href="/product/${caseFor.id}">${esc(caseFor.name)}</a>` : '<span class="muted">General — scan it at check-out to load it</span>'}</dd>
             ${sizeText(p, 'inner') ? `<dt>Inside</dt><dd>${esc(sizeText(p, 'inner'))} <span class="muted small">(W × D × H)</span></dd>` : ''}` : ''}
           ${p.category ? `<dt>Category</dt><dd>${esc(catLabel(p))}</dd>` : ''}
           ${sizeText(p) ? `<dt>${p.item_type === 'case' ? 'Outside' : 'Size'}</dt><dd>${esc(sizeText(p))} <span class="muted small">(W × D × H)</span></dd>` : ''}
@@ -2620,7 +2635,7 @@ async function renderProduct(view, id) {
           ${p.item_type === 'power' ? `<dt>Sockets</dt><dd>${num(p.sockets)} × ${esc(p.socket_type || 'socket')}${p.power_rating_a ? ` · rated ${num(p.power_rating_a)} A` : ''}</dd>
             <dt>Plugs into</dt><dd>${esc(p.plug_type || '—')}</dd>` : ''}
           ${p.notes ? `<dt>Notes</dt><dd class="notes-text">${esc(p.notes)}</dd>` : ''}
-          ${p.accessory_of.length ? `<dt>Accessory of</dt><dd>${p.accessory_of.map((x) => `<a href="#/product/${x.product_id}">${esc(x.name)}</a> (${num(x.quantity)} each)`).join('<br>')}</dd>` : ''}
+          ${p.accessory_of.length ? `<dt>Accessory of</dt><dd>${p.accessory_of.map((x) => `<a href="/product/${x.product_id}">${esc(x.name)}</a> (${num(x.quantity)} each)`).join('<br>')}</dd>` : ''}
         </dl></div></div>${['equipment', 'power', 'case'].includes(p.item_type) ? `<div class="card" id="roi"><header><h2>Return on investment</h2><span class="muted small">and day rate help</span></header>
           <div class="body" data-roi><p class="muted">Loading…</p></div></div>` : ''}<div data-prod-history></div></div>
     </div></div>`;
@@ -2634,7 +2649,7 @@ async function renderProduct(view, id) {
   }
   get(`/activity?product=${id}&limit=15`).then((list) => {
     const box = $('[data-prod-history]', view);
-    if (box) box.innerHTML = historyCard(list, `#/activity/product/${id}`);
+    if (box) box.innerHTML = historyCard(list, `/activity/product/${id}`);
   }).catch(() => {});
   wireImages(view, p, () => renderProduct(view, id));
   rowLinks(view);
@@ -2670,7 +2685,7 @@ async function renderProduct(view, id) {
         if (await confirmModal(`Delete “${p.name}”? If it's been used on any job it will be archived instead, so old quotes stay intact.`)) {
           const r = await del(`/products/${id}`);
           toast(r.archived ? 'Archived (it’s used on past jobs)' : 'Deleted');
-          location.hash = '#/stock';
+          go('/stock');
         }
         return;
       }
@@ -2711,7 +2726,7 @@ function altCard(p, all) {
     <div class="body" style="padding-bottom:6px"><p class="muted" style="margin:0">When there aren’t enough <strong>${esc(p.name)}</strong> free for a job,
       these are offered instead. Nothing is ever swapped without you confirming it.</p></div>
     ${(p.alternatives || []).length ? `<table class="table"><tbody>${p.alternatives.map((a) => `<tr>
-      <td><div class="name-cell">${thumbHTML(a)}<div><a href="#/product/${a.alt_id}">${esc(a.name)}</a>${a.archived ? ' <span class="pill">Archived</span>' : ''}<br><span class="muted mono small">${esc(a.sku || '')}</span></div></div></td>
+      <td><div class="name-cell">${thumbHTML(a)}<div><a href="/product/${a.alt_id}">${esc(a.name)}</a>${a.archived ? ' <span class="pill">Archived</span>' : ''}<br><span class="muted mono small">${esc(a.sku || '')}</span></div></div></td>
       <td class="n muted">own ${num(a.quantity)}</td><td class="n">${money(a.day_rate)}/day</td>
       <td class="n"><button class="icon-btn" data-alt-del="${a.id}" title="Remove" aria-label="Remove">×</button></td></tr>`).join('')}</tbody></table>`
       : '<div class="empty" style="padding:14px">No alternatives yet.</div>'}
@@ -2764,7 +2779,7 @@ async function alternativesModal(itemId, { auto = false, remaining = 0 } = {}) {
           <td class="n"><span class="badge sub">Hire in</span></td>
           <td class="n"><input type="number" min="1" max="${num(d.item.quantity)}" step="1" value="${num(Math.max(1, subDefault))}" data-alt-qty="sub" style="width:70px;text-align:right" aria-label="How many to sub-hire"></td></tr>` : ''}
         </tbody></table>
-        ${sub.can && !vendors.length ? '<p class="muted small">No vendors yet — add one in <a href="#/vendors">Vendors</a> to sub-hire.</p>' : ''}
+        ${sub.can && !vendors.length ? '<p class="muted small">No vendors yet — add one in <a href="/vendors">Vendors</a> to sub-hire.</p>' : ''}
         <p class="muted small" data-alt-summary style="margin-bottom:0"></p>
       </div>
       <footer>${remaining > 0 ? `<button class="btn" data-alt-stop title="Don’t ask about the other ${num(remaining)} short item${remaining === 1 ? '' : 's'}" style="margin-right:auto">Skip the rest</button>` : ''}<button class="btn" data-x>Keep as it is</button><button class="btn primary" data-alt-go>Swap</button></footer>`, { wide: true });
@@ -2844,7 +2859,7 @@ async function subHireModal(itemId) {
 function subHireCard(p) {
   const v = p.vendor;
   return `<div class="card"><header><h2>Sub-hire</h2><span class="badge sub">Not owned</span></header><div class="body">
-    <p style="margin-top:0">Hired in for each job${v ? ` from <a href="#/vendor/${v.id}"><strong>${esc(v.name)}</strong></a>` : ''}. It never shows as short — jobs list how many to order instead.</p>
+    <p style="margin-top:0">Hired in for each job${v ? ` from <a href="/vendor/${v.id}"><strong>${esc(v.name)}</strong></a>` : ''}. It never shows as short — jobs list how many to order instead.</p>
     <dl class="kv">
       <dt>Their price</dt><dd>${p.sub_hire_cost ? `${money(p.sub_hire_cost)} / day` : '<span class="muted">Not set</span>'}</dd>
       <dt>Your day rate</dt><dd>${money(p.day_rate)}${p.sub_hire_cost && p.day_rate ? ` <span class="muted">(${money(p.day_rate - p.sub_hire_cost)} margin a day)</span>` : ''}</dd>
@@ -2988,7 +3003,7 @@ function subUnitsHTML(p) {
       <tbody>${list.map((u) => `<tr data-asset="${u.id}" class="${u.state === 'ended' ? 'ended' : ''}">
         <td><div class="scan-cell"><input data-asset-f="asset_number" value="${esc(u.asset_number)}" aria-label="Barcode">
           <button type="button" class="icon-btn" data-rescan="${u.id}" title="Scan their barcode for this unit" aria-label="Scan a barcode for this unit">${SCAN_ICON}</button></div></td>
-        <td>${u.vendor_id ? `<a href="#/vendor/${u.vendor_id}">${esc(u.vendor_name || '')}</a>` : '<span class="muted">—</span>'}</td>
+        <td>${u.vendor_id ? `<a href="/vendor/${u.vendor_id}">${esc(u.vendor_name || '')}</a>` : '<span class="muted">—</span>'}</td>
         <td class="nowrap">${range(u)}</td>
         <td>${state(u)}</td>
         <td class="n nowrap"><button class="btn small" data-sub-edit="${u.id}">Edit</button>
@@ -3136,7 +3151,7 @@ async function subUnitsModal(p, unit = null) {
   const vendors = await get('/vendors');
   if (!vendors.length) {
     toast('Add the vendor first — in Vendors', 'error');
-    location.hash = '#/vendors';
+    go('/vendors');
     return null;
   }
   const vOpts = [['', 'Choose a vendor…'], ...vendors.map((v) => [v.id, v.name])];
@@ -3268,10 +3283,10 @@ async function renderCheck(view, id, dir) {
   const job = st.job;
   const other = dir === 'out' ? 'in' : 'out';
   view.innerHTML = `<div class="page check-page">
-    <div class="page-head"><div><a class="crumb" href="#/job/${id}">← ${esc(job.number)} ${esc(job.name)}</a>
+    <div class="page-head"><div><a class="crumb" href="/job/${id}">← ${esc(job.number)} ${esc(job.name)}</a>
       <h1>${dir === 'out' ? 'Check out' : 'Check in'}</h1><div class="sub">${esc(fmtRange(job.start_date, job.end_date))}${job.venue ? ' · ' + esc(job.venue) : ''}</div></div>
-      <div class="actions"><a class="btn" href="#/check/${id}/${other}">Switch to check ${other}</a>
-        <a class="btn" href="#/print/${id}/picklist">Prep list</a></div></div>
+      <div class="actions"><a class="btn" href="/check/${id}/${other}">Switch to check ${other}</a>
+        <a class="btn" href="/print/${id}/picklist">Prep list</a></div></div>
     <div class="card scan-card"><div class="body">
       <label class="scan-label" for="scan">Scan a barcode, or type an asset number / item code and press Enter</label>
       <input id="scan" class="scan-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. AUD-K12-003">
@@ -3564,11 +3579,11 @@ async function renderPlan(view, jid) {
   };
 
   view.innerHTML = `<div class="page plan-page">
-    <div class="page-head"><div><a class="crumb" href="#/job/${jid}">← ${esc(job.number)} ${esc(job.name)}</a><h1>Room plan</h1>
+    <div class="page-head"><div><a class="crumb" href="/job/${jid}">← ${esc(job.number)} ${esc(job.name)}</a><h1>Room plan</h1>
       <div class="sub">Drag things to place them. Sizes come from each stock item (Stock → Edit → Size).${editable ? '' : ' <strong>This job is locked — view only.</strong>'}</div></div>
       <div class="actions"><span class="muted small" data-save-state>${data.updated_at ? `Saved${data.updated_by ? ` by ${esc(data.updated_by)}` : ''}` : ''}</span>
         <div class="tabs" role="tablist">${[['top', 'Top down'], ['stage', 'Stage view'], ['both', 'Both']].map(([k, l]) => `<button data-pview="${k}">${l}</button>`).join('')}</div>
-        <a class="btn" href="#/print/${jid}/plan">Print</a></div></div>
+        <a class="btn" href="/print/${jid}/plan">Print</a></div></div>
     <div class="plan-rooms" data-rooms></div>
     <div class="plan-layout">
       <aside class="card plan-palette" data-palette></aside>
@@ -3764,8 +3779,8 @@ async function renderPlan(view, jid) {
     else return;
     drawCanvas(); drawInspector(); save();
   };
-  const leave = () => { if (dirty) put(`/jobs/${jid}/plan`, { plan, quiet: !loud }).catch(() => {}); window.removeEventListener('hashchange', leave); };
-  window.addEventListener('hashchange', leave);
+  const leave = () => { if (dirty) put(`/jobs/${jid}/plan`, { plan, quiet: !loud }).catch(() => {}); window.removeEventListener('het:navigate', leave); };
+  window.addEventListener('het:navigate', leave);
   drawAll();
   view.tabIndex = -1;
 }
@@ -3808,20 +3823,20 @@ async function renderScan(view) {
     void scan.offsetWidth;
     scan.classList.add('flash-' + flashKind(kind));
   };
-  const jobRow = (j) => `<tr class="click" data-href="#/job/${j.id}"><td><span class="mono muted">${esc(j.number)}</span> <strong>${esc(j.name)}</strong> ${pill(j.status)}
+  const jobRow = (j) => `<tr class="click" data-href="/job/${j.id}"><td><span class="mono muted">${esc(j.number)}</span> <strong>${esc(j.name)}</strong> ${pill(j.status)}
       ${j.current ? '<span class="badge ok">on now</span>' : ''}<br><span class="muted small">${esc(fmtRange(j.start_date, j.end_date))}${j.venue ? ' · ' + esc(j.venue) : ''}</span></td>
     <td class="n">${num(j.quantity)} on job</td><td class="n">${num(j.out)} out · ${num(j.in)} back</td>
-    <td class="n"><a class="btn small" href="#/check/${j.id}/in">Check in</a></td></tr>`;
+    <td class="n"><a class="btn small" href="/check/${j.id}/in">Check in</a></td></tr>`;
   const drawResult = (r) => {
     const p = r.product;
-    $('[data-result]', view).innerHTML = `<div class="card"><header><h2>${esc(p.name)}</h2><a class="btn small" href="#/product/${p.parent_id || p.id}">Open stock item</a></header>
+    $('[data-result]', view).innerHTML = `<div class="card"><header><h2>${esc(p.name)}</h2><a class="btn small" href="/product/${p.parent_id || p.id}">Open stock item</a></header>
       <div class="body"><div class="name-cell">${p.image_id ? `<img class="thumb" style="width:72px;height:72px" src="/img/${p.image_id}/thumb" alt="">` : ''}
         <dl class="kv" style="margin:0">
           ${r.asset ? `<dt>Unit</dt><dd class="mono">${esc(r.asset.asset_number)}${r.asset.serial_number ? ` <span class="muted">· serial ${esc(r.asset.serial_number)}</span>` : ''}</dd>` : `<dt>Code</dt><dd class="mono">${esc(r.code)}</dd>`}
           ${p.brand ? `<dt>Brand</dt><dd>${esc(p.brand)}</dd>` : ''}
           <dt>Category</dt><dd>${esc(catLabel(p) || '—')}</dd>
           ${r.quarantine ? `<dt>Status</dt><dd><span class="badge warn">In quarantine</span> ${esc(r.quarantine.reason || '')}</dd>` : ''}
-          <dt>Where</dt><dd>${r.out_on ? `<strong>Out on <a href="#/job/${r.out_on.id}">${esc(r.out_on.number)} ${esc(r.out_on.name)}</a></strong>
+          <dt>Where</dt><dd>${r.out_on ? `<strong>Out on <a href="/job/${r.out_on.id}">${esc(r.out_on.number)} ${esc(r.out_on.name)}</a></strong>
             <span class="muted">since ${esc(fmtDate(r.out_on.since.slice(0, 10)))} ${esc(r.out_on.since.slice(11, 16))}${r.out_on.by ? ` · by ${esc(r.out_on.by)}` : ''}</span>`
             : r.asset ? 'In the store (not checked out on any job)' : (() => { const n = r.jobs.reduce((a, j) => a + Math.max(0, j.out - j.in), 0); return n ? `${num(n)} ${n === 1 ? 'is' : 'are'} out on ${r.jobs.filter((j) => j.out > j.in).length === 1 ? 'a job' : 'jobs'}` : 'None are out on jobs right now'; })()}</dd>
         </dl></div></div>
@@ -3875,13 +3890,13 @@ async function renderQuarantine(view) {
     <div class="page-head"><div><h1>Quarantine</h1><div class="sub">Equipment out of service. It isn't counted as available until it's returned to service.</div></div></div>
     <div class="card"><header><h2>Currently in quarantine</h2><span class="muted">${plural(q.active.reduce((s, x) => s + x.quantity, 0), 'unit')}</span></header>
       ${q.active.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Item</th><th>Unit</th><th class="n">Qty</th><th>Reason</th><th>Since</th><th></th></tr></thead><tbody>
-      ${q.active.map((x) => `<tr><td><a href="#/product/${x.product_id}"><strong>${esc(x.product_name)}</strong></a><br><span class="muted">${esc(x.category)}</span></td>
+      ${q.active.map((x) => `<tr><td><a href="/product/${x.product_id}"><strong>${esc(x.product_name)}</strong></a><br><span class="muted">${esc(x.category)}</span></td>
         <td class="mono">${esc(x.asset_number || '—')}</td><td class="n">${num(x.quantity)}</td><td>${esc(x.reason)}</td>
         <td>${esc(fmtDate(x.started_at.slice(0, 10)))}</td>
         <td class="n"><button class="btn small" data-release="${x.id}">Return to service</button></td></tr>`).join('')}</tbody></table></div>`
       : '<div class="empty">Nothing in quarantine. To quarantine something, open it in Stock.</div>'}</div>
     ${q.recent.length ? `<div class="card"><header><h2>Recently returned to service</h2></header><div class="table-wrap"><table class="table"><tbody>
-      ${q.recent.map((x) => `<tr><td><a href="#/product/${x.product_id}">${esc(x.product_name)}</a></td><td class="mono">${esc(x.asset_number || '')}</td>
+      ${q.recent.map((x) => `<tr><td><a href="/product/${x.product_id}">${esc(x.product_name)}</a></td><td class="mono">${esc(x.asset_number || '')}</td>
         <td class="n">${num(x.quantity)}</td><td class="muted">${esc(x.reason)}</td><td class="muted">back ${esc(fmtDate(x.released_at.slice(0, 10)))}</td></tr>`).join('')}
       </tbody></table></div></div>` : ''}</div>`;
   view.onclick = async (e) => {
@@ -3909,7 +3924,7 @@ async function renderContacts(view) {
     const list = all.filter((c) => !q || `${c.name} ${c.company} ${c.email} ${c.phone}`.toLowerCase().includes(q));
     $('[data-list]', view).innerHTML = all.length ? `<div class="table-wrap"><table class="table">
       <thead><tr><th>Name</th><th>Company</th><th>Email</th><th>Phone</th><th class="n">Jobs</th></tr></thead>
-      <tbody>${list.map((c) => `<tr class="click" data-href="#/contact/${c.id}">
+      <tbody>${list.map((c) => `<tr class="click" data-href="/contact/${c.id}">
         <td><strong>${esc(c.name)}</strong></td><td>${esc(c.company)}</td>
         <td>${esc(c.email)}</td><td>${esc(c.phone)}</td><td class="n">${c.job_count}</td></tr>`).join('')
         || '<tr><td colspan="5" class="empty">No matches.</td></tr>'}</tbody></table></div>`
@@ -3932,7 +3947,7 @@ async function renderContact(view, id) {
   const c = await get(`/contacts/${id}`);
   const spend = c.jobs.filter((j) => ['confirmed', 'out', 'returned', 'invoiced'].includes(j.status)).reduce((s, j) => s + j.totals.net, 0);
   view.innerHTML = `<div class="page">
-    <div class="page-head"><div><a class="crumb" href="#/contacts">← Clients</a>
+    <div class="page-head"><div><a class="crumb" href="/contacts">← Clients</a>
       <h1>${esc(c.name)}</h1><div class="sub">${esc(c.company)}</div></div>
       <div class="actions"><button class="btn" data-edit>Edit</button>
         <button class="btn danger" data-remove>Delete</button>
@@ -3940,7 +3955,7 @@ async function renderContact(view, id) {
     <div class="grid-2">
       <div class="card"><header><h2>Jobs</h2><span class="muted">${money(spend)} confirmed net</span></header>
         ${c.jobs.length ? `<table class="table"><thead><tr><th>Job</th><th>Dates</th><th>Status</th><th class="n">Net</th></tr></thead>
-          <tbody>${c.jobs.map((j) => `<tr class="click" data-href="#/job/${j.id}">
+          <tbody>${c.jobs.map((j) => `<tr class="click" data-href="/job/${j.id}">
             <td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong></td>
             <td>${esc(fmtRange(j.start_date, j.end_date))}</td><td>${pill(j.status)}</td>
             <td class="n">${money(j.totals.net)}</td></tr>`).join('')}</tbody></table>`
@@ -3964,7 +3979,7 @@ async function renderContact(view, id) {
         if (await confirmModal(`Delete ${c.name}? If they have jobs they'll be archived instead.`)) {
           const r = await del(`/contacts/${id}`);
           toast(r.archived ? 'Archived (they have jobs on record)' : 'Deleted');
-          location.hash = '#/contacts';
+          go('/contacts');
         }
         return;
       }
@@ -3986,7 +4001,7 @@ function activityHTML(list, { showJob = true, showProduct = false } = {}) {
     if (d !== day) { out += `</ul><div class="act-day">${esc(fmtDate(d, true))}</div><ul class="act-list">`; day = d; }
     out += `<li><span class="t">${esc(a.at.slice(11, 16))}</span><span><span class="kind-dot ${esc(a.kind)}" title="${esc(KIND_LABEL_ACT[a.kind] || a.kind)}"></span><span class="who">${esc(a.user_name || 'This computer')}</span>
       <span class="what">${esc(a.summary)}</span>
-      ${(showJob && a.job_id && a.job_number) || (showProduct && a.product_id) ? `<span class="meta">${showJob && a.job_id && a.job_number ? `<a href="#/job/${a.job_id}">${esc(a.job_number)} ${esc(a.job_name || '')}</a>` : ''}${showProduct && a.product_id ? ` <a href="#/product/${a.product_id}">View item</a>` : ''}</span>` : ''}</span></li>`;
+      ${(showJob && a.job_id && a.job_number) || (showProduct && a.product_id) ? `<span class="meta">${showJob && a.job_id && a.job_number ? `<a href="/job/${a.job_id}">${esc(a.job_number)} ${esc(a.job_name || '')}</a>` : ''}${showProduct && a.product_id ? ` <a href="/product/${a.product_id}">View item</a>` : ''}</span>` : ''}</span></li>`;
   }
   return out + '</ul>';
 }
@@ -3998,16 +4013,16 @@ function historyCard(list, link) {
 async function renderActivity(view, scope, scopeId) {
   const users = await get('/users').catch(() => []);
   const f = (S.actFilter ||= { user: '', kind: '', q: '' });
-  // #/activity/job/12 or #/activity/product/34: only that job's (or item's) history
+  // /activity/job/12 or /activity/product/34: only that job's (or item's) history
   const only = (scope === 'job' || scope === 'product') && Number(scopeId) ? { key: scope, id: Number(scopeId) } : null;
   let title = 'Activity', sub = 'Who created jobs, added kit, scanned items out and in, and changed stock or settings.', crumb = '';
   if (only) {
     try {
       const o = await get(`/${only.key === 'job' ? 'jobs' : 'products'}/${only.id}`);
       title = `History — ${only.key === 'job' ? `${o.number} ${o.name}` : o.name}`;
-      crumb = `<a class="crumb" href="#/${only.key}/${only.id}">← ${esc(only.key === 'job' ? `${o.number} ${o.name}` : o.name)}</a>`;
+      crumb = `<a class="crumb" href="/${only.key}/${only.id}">← ${esc(only.key === 'job' ? `${o.number} ${o.name}` : o.name)}</a>`;
     } catch { title = 'History'; }
-    sub = `Only what happened on this ${only.key === 'job' ? 'job' : 'item'}. <a href="#/activity">See all activity</a>`;
+    sub = `Only what happened on this ${only.key === 'job' ? 'job' : 'item'}. <a href="/activity">See all activity</a>`;
   }
   view.innerHTML = `<div class="page">
     <div class="page-head"><div>${crumb}<h1>${esc(title)}</h1><div class="sub">${sub}</div></div></div>
@@ -4052,7 +4067,7 @@ async function renderVendors(view) {
     const list = all.filter((v) => !q || `${v.name} ${v.contact_name} ${v.email} ${v.phone} ${v.notes}`.toLowerCase().includes(q));
     $('[data-list]', view).innerHTML = all.length ? `<div class="table-wrap"><table class="table">
       <thead><tr><th>Vendor</th><th>Contact</th><th>Email</th><th>Phone</th><th class="n">Sub-hire items</th></tr></thead>
-      <tbody>${list.map((v) => `<tr class="click" data-href="#/vendor/${v.id}">
+      <tbody>${list.map((v) => `<tr class="click" data-href="/vendor/${v.id}">
         <td><strong>${esc(v.name)}</strong>${v.archived ? ' <span class="pill">Archived</span>' : ''}</td><td>${esc(v.contact_name)}</td>
         <td>${esc(v.email)}</td><td>${esc(v.phone)}</td><td class="n">${num(v.item_count)}</td></tr>`).join('')
         || '<tr><td colspan="5" class="empty">No matches.</td></tr>'}</tbody></table></div>`
@@ -4062,7 +4077,7 @@ async function renderVendors(view) {
   rowLinks(view);
   const base = view.onclick;
   view.onclick = async (e) => {
-    if (e.target.closest('[data-add]')) { e.preventDefault(); const v = await vendorModal(); if (v) { toast(`${v.name} added`, 'ok'); location.hash = `#/vendor/${v.id}`; } return; }
+    if (e.target.closest('[data-add]')) { e.preventDefault(); const v = await vendorModal(); if (v) { toast(`${v.name} added`, 'ok'); go(`/vendor/${v.id}`); } return; }
     base(e);
   };
   view.oninput = (e) => { if (e.target.matches('[data-q]')) { S.vendorQuery = e.target.value.trim(); draw(); } };
@@ -4073,7 +4088,7 @@ async function renderVendors(view) {
 async function renderVendor(view, id) {
   const v = await get(`/vendors/${id}`);
   view.innerHTML = `<div class="page">
-    <div class="page-head"><div><a class="crumb" href="#/vendors">← Vendors</a>
+    <div class="page-head"><div><a class="crumb" href="/vendors">← Vendors</a>
       <h1>${esc(v.name)}</h1><div class="sub">${esc([v.contact_name, v.account_ref ? `Account ${v.account_ref}` : ''].filter(Boolean).join(' · '))}${v.archived ? ' · Archived' : ''}</div></div>
       <div class="actions"><button class="btn" data-edit>Edit</button>
         <button class="btn danger" data-remove>Delete</button>
@@ -4082,13 +4097,13 @@ async function renderVendor(view, id) {
       <div>
         <div class="card"><header><h2>Sub-hire stock</h2><span class="muted">${plural(v.items.length, 'item')}</span></header>
           ${v.items.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Item</th><th class="n">Their price / day</th><th class="n">Your day rate</th></tr></thead>
-            <tbody>${v.items.map((p) => `<tr class="click" data-href="#/product/${p.id}"><td><div class="name-cell">${thumbHTML(p)}<div><strong>${esc(p.name)}</strong>${p.brand ? ` <span class="brand-tag">${esc(p.brand)}</span>` : ''}${p.archived ? ' <span class="pill">Archived</span>' : ''}<br><span class="muted small">${esc(p.category)}</span></div></div></td>
+            <tbody>${v.items.map((p) => `<tr class="click" data-href="/product/${p.id}"><td><div class="name-cell">${thumbHTML(p)}<div><strong>${esc(p.name)}</strong>${p.brand ? ` <span class="brand-tag">${esc(p.brand)}</span>` : ''}${p.archived ? ' <span class="pill">Archived</span>' : ''}<br><span class="muted small">${esc(p.category)}</span></div></div></td>
               <td class="n">${p.sub_hire_cost ? money(p.sub_hire_cost) : '—'}</td><td class="n">${money(p.day_rate)}</td></tr>`).join('')}</tbody></table></div>`
             : '<div class="empty">Nothing linked yet. <a href="#" data-add-item>Add a sub-hire item</a>, or open any stock item, tick “Sub-hired” and pick this vendor.</div>'}
         </div>
         <div class="card"><header><h2>Coming up</h2><span class="muted">jobs using their kit</span></header>
           ${v.upcoming.length ? `<table class="table"><thead><tr><th>Job</th><th>Dates</th><th>Item</th><th class="n">Qty</th></tr></thead><tbody>
-            ${v.upcoming.map((j) => `<tr class="click" data-href="#/job/${j.id}"><td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong> ${pill(j.status)}</td>
+            ${v.upcoming.map((j) => `<tr class="click" data-href="/job/${j.id}"><td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong> ${pill(j.status)}</td>
               <td>${esc(fmtRange(j.start_date, j.end_date))}</td><td>${esc(j.item)}</td><td class="n"><strong>${num(j.quantity)}</strong></td></tr>`).join('')}</tbody></table>`
             : '<div class="empty">Nothing booked from them yet.</div>'}
         </div>
@@ -4118,7 +4133,7 @@ async function renderVendor(view, id) {
         if (await confirmModal(`Delete ${v.name}? If stock is linked to them they'll be archived instead.`)) {
           const r = await del(`/vendors/${id}`);
           toast(r.archived ? 'Archived (stock is linked to them)' : 'Deleted');
-          location.hash = '#/vendors';
+          go('/vendors');
         }
         return;
       }
@@ -4334,7 +4349,7 @@ async function drawMeCard(view) {
   const card = $('[data-me-card]', view);
   if (!card) return;
   const me = await get('/me/identity');
-  $('.body', card).innerHTML = `<p class="muted" style="margin-top:0">Both optional. They’re added to <a href="#/requests">requests</a> you make,
+  $('.body', card).innerHTML = `<p class="muted" style="margin-top:0">Both optional. They’re added to <a href="/requests">requests</a> you make,
       so you can be credited in the change log when your idea is built. ${S.meta && S.meta.users_enabled ? `These are <strong>${esc(me.who)}</strong>’s details.` : ''}</p>
     <div class="form-grid" style="padding:0">
       <label class="field half"><span>Name / alias</span><input data-me-alias value="${esc(me.alias)}" maxlength="80" placeholder="e.g. Jess, or SoundGuy"></label>
@@ -4393,16 +4408,16 @@ async function drawChangelogCard(view) {
   const cl = await get('/changelog');
   const cur = cl.versions.find((v) => v.version === cl.current) || cl.versions[0];
   $('.body', card).innerHTML = `${cur ? versionHTML(cur, cl.current) : '<p class="muted">No change log.</p>'}
-    <div class="actions" style="margin-top:10px"><a class="btn small" href="#/changelog">Every version (${num(cl.versions.length)})</a>
-      <a class="btn small" href="#/requests">Requests</a></div>`;
+    <div class="actions" style="margin-top:10px"><a class="btn small" href="/changelog">Every version (${num(cl.versions.length)})</a>
+      <a class="btn small" href="/requests">Requests</a></div>`;
 }
 
 async function renderChangelog(view) {
   const cl = await get('/changelog');
   view.innerHTML = `<div class="page">
-    <div class="page-head"><div><a class="crumb" href="#/settings">← Settings</a><h1>Change log</h1>
+    <div class="page-head"><div><a class="crumb" href="/settings">← Settings</a><h1>Change log</h1>
       <div class="sub">Everything that’s changed in each version of ${esc(appName())}. You’re on ${esc(cl.current)}.</div></div>
-      <div class="actions"><a class="btn" href="#/requests">Make a request</a></div></div>
+      <div class="actions"><a class="btn" href="/requests">Make a request</a></div></div>
     <div class="card"><div class="body changelog">${cl.versions.map((v) => versionHTML(v, cl.current)).join('')}</div></div></div>`;
 }
 
@@ -4424,14 +4439,14 @@ async function renderRequests(view) {
             <label class="field"><span>Title</span><input name="title" maxlength="200" required placeholder="e.g. Subcategories for lighting"></label>
             <label class="field"><span>Details</span><textarea name="details" rows="5" maxlength="5000" placeholder="What would you like, and why? An example helps."></textarea></label>
             <p class="muted small" style="margin:0;flex-basis:100%">From <strong>${esc(me.who)}</strong>${me.alias || me.company ? ` (${esc([me.alias, me.company].filter(Boolean).join(', '))})` : ''}.
-              ${me.alias || me.company ? '' : 'Add your name / alias and company in <a href="#/settings/me">Settings → Updates → Your details</a> to be credited.'}</p>
+              ${me.alias || me.company ? '' : 'Add your name / alias and company in <a href="/settings/me">Settings → Updates → Your details</a> to be credited.'}</p>
             <div class="actions" style="flex-basis:100%"><button class="btn primary" type="submit">Add request</button></div>
           </form></div>
         <div class="card"><header><h2>About exporting</h2></header><div class="body">
           <p class="muted" style="margin-top:0">Each request gets an ID made from this install’s ID <span class="mono">${esc(d.instance_id)}</span> and a number, e.g.
             <span class="mono">${esc(d.instance_id)}-0001</span>. <strong>Export requests</strong> downloads the open ones as a CSV file to send in.</p>
           <p class="muted" style="margin-bottom:0">When an update includes a request, installing it moves that request to <strong>Done</strong> with the version it arrived in,
-            and credits the person in the <a href="#/changelog">change log</a> if they gave their details.</p></div></div>
+            and credits the person in the <a href="/changelog">change log</a> if they gave their details.</p></div></div>
       </div>
       <div class="stack">
         <div class="card"><header><h2>Open</h2><span class="muted">${num(d.open.length)}</span></header>
@@ -4482,8 +4497,8 @@ async function renderRequests(view) {
 }
 
 const SETTINGS_TABS = [
-  { key: 'users', label: 'Users', cards: ['users', 'network'], admin: true, save: false,
-    sub: 'Who can sign in, and using the app from other devices.' },
+  { key: 'users', label: 'Users', cards: ['users', 'network', 'tailscale'], admin: true, save: false,
+    sub: 'Who can sign in, using the app from other devices, and reaching it from anywhere.' },
   { key: 'customise', label: 'Customisation', cards: ['logo', 'appearance', 'icons', 'sounds', 'doc-layout'], admin: true,
     sub: 'Logos, app icon, colours, light and dark mode, fonts, icons, scan sounds and the layout of quotes and invoices.' },
   { key: 'company', label: 'Company information', cards: ['company', 'invoicing', 'money', 'jobs-settings', 'documents'], admin: true,
@@ -4494,7 +4509,7 @@ const SETTINGS_TABS = [
   { key: 'updates', label: 'Updates', cards: ['me', 'update', 'changelog', 'data'], adminCards: ['update', 'data'],
     sub: 'Your details, software updates, the change log and your data.' },
 ];
-// Old links to a card (e.g. #/settings/zoho) open the tab it's on.
+// Old links to a card (e.g. /settings/zoho) open the tab it's on.
 const SETTINGS_CARD_TAB = Object.fromEntries(SETTINGS_TABS.flatMap((t) => t.cards.map((c) => [c, t.key])));
 
 /** Put the settings cards into tabs. Tabs (and cards) that only hold admin settings are hidden from everyone else. */
@@ -4530,14 +4545,14 @@ function arrangeSettingsTabs(view, meta, want) {
     const sv = $('[data-save]', view);
     if (sv) sv.hidden = !admin || t.save === false;
     // Keep the tab in the address without reloading the page (unsaved changes on other tabs are kept).
-    history.replaceState(null, '', `#/settings/${k}`);
+    history.replaceState(null, '', `/settings/${k}`);
   };
   bar.addEventListener('click', (e) => { const b = e.target.closest('[data-settings-tab]'); if (b) show(b.dataset.settingsTab); });
   show(key);
   if (want && SETTINGS_CARD_TAB[want] && want !== key) setTimeout(() => $(`#${CSS.escape(want)}`, form)?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 100);
 }
 
-async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
+async function renderSettings(view, tab = location.pathname.split('/')[2] || '') {
   try { S.fonts = await get('/fonts'); } catch { S.fonts = []; }
   const [st, meta] = await Promise.all([get('/settings'), get('/meta')]);
   const s = S.settings = st;
@@ -4663,6 +4678,7 @@ async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
         <div class="card settings-section" id="changelog" data-changelog-card><header><h2>Change log</h2><span class="pill">Version ${esc(meta.version)}</span></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="users" data-users-card><header><h2>Users</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="network" data-net-card><header><h2>Network access</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
+        <div class="card settings-section" id="tailscale" data-ts-card><header><h2>Remote access</h2><span class="muted small">with Tailscale</span></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="update"><header><h2>Software update</h2><span class="pill">Version ${esc(meta.version)}</span></header>
           ${!meta.can_update ? `<div class="body"><p class="muted" style="margin:0">Updates are installed on the computer running ${esc(appName())} (${esc(meta.server_name)}).</p>
             <p class="muted small" style="margin:8px 0 0">If that’s a server with no screen, turn on server mode there once and admins can update it from here: run <code>horan-rms headless on</code>.</p></div>`
@@ -4708,6 +4724,7 @@ async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
   drawSoundsCard(view);
   drawLayoutCard(view, s);
   drawNetworkCard(view);
+  drawTailscaleCard(view);
   drawUsersCard(view);
   drawMeCard(view);
   drawChangelogCard(view);
@@ -4980,7 +4997,7 @@ async function drawUsersCard(view) {
   const canEdit = !users.length || (me && me.is_admin);
   const active = users.filter((u) => u.active);
   $('.body', card).innerHTML = !users.length
-    ? `<p style="margin-top:0">Add the people who use ${esc(appName())}. Each gets a <strong>password</strong>, and the app records who creates jobs, adds kit, and scans items out and in (see <a href="#/activity">Activity</a>).</p>
+    ? `<p style="margin-top:0">Add the people who use ${esc(appName())}. Each gets a <strong>password</strong>, and the app records who creates jobs, adds kit, and scans items out and in (see <a href="/activity">Activity</a>).</p>
        <p class="muted small">Once there’s a user, everyone signs in with their name and password, on this computer too. Start with yourself. The first person is an admin, who can change settings and manage users.</p>
        <button type="button" class="btn primary" data-user-add>Add the first user (you)</button>`
     : `<ul class="user-list">${users.map((u) => `<li><span class="u"><span class="avatar" style="${u.active ? '' : 'opacity:.4'}">${esc(initials(u.name))}</span>
@@ -5038,6 +5055,107 @@ function deviceLabel(agent) {
   return `${os} · ${br}`;
 }
 
+/** Settings → Users → Remote access: set up Tailscale step by step, to use the app from anywhere. */
+let tsTimer = null;
+async function drawTailscaleCard(view, fresh = true) {
+  const card = $('[data-ts-card]', view);
+  clearTimeout(tsTimer);
+  if (!card || !document.body.contains(card)) return;
+  let t;
+  try { t = await get(`/tailscale${fresh ? '?fresh=1' : ''}`); } catch (ex) { $('.body', card).innerHTML = `<p class="form-error">${esc(ex.message)}</p>`; return; }
+  const step = (n, done, title, body) => `<li class="ts-step ${done ? 'done' : ''}"><span class="ts-n">${done ? '✓' : n}</span><div><strong>${title}</strong>${body ? `<div class="small">${body}</div>` : ''}</div></li>`;
+  const local = t.is_local;
+  const can = local || t.remote_ok;   // on a server with no screen, an admin can do it from here over HTTPS
+  const only = can ? (local ? '' : ' <span class="muted">You’ll be asked for the server’s admin password.</span>')
+    : ` <span class="muted">(${esc(t.remote_why || 'do this on the computer running the app')})</span>`;
+  const manual = `<details class="net-help"><summary>Do it by hand instead</summary><ul class="small">${t.manual.map((m) => `<li><code>${esc(m)}</code></li>`).join('')}</ul></details>`;
+  const urls = t.ips.map((ip) => `${t.scheme}://${ip}:${t.port}/`).concat(t.name && t.scheme === 'http' ? [`http://${t.name}:${t.port}/`] : []);
+  const s1 = t.installed ? '' : `Tailscale is a free app that links your devices into your own private, encrypted network.${only}
+      <div class="actions" style="margin-top:6px"><button type="button" class="btn primary small" data-ts="install" ${can && !t.busy ? '' : 'disabled'}>Install Tailscale</button>
+        <a class="btn small" href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com ↗</a></div>
+      <span class="muted">${t.platform === 'mac' ? 'It downloads the official installer and opens it; follow its steps.' : local ? 'It runs Tailscale’s official installer. This computer asks for its password.' : 'It runs Tailscale’s official installer on the server.'}</span>`;
+  const s2 = !t.installed ? '' : t.state === 'connected' ? '' : t.state === 'needs_login' && t.auth_url
+    ? `Sign in with a Google, Microsoft, Apple or GitHub account — or make a free Tailscale account.
+      <div class="actions" style="margin-top:6px"><a class="btn primary small" href="${esc(t.auth_url)}" target="_blank" rel="noopener">Sign in to Tailscale ↗</a></div>
+      <span class="muted">This page updates by itself once you’ve signed in.</span>`
+    : `${t.platform === 'mac' ? 'Open Tailscale and sign in from its icon in the menu bar.' : local ? 'Start Tailscale on this computer. It asks for this computer’s password, then gives you a sign-in link.' : 'Start Tailscale on the server, then you get a sign-in link.'}${only}
+      <div class="actions" style="margin-top:6px"><button type="button" class="btn primary small" data-ts="start" ${can && !t.busy ? '' : 'disabled'}>${t.platform === 'mac' ? 'Open Tailscale' : 'Turn on Tailscale'}</button></div>`;
+  const connected = t.state === 'connected';
+  const s3 = !connected ? 'Install the Tailscale app on your phone, tablet or laptop and sign in with the <strong>same account</strong>.'
+    : `Install the Tailscale app on each phone, tablet or laptop (<a href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com/download</a>) and sign in with the <strong>same account</strong>. Then open:
+      ${urls.length ? `<div class="net-urls">${urls.map((u) => `<div class="net-url"><span class="mono">${esc(u)}</span><button type="button" class="btn small" data-copy="${esc(u)}">Copy</button></div>`).join('')}</div>` : ''}
+      ${t.network_on ? '' : '<p class="banner warn" style="margin:8px 0 0">Network access is off, so other devices can’t connect yet. Turn it on in the Network access card.</p>'}`;
+  $('.body', card).innerHTML = `<p class="muted" style="margin-top:0">Use ${esc(appName())} from anywhere — a venue, home, on mobile data — without opening it to the internet. Only your own devices can reach it, and the connection is encrypted.</p>
+    ${t.busy ? `<p class="banner info"><span>⏳ ${esc(t.step || 'Working…')}</span></p>` : ''}
+    ${t.error ? `<p class="banner warn"><span>${esc(t.error)}</span></p>` : ''}
+    <ol class="ts-steps">
+      ${step(1, t.installed, 'Install Tailscale on this computer', s1)}
+      ${step(2, connected, connected ? `Signed in${t.name ? ` as ${esc(t.name)}` : ''}` : 'Turn it on and sign in', s2)}
+      ${step(3, false, 'Add your other devices', s3)}
+    </ol>
+    ${connected ? '' : (t.platform === 'mac' && t.installed ? '' : manual)}`;
+  card.onclick = async (e) => {
+    const cp = e.target.closest('[data-copy]');
+    if (cp) { try { await navigator.clipboard.writeText(cp.dataset.copy); toast('Copied', 'ok'); } catch { toast(cp.dataset.copy); } return; }
+    const b = e.target.closest('[data-ts]');
+    if (!b) return;
+    const action = b.dataset.ts;
+    if (!local) {
+      // A server with no screen: its admin password is typed here, sent over HTTPS, used once and never kept.
+      clearTimeout(tsTimer);
+      const ok = await formModal({
+        title: action === 'install' ? 'Install Tailscale on the server' : 'Turn on Tailscale on the server',
+        fields: [{ name: 'password', label: `Server admin password${t.account ? ` (for the account “${t.account}”)` : ''}`, type: 'password', required: true,
+          help: `${action === 'install' ? 'This downloads Tailscale’s official installer from tailscale.com and runs it on the server. ' : ''}It’s the password you’d type after “sudo” on the server — not your password for this app. It’s sent over this encrypted connection, used once and never saved.` }],
+        submitLabel: action === 'install' ? 'Install' : 'Turn on',
+        onSubmit: (v) => post(`/tailscale/${action}`, { password: v.password }),
+      });
+      drawTailscaleCard(view);
+      if (ok) toast(action === 'install' ? 'Installing Tailscale on the server…' : 'Turning Tailscale on…', 'ok');
+      return;
+    }
+    if (action === 'install' && !await confirmModal(t.platform === 'mac'
+      ? 'Download Tailscale’s official installer from tailscale.com and open it on this Mac?'
+      : 'Download Tailscale’s official installer from tailscale.com and run it? This computer will ask for its password to allow it.',
+      { title: 'Install Tailscale?', okLabel: 'Install', danger: false })) return;
+    b.disabled = true;
+    try { await post(`/tailscale/${action}`, {}); } catch (ex) { toast(ex.message, 'error'); }
+    drawTailscaleCard(view);
+  };
+  // While something is in progress (installing, waiting for a sign-in), keep the card up to date.
+  if (t.busy || (t.installed && !connected)) tsTimer = setTimeout(() => drawTailscaleCard(view), t.busy ? 2000 : 5000);
+}
+
+/** The HTTPS part of the Network access card. */
+function httpsHTML(n) {
+  const h = n.https || {};
+  const trust = h.active && h.has_ca ? `<details class="net-help" ${n.is_local ? '' : 'open'}><summary>Stop the “not secure” warning on a device</summary>
+      <p class="small" style="margin:8px 0">The warning appears because the certificate was made by this app, not bought from a certificate company. The connection is still encrypted.
+        To remove the warning, tell each device to trust the app’s certificate — once per device:</p>
+      <div class="actions"><a class="btn small primary" href="/ca.crt" download>Download the certificate</a></div>
+      <ul class="small">
+        <li><strong>iPhone / iPad:</strong> open this page in Safari, download it, then Settings → General → VPN &amp; Device Management → install the profile. Then Settings → General → About → Certificate Trust Settings → switch it on.</li>
+        <li><strong>Android:</strong> Settings → Security → Encryption &amp; credentials → Install a certificate → CA certificate, and choose the file.</li>
+        <li><strong>Windows:</strong> open the file → Install Certificate → Local Machine → “Trusted Root Certification Authorities”.</li>
+        <li><strong>Mac:</strong> open the file (it goes into Keychain Access), then double-click it there → Trust → “Always Trust”.</li>
+        <li><strong>Linux / Bazzite:</strong> Firefox: Settings → Privacy &amp; Security → View Certificates → Authorities → Import. Chrome: Settings → Privacy and security → Security → Manage certificates → Authorities → Import.</li>
+      </ul>
+      <p class="small" style="margin:6px 0 0">Before trusting it, check the fingerprint the device shows matches this one:<br><span class="mono fp">${esc(h.fingerprint)}</span></p>
+      <p class="muted small" style="margin:6px 0 0">It only works for this app on your own network — it can’t be used for any website on the internet. Valid until ${esc(h.ca_expires ? fmtDate(h.ca_expires) : '—')}.</p></details>` : '';
+  if (!n.is_local) {
+    return h.active ? `<h3 class="net-h">HTTPS</h3><p class="net-status on"><span class="dot"></span>On — this connection is encrypted.</p>${trust}`
+      : '<h3 class="net-h">HTTPS</h3><p class="muted small">Off — this connection isn’t encrypted. It can be turned on at the computer running the app (Settings → Users → Network access).</p>';
+  }
+  return `<h3 class="net-h">HTTPS (encrypted connections)</h3>
+    <p class="net-status ${h.active ? 'on' : ''}"><span class="dot"></span><span>${h.active ? `On — other devices connect with https://, so passwords and data can’t be read on the network.${h.own ? ' Using your own certificate.' : ''}`
+      : 'Off — other devices connect with plain http. Fine on a network you trust; turn this on if others share the network.'}</span></p>
+    ${h.active ? '' : `<p class="muted small" style="margin:0 0 8px">The app makes its own certificate. Other devices show a “not secure” warning the first time, until you add the certificate to them (instructions appear here once it’s on).
+      Their address changes from http:// to https://, and old links are sent to the new one. This computer keeps working as it does now.</p>`}
+    ${!h.can_make && !h.active ? '<p class="banner warn">This needs the “openssl” tool, which isn’t installed on this computer.</p>' : ''}
+    <div class="actions"><button type="button" class="btn ${h.active ? '' : 'primary'}" data-https="${h.active ? '0' : '1'}" ${!h.can_make && !h.active ? 'disabled' : ''}>${h.active ? 'Turn HTTPS off' : 'Turn HTTPS on'}</button></div>
+    ${trust}`;
+}
+
 async function drawNetworkCard(view) {
   const card = $('[data-net-card]', view);
   if (!card) return;
@@ -5055,7 +5173,7 @@ async function drawNetworkCard(view) {
     body = `<p style="margin-top:0">You're connected over the network to <strong>${esc(S.meta.server_name)}</strong>. ${S.meta.headless
       ? 'It’s running as a server: change network access and the passcode over SSH with <code>horan-rms network on|off</code> and <code>horan-rms passcode</code>.'
       : 'Network settings and the passcode can only be changed on that computer.'}</p>
-      ${devices}<div class="actions" style="margin-top:12px"><button type="button" class="btn" data-net-logout>Sign out this device</button></div>`;
+      ${httpsHTML(n)}${devices}<div class="actions" style="margin-top:12px"><button type="button" class="btn" data-net-logout>Sign out this device</button></div>`;
   } else {
     const on = n.enabled && n.listening;
     body = `${n.fixed_host ? '<p class="banner warn">This copy was started with a fixed <code>--host</code>, so that setting decides who can connect.</p>' : ''}
@@ -5072,6 +5190,7 @@ async function drawNetworkCard(view) {
         <li><strong>Bazzite / Linux:</strong> allow the port through the firewall. Open a terminal and run<br><code>sudo firewall-cmd --permanent --add-port=${num(n.port)}/tcp &amp;&amp; sudo firewall-cmd --reload</code></li>
         <li><strong>Mac:</strong> if asked whether “python3” can accept incoming connections, click <strong>Allow</strong>. If you missed it, see System Settings → Network → Firewall → Options.</li>
         <li>This computer needs to be on and awake, with ${esc(appName())} running.</li></ul></details>` : ''}
+      ${httpsHTML(n)}
       ${devices}`;
   }
   $('.body', card).innerHTML = body;
@@ -5091,6 +5210,22 @@ async function drawNetworkCard(view) {
           return;
         }
         toast(passcode ? 'Passcode saved — other devices need to sign in again' : 'Saved', 'ok');
+        drawNetworkCard(view);
+        return;
+      }
+      const hb = e.target.closest('[data-https]');
+      if (hb) {
+        const on = hb.dataset.https === '1';
+        if (!await confirmModal(on
+          ? 'Turn on HTTPS? Other devices will use https:// and see a “not secure” warning until you add the app’s certificate to them. The app restarts.'
+          : 'Turn off HTTPS? Other devices go back to plain http://, which isn’t encrypted. The app restarts.',
+          { title: on ? 'Turn on HTTPS?' : 'Turn off HTTPS?', okLabel: on ? 'Turn on' : 'Turn off', danger: !on })) return;
+        hb.disabled = true;
+        const res = await put('/network/https', { enabled: on });
+        if (res.restarting) {
+          waitForRestart(null, { title: on ? 'Turning on HTTPS…' : 'Turning off HTTPS…', text: `Restarting ${appName()}. This takes a few seconds.`, done: on ? 'HTTPS is on' : 'HTTPS is off' });
+          return;
+        }
         drawNetworkCard(view);
         return;
       }
@@ -5855,7 +5990,7 @@ async function renderRoi(view) {
   const [prods, b] = await Promise.all([get('/products'), get('/roi/benchmark')]);
   const cats = [...new Set(prods.filter((p) => ['equipment', 'power', 'case'].includes(p.item_type)).map((p) => p.category).filter(Boolean))].sort((x, y) => x.localeCompare(y));
   view.innerHTML = `<div class="page">
-    <div class="page-head"><div><a class="crumb" href="#/stock">← Stock</a><h1>ROI calculator</h1>
+    <div class="page-head"><div><a class="crumb" href="/stock">← Stock</a><h1>ROI calculator</h1>
       <div class="sub">Is it worth buying? What should it hire for? For something already in stock, open it and use its <strong>Return on investment</strong> card — it uses its real hire history.</div></div></div>
     <div class="card"><div class="body" data-roi></div></div></div>`;
   mountRoi($('[data-roi]', view), {
@@ -6406,7 +6541,7 @@ async function renderPrint(id, doc) {
   // A quote or invoice with an HTML template is shown in a sandboxed frame and printed from there.
   const tpl = (doc === 'quote' || doc === 'invoice') && docLayout(doc, s).method === 'html';
   root.innerHTML = `<div class="print-toolbar">
-      <a class="btn small" href="#/job/${job.id}">← Back to job</a>
+      <a class="btn small" href="/job/${job.id}">← Back to job</a>
       <div class="tabs">${Object.entries(titles).map(([k, l]) => `<button data-doc="${k}" class="${k === doc ? 'active' : ''}">${l}</button>`).join('')}</div>
       <span class="spacer"></span>
       ${(doc === 'quote' || doc === 'invoice') && !tpl ? `<button class="btn small" data-pdf>Download PDF</button>` : '<span style="opacity:.8;font-size:12px">Use “Save to PDF” in the print dialog to email it.</span>'}
@@ -6423,7 +6558,7 @@ async function renderPrint(id, doc) {
   }
   root.onclick = (e) => {
     const d = e.target.closest('[data-doc]');
-    if (d) { location.hash = `#/print/${job.id}/${d.dataset.doc}`; return; }
+    if (d) { go(`/print/${job.id}/${d.dataset.doc}`); return; }
     if (e.target.closest('[data-print]')) {
       if (!frame) { window.print(); return; }
       (doc === 'invoice' && !job.invoice.issued ? post('/invoices/issue', { ids: [job.id] }) : Promise.resolve())
@@ -6668,14 +6803,29 @@ async function boot() {
   }
   applyBrand();
   $('#theme-toggle').onclick = cycleTheme;
-  $('#version').innerHTML = `<a href="#/changelog" title="What’s changed">Version ${esc(S.meta.version)}</a>${appName() === DEFAULT_APP_NAME ? ' · Horan AV' : ''}`;
+  $('#version').innerHTML = `<a href="/changelog" title="What’s changed">Version ${esc(S.meta.version)}</a>${appName() === DEFAULT_APP_NAME ? ' · Horan AV' : ''}`;
   if (S.meta.user || S.meta.remote) {
     $('#version').insertAdjacentHTML('beforebegin', `<div class="whoami">${S.meta.user ? `<strong>${esc(S.meta.user.name)}</strong>${S.meta.user.is_admin ? ' <span class="muted">· admin</span>' : ''}<br>` : ''}
       ${S.meta.remote ? `<span title="Connected over the network">⇄ ${esc(S.meta.server_name)}</span> · ` : ''}<a href="#" id="sign-out">${S.meta.user ? 'Switch user' : 'Sign out'}</a></div>`);
     $('#sign-out').onclick = async (e) => { e.preventDefault(); await post('/logout'); location.reload(); };
   }
   $('#nav-new-job').onclick = () => newJob();
-  window.addEventListener('hashchange', () => { window.scrollTo(0, 0); router(); });
+  // Addresses are plain paths (/jobs, /job/12). Back and forward buttons:
+  window.addEventListener('popstate', () => { window.dispatchEvent(new Event('het:navigate')); window.scrollTo(0, 0); router(); });
+  // Clicks on the app's own links change the page without reloading it.
+  document.addEventListener('click', (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest('a[href]');
+    if (!a || a.target || a.hasAttribute('download')) return;
+    const href = a.getAttribute('href');
+    if (!isAppPath(href)) return;
+    e.preventDefault();
+    go(href);
+  });
+  // An old bookmark or link with a # in it (…/#/jobs) still works: it's turned into the new address.
+  const fromOldHash = () => { if (location.hash.startsWith('#/')) { history.replaceState(null, '', location.hash.slice(1)); return true; } return false; };
+  fromOldHash();
+  window.addEventListener('hashchange', () => { if (fromOldHash()) { window.dispatchEvent(new Event('het:navigate')); window.scrollTo(0, 0); router(); } });
   document.addEventListener('keydown', (e) => {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || $('#modal-root').children.length;
     if (!typing && e.key === 'n' && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); newJob(); }

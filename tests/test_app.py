@@ -7,7 +7,9 @@ import http.client
 import json
 import os
 import re
+import shutil
 import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -121,6 +123,17 @@ class TestSecurity(ServerCase):
             self.assertFalse(re.search(r"<script(?![^>]*\bsrc=)", html), f"{name} has an inline script")
             self.assertFalse(re.search(r"\son[a-z]+\s*=", html), f"{name} has an inline event handler")
 
+    def test_page_addresses_have_no_hash(self):
+        # /jobs, /job/12 … are served the app itself, so a reload or a bookmark on any page works.
+        for path in ("/jobs", "/job/12", "/settings/company", "/print/3/quote"):
+            status, r, data = self.c.request("GET", path, raw=True)
+            self.assertEqual(status, 200, path)
+            self.assertIn(b'<script src="/static/app.js">', data, path)
+        self.assertEqual(self.c.request("GET", "/api/nonsense")[0], 404)
+        for name in ("app.js", "index.html"):
+            with open(os.path.join(ROOT, "static", name), encoding="utf-8") as f:
+                self.assertNotIn('href="#/', f.read(), name)
+
     def test_changes_need_the_app_header(self):
         # A hostile web page can't add this header to a cross-site request.
         status, body = self.c.request("POST", "/api/jobs", {"name": "x"}, headers={"Content-Type": "application/json"})
@@ -184,6 +197,9 @@ class TestPermissions(ServerCase):
             sam.delete("/network/devices"),
             sam.get("/zoho"),
             sam.get("/zoho/options"),
+            sam.get("/tailscale"),
+            sam.post("/tailscale/install"),
+            sam.post("/tailscale/start"),
             sam.post("/users", {"name": "Eve", "password": "a long password", "is_admin": True}),
             sam.put("/users/1", {"password": "another long one"}),
             sam.put("/update/auto", {"mode": "install", "time": "03:00"}),
@@ -280,6 +296,339 @@ class TestPasswords(ServerCase):
         self.assertEqual(fresh.post("/login", {"user_id": sam["id"], "password": "battery staple"})[0], 200)
         # an admin can't read a password, only replace it
         self.assertFalse([u for u in c.get("/users")[1] if "pin_hash" in u or "password" in u])
+
+
+def lan_ip():
+    """An address of this machine that isn't the loopback one, if it has one."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+            sk.connect(("10.255.255.255", 1))
+            ip = sk.getsockname()[0]
+        return None if ip.startswith("127.") else ip
+    except OSError:
+        return None
+
+
+@unittest.skipUnless(shutil.which("openssl"), "needs the openssl tool")
+class TestHttps(unittest.TestCase):
+    """HTTPS with the app's own certificate."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.port = free_port()
+        base = [sys.executable, os.path.join(ROOT, "server.py"), "--port", str(cls.port), "--data", cls.tmp.name]
+        out = subprocess.run(base + ["--https", "on"], capture_output=True, text=True, timeout=120)
+        assert out.returncode == 0, out.stderr
+        cls.cli_output = out.stdout
+        env = dict(os.environ, HORAN_RMS_GITHUB_API="http://127.0.0.1:9")
+        cls.proc = subprocess.Popen(base + ["--host", "0.0.0.0", "--demo"], env=env,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.tls = os.path.join(cls.tmp.name, "tls")
+        cls.ctx = ssl.create_default_context(cafile=os.path.join(cls.tls, "ca.pem"))
+        for _ in range(100):
+            try:
+                if cls.https("GET", "/api/meta")[0] == 200:
+                    return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError("https server did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        cls.proc.wait(timeout=10)
+        cls.tmp.cleanup()
+
+    @classmethod
+    def https(cls, method, path, body=None, host="localhost", ctx=None):
+        conn = http.client.HTTPSConnection(host, cls.port, context=ctx or cls.ctx, timeout=30)
+        conn.request(method, path, json.dumps(body) if body is not None else None, HDR)
+        r = conn.getresponse()
+        data = r.read()
+        conn.close()
+        return r.status, r, data
+
+    def test_trusted_once_the_certificate_is_installed(self):
+        for host in ("localhost", "127.0.0.1"):
+            self.assertEqual(self.https("GET", "/api/meta", host=host)[0], 200)
+
+    def test_not_trusted_without_it(self):
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            self.https("GET", "/api/meta", ctx=ssl.create_default_context())
+
+    def test_this_computer_can_still_use_plain_http(self):
+        # The launchers and the browser on the computer running the app use http://127.0.0.1.
+        self.assertEqual(Client(self.port).get("/meta")[0], 200)
+
+    def test_other_devices_are_sent_to_https(self):
+        ip = lan_ip()
+        if not ip:
+            self.skipTest("this machine has no network address")
+        conn = http.client.HTTPConnection(ip, self.port, timeout=30)
+        conn.request("GET", "/jobs?x=1", headers=HDR)
+        r = conn.getresponse()
+        r.read()
+        self.assertEqual(r.status, 301)
+        self.assertEqual(r.getheader("Location"), f"https://{ip}:{self.port}/jobs?x=1")
+        # and a sign-in is never accepted over plain http from another device
+        conn = http.client.HTTPConnection(ip, self.port, timeout=30)
+        conn.request("POST", "/api/login", json.dumps({"passcode": "x"}), HDR)
+        self.assertEqual(conn.getresponse().status, 400)
+
+    def test_keys_are_private_and_never_served(self):
+        if os.name == "posix":
+            for name in ("ca-key.pem", "key.pem"):
+                self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.tls, name)).st_mode), 0o600, name)
+            self.assertEqual(stat.S_IMODE(os.stat(self.tls).st_mode), 0o700)
+        status, r, data = self.https("GET", "/ca.crt")
+        self.assertEqual(status, 200)
+        self.assertTrue(data.startswith(b"-----BEGIN CERTIFICATE-----"))
+        self.assertNotIn(b"PRIVATE KEY", data)
+
+    def test_the_authority_cannot_vouch_for_internet_sites(self):
+        # Even with the authority's key, a certificate for a real website is refused by anything that trusts it.
+        d = self.tls
+        key, csr, crt, cnf = (os.path.join(self.tmp.name, n) for n in ("evil.key", "evil.csr", "evil.crt", "evil.cnf"))
+        with open(cnf, "w") as f:
+            f.write("[req]\ndistinguished_name=dn\nprompt=no\n[dn]\nCN=www.example.com\n[v3]\nsubjectAltName=DNS:www.example.com\n")
+        run = lambda *a: subprocess.run(["openssl"] + list(a), capture_output=True, text=True)
+        self.assertEqual(run("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", key).returncode, 0)
+        self.assertEqual(run("req", "-new", "-key", key, "-config", cnf, "-out", csr).returncode, 0)
+        self.assertEqual(run("x509", "-req", "-in", csr, "-CA", os.path.join(d, "ca.pem"), "-CAkey", os.path.join(d, "ca-key.pem"),
+                             "-set_serial", "7", "-days", "5", "-extfile", cnf, "-extensions", "v3", "-out", crt).returncode, 0)
+        bad = run("verify", "-CAfile", os.path.join(d, "ca.pem"), crt)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("permitted subtree violation", bad.stdout + bad.stderr)
+        good = run("verify", "-CAfile", os.path.join(d, "ca.pem"), os.path.join(d, "cert.pem"))
+        self.assertEqual(good.returncode, 0, good.stderr)
+
+    def test_settings_show_the_fingerprint(self):
+        status, r, data = self.https("GET", "/api/network")
+        h = json.loads(data)["https"]
+        self.assertTrue(h["enabled"] and h["active"] and h["has_ca"])
+        self.assertRegex(h["fingerprint"], r"^([0-9A-F]{2}:){31}[0-9A-F]{2}$")
+        self.assertIn(h["fingerprint"], self.cli_output)
+        self.assertIn("localhost", h["names"])
+
+    def test_sign_in_cookie_is_https_only_over_https(self):
+        status, r, data = self.https("POST", "/api/users", {"name": "Admin", "password": "correct horse"})
+        self.assertEqual(status, 200, data)
+        self.assertIn("Secure", r.getheader("Set-Cookie"))
+        plain = Client(self.port)
+        status, r, _ = plain.request("POST", "/api/login", {"user_id": 1, "password": "correct horse"}, raw=True)
+        self.assertEqual(status, 200)
+        self.assertNotIn("Secure", r.getheader("Set-Cookie"))
+
+
+class TestTailscale(unittest.TestCase):
+    """The guided Tailscale setup, against stand-ins for the `tailscale` and `pkexec` programs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.port = free_port()
+        d = cls.tmp.name
+        cls.bin, cls.state, cls.log = os.path.join(d, "bin"), os.path.join(d, "state.json"), os.path.join(d, "calls.log")
+        os.mkdir(cls.bin)
+        cls.write_state({"BackendState": "Stopped"})
+        scripts = {
+            "tailscale": '#!/bin/sh\ncase "$1" in status) cat "$TS_STATE";; *) echo "tailscale $*" >> "$TS_LOG";; esac\n',
+            # the stand-in for the password prompt: note what would run as admin, and "start" the service
+            "pkexec": '#!/bin/sh\necho "pkexec $*" >> "$TS_LOG"\n'
+                      'echo \'{"BackendState": "NeedsLogin", "AuthURL": "https://login.tailscale.com/a/abc123"}\' > "$TS_STATE"\n',
+        }
+        for name, body in scripts.items():
+            path = os.path.join(cls.bin, name)
+            with open(path, "w") as f:
+                f.write(body)
+            os.chmod(path, 0o755)
+        env = dict(os.environ, PATH=cls.bin + os.pathsep + os.environ.get("PATH", ""), TS_STATE=cls.state, TS_LOG=cls.log,
+                   HORAN_RMS_GITHUB_API="http://127.0.0.1:9")
+        cls.proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "server.py"), "--port", str(cls.port),
+                                     "--data", os.path.join(d, "data"), "--host", "0.0.0.0"], env=env,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.c = Client(cls.port)
+        for _ in range(100):
+            try:
+                if cls.c.get("/meta")[0] == 200:
+                    return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError("server did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        cls.proc.wait(timeout=10)
+        cls.tmp.cleanup()
+
+    @classmethod
+    def write_state(cls, state):
+        with open(cls.state, "w") as f:
+            json.dump(state, f)
+
+    def status(self):
+        return self.c.get("/tailscale?fresh=1")[1]
+
+    @unittest.skipIf(sys.platform == "darwin", "the Mac path opens the Tailscale app instead")
+    def test_setup_steps(self):
+        # 1. installed but off
+        t = self.status()
+        self.assertEqual((t["installed"], t["state"], t["is_local"]), (True, "stopped", True))
+
+        # 2. "Turn on": the system's password prompt is asked to start the service, then sign-in begins
+        self.assertEqual(self.c.post("/tailscale/start")[0], 200)
+        for _ in range(100):
+            t = self.status()
+            if not t["busy"]:
+                break
+            time.sleep(0.2)
+        self.assertEqual(t["error"], "")
+        self.assertEqual((t["state"], t["auth_url"]), ("needs_login", "https://login.tailscale.com/a/abc123"))
+        with open(self.log) as f:
+            calls = f.read()
+        self.assertIn("pkexec /bin/sh -c systemctl enable --now tailscaled", calls)
+        self.assertIn("tailscale up", calls)
+
+        # a sign-in link that isn't Tailscale's is never passed on
+        self.write_state({"BackendState": "NeedsLogin", "AuthURL": "https://evil.example.com/login"})
+        self.assertEqual(self.status()["auth_url"], "")
+
+        # 3. signed in: this computer's Tailscale address is offered to other devices
+        self.write_state({"BackendState": "Running",
+                          "Self": {"TailscaleIPs": ["100.101.102.103", "fd7a:115c:a1e0::1"], "DNSName": "office-pc.tail1234.ts.net."}})
+        t = self.status()
+        self.assertEqual((t["state"], t["ips"], t["name"]), ("connected", ["100.101.102.103"], "office-pc.tail1234.ts.net"))
+        self.assertIn(f"http://100.101.102.103:{self.port}/", self.c.get("/network")[1]["urls"])
+
+        # its own Tailscale name is accepted as an address; anyone else's isn't
+        self.assertEqual(self.c.request("GET", "/api/meta", headers={"Host": f"office-pc.tail1234.ts.net:{self.port}"})[0], 200)
+        self.assertEqual(self.c.request("GET", "/api/meta", headers={"Host": f"evil.tail9999.ts.net:{self.port}"})[0], 403)
+
+    def test_only_the_two_official_downloads(self):
+        with open(os.path.join(ROOT, "server.py"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertEqual(sorted(set(re.findall(r'TAILSCALE_\w+ = "(https://[^"]+)"', src))),
+                         ["https://pkgs.tailscale.com/stable/Tailscale-latest-macos.pkg", "https://tailscale.com/install.sh"])
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("openssl"), "server mode is Linux only; needs openssl")
+class TestTailscaleFromAnotherDevice(unittest.TestCase):
+    """On a server with no screen, an admin sets Tailscale up from another device: over HTTPS, as a named admin,
+    with the server's admin password (stand-ins for `sudo` and `tailscale` here)."""
+
+    PASSCODE, SUDO = "network-passcode", "server-secret"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ip = lan_ip()
+        if not cls.ip:
+            raise unittest.SkipTest("this machine has no network address")
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.port = free_port()
+        d = cls.tmp.name
+        cls.data = os.path.join(d, "data")
+        cls.bin, cls.state, cls.log = os.path.join(d, "bin"), os.path.join(d, "state.json"), os.path.join(d, "calls.log")
+        os.mkdir(cls.bin)
+        with open(cls.state, "w") as f:
+            json.dump({"BackendState": "Stopped"}, f)
+        scripts = {
+            "tailscale": '#!/bin/sh\ncase "$1" in status) cat "$TS_STATE";; *) echo "tailscale $*" >> "$TS_LOG";; esac\n',
+            "sudo": '#!/bin/sh\n[ "$1" = "-k" ] && [ $# -eq 1 ] && exit 0\nread pw\n'
+                    'if [ "$pw" != "server-secret" ]; then echo "Sorry, try again." >&2; exit 1; fi\n'
+                    'shift 5\necho "sudo $*" >> "$TS_LOG"\n[ "$1" = "true" ] && exit 0\n'
+                    'echo \'{"BackendState": "NeedsLogin", "AuthURL": "https://login.tailscale.com/a/xyz"}\' > "$TS_STATE"\n',
+        }
+        for name, body in scripts.items():
+            path = os.path.join(cls.bin, name)
+            with open(path, "w") as f:
+                f.write(body)
+            os.chmod(path, 0o755)
+        env = dict(os.environ, PATH=cls.bin + os.pathsep + os.environ.get("PATH", ""), TS_STATE=cls.state, TS_LOG=cls.log,
+                   HORAN_RMS_GITHUB_API="http://127.0.0.1:9", HORAN_RMS_PASSCODE=cls.PASSCODE)
+        base = [sys.executable, os.path.join(ROOT, "server.py"), "--port", str(cls.port), "--data", cls.data]
+        for args in (["--set-passcode"], ["--network", "on"], ["--https", "on"]):
+            out = subprocess.run(base + args, env=env, capture_output=True, text=True, timeout=120)
+            assert out.returncode == 0, out.stderr
+        cls.proc = subprocess.Popen(base + ["--headless"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.cookie = ""
+        for _ in range(100):
+            try:
+                if cls.call("GET", "/api/meta")[0] == 200:
+                    return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError("server did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        cls.proc.wait(timeout=10)
+        cls.tmp.cleanup()
+
+    @classmethod
+    def call(cls, method, path, body=None):
+        """A request from "another device": to the machine's network address, over https."""
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE   # like a device that clicked through the warning
+        conn = http.client.HTTPSConnection(cls.ip, cls.port, context=ctx, timeout=30)
+        h = dict(HDR)
+        if cls.cookie:
+            h["Cookie"] = cls.cookie
+        conn.request(method, path, json.dumps(body) if body is not None else None, h)
+        r = conn.getresponse()
+        data = r.read()
+        if r.getheader("Set-Cookie"):
+            cls.cookie = r.getheader("Set-Cookie").split(";")[0]
+        conn.close()
+        try:
+            return r.status, json.loads(data)
+        except ValueError:
+            return r.status, data
+
+    def test_setup_from_another_device(self):
+        call = self.call
+        # signed in with only the shared passcode: not enough
+        self.assertEqual(call("POST", "/api/login", {"passcode": self.PASSCODE})[0], 200)
+        t = call("GET", "/api/tailscale?fresh=1")[1]
+        self.assertEqual((t["is_local"], t["remote_ok"]), (False, False))
+        self.assertIn("named admin", t["remote_why"])
+        self.assertEqual(call("POST", "/api/tailscale/start", {"password": self.SUDO})[0], 403)
+
+        # as a named admin, over https: allowed, with the server's admin password
+        self.assertEqual(call("POST", "/api/users", {"name": "Admin", "password": "correct horse"})[0], 200)
+        self.assertTrue(call("GET", "/api/tailscale?fresh=1")[1]["remote_ok"])
+        self.assertEqual(call("POST", "/api/tailscale/start", {})[0], 400)
+        status, body = call("POST", "/api/tailscale/start", {"password": "wrong"})
+        self.assertEqual((status, body["error"]), (400, "That isn't the server's admin password"))
+        self.assertFalse(os.path.exists(self.log))   # nothing was run
+
+        self.assertEqual(call("POST", "/api/tailscale/start", {"password": self.SUDO})[0], 200)
+        for _ in range(100):
+            t = call("GET", "/api/tailscale?fresh=1")[1]
+            if not t["busy"]:
+                break
+            time.sleep(0.2)
+        self.assertEqual(t["error"], "")
+        self.assertEqual((t["state"], t["auth_url"]), ("needs_login", "https://login.tailscale.com/a/xyz"))
+        with open(self.log) as f:
+            calls = f.read()
+        self.assertIn("sudo /bin/sh -c systemctl enable --now tailscaled", calls)
+
+        # the server's admin password is used once and kept nowhere
+        self.assertNotIn(self.SUDO, calls)
+        for base, _dirs, files in os.walk(self.data):
+            for fn in files:
+                with open(os.path.join(base, fn), "rb") as f:
+                    self.assertNotIn(self.SUDO.encode(), f.read(), fn)
+        self.assertNotIn(self.SUDO, json.dumps(call("GET", "/api/activity?limit=100")[1]))
+
+        # and it can't be guessed through the app: five wrong tries, then a 15 minute wait
+        seen = [call("POST", "/api/tailscale/start", {"password": f"guess{i}"})[0] for i in range(6)]
+        self.assertEqual(seen[-1], 429)
+        self.assertEqual(call("POST", "/api/tailscale/start", {"password": self.SUDO})[0], 429)
 
 
 class TestJobs(ServerCase):

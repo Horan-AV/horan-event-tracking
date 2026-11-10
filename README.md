@@ -738,6 +738,54 @@ The computer where Horan Event Tracking is installed acts as the server. Phones,
   - **Bazzite / Linux:** let the port through the firewall with `sudo firewall-cmd --permanent --add-port=8765/tcp && sudo firewall-cmd --reload`.
   - **Mac:** click **Allow** if asked whether "python3" can accept incoming connections.
 
+## HTTPS (encrypted connections)
+
+By default, other devices connect over plain `http`, which is fine on a network you trust. Turn on HTTPS if other people share the network.
+
+**Turn it on:** on the computer running the app, go to **Settings → Users → Network access → Turn HTTPS on**. On a server, run `horan-rms https on`. The app restarts.
+
+**What changes:**
+- Other devices use `https://` at the start of the address. Old `http://` links are sent to the new address automatically.
+- The computer running the app carries on exactly as before.
+- Passwords and data can no longer be read by anyone else on the network.
+
+**The warning.** The app makes its own certificate, so each device shows a "not secure" warning the first time. You can click through it (the connection is still encrypted), or remove it for good:
+1. On the device, open the app and go to **Settings → Users → Network access → Stop the "not secure" warning**, or open `https://<address>:8765/ca.crt`.
+2. Download the certificate and install it, following the steps shown for iPhone, Android, Windows, Mac or Linux.
+3. Check the fingerprint the device shows matches the one in Settings.
+
+You do this once per device. After that there are no warnings, even if the computer's address changes, because the app renews its own certificate by itself.
+
+**Good to know:**
+- The certificate only works for this app on your own network. It can't be used for any website on the internet.
+- It needs the `openssl` tool, which Macs and almost all Linux systems (including Bazzite) already have.
+- If the computer has a public internet address rather than a private one, that address isn't covered and keeps showing the warning.
+- To use your own certificate instead, put `own-cert.pem` and `own-key.pem` in the `tls` folder inside the data folder and restart.
+- To turn it off: the same button, or `horan-rms https off`.
+
+## Using it from anywhere (Tailscale)
+
+[Tailscale](https://tailscale.com) is a free app that links your own devices into a private, encrypted network. With it, a phone at a venue or a laptop at home can reach the app without opening anything to the internet.
+
+**Settings → Users → Remote access** walks you through it, on the computer running the app:
+1. **Install Tailscale.** The app downloads Tailscale's official installer and runs it. On Linux the computer asks for its password; on a Mac the installer opens for you to follow. If Tailscale is already installed (it comes with Bazzite), this step is ticked.
+2. **Turn it on and sign in.** Press **Turn on Tailscale**, enter the computer's password when it asks, then press **Sign in to Tailscale**. Use a Google, Microsoft, Apple or GitHub account, or make a free Tailscale account.
+3. **Add your other devices.** Install the Tailscale app on each phone, tablet or laptop and sign in with the same account. Then open the address the card shows, e.g. `http://100.101.102.103:8765/`.
+
+**Good to know:**
+- **Network access** must be on, so other devices are allowed to connect.
+- Only devices signed in to your Tailscale account can reach the app. People still sign in to the app as usual.
+- If HTTPS is on, the app's certificate covers the Tailscale address too.
+- The app never sees the computer's password; the computer's own prompt asks for it.
+- If no password prompt appears, the card shows the commands to run by hand.
+
+**On a server with no screen**, an admin can do steps 1 and 2 from a browser on another device. The card asks for the server's admin password (the one you'd type after `sudo`), because the server can't show a prompt. This only works when:
+- the app is in server mode;
+- the connection is HTTPS (`horan-rms https on`), so the password is encrypted on its way;
+- you're signed in as a named admin user, not just with the shared network passcode.
+
+The password is used once and never saved. After five wrong tries, it waits 15 minutes.
+
 ## Running it on a server (no screen)
 
 You can run Horan Event Tracking on a Linux server or mini PC with no screen. Ubuntu, Debian, Fedora and most other systemd distributions work. Everyone then uses it from their own browser over the network. You need Python 3.9 or newer, which these all include (`sudo apt install python3` if it's missing).
@@ -763,6 +811,7 @@ Manage it over SSH with the `horan-rms` command:
 | `horan-rms restart` / `stop` | Restart or stop the server |
 | `horan-rms logs` | Show the most recent log lines |
 | `horan-rms users` | List the people who can sign in |
+| `horan-rms https on` / `off` | Encrypt connections from other devices, using the app's own certificate |
 | `horan-rms reset-password "Name" --admin` | Give someone a new password (and make them an admin) |
 | `horan-rms headless on\|off` | Server mode: lets admins install updates from any device. The installer turns it on; it's remembered however the server is restarted |
 
@@ -785,4 +834,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.27.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.28.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
