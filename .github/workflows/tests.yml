@@ -8,11 +8,17 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.9", "3.13"]   # the oldest the app supports, and a current one
+        include:
+          # The oldest Python the app supports (what a Mac comes with). GitHub's newest machines no longer
+          # offer it, so this one runs on an older image.
+          - python: "3.9"
+            os: ubuntu-24.04
+          - python: "3.13"
+            os: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
