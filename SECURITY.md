@@ -5,10 +5,13 @@ Horan Event Tracking is built to run on your own computer or a server on a netwo
 ## Know before you run it
 
 - **No encryption:** other devices connect over plain `http`, so don't turn on network access on public or venue Wi-Fi. To use it across the internet, put it behind a VPN, or behind a reverse proxy that adds HTTPS.
-- **Sign-in:** other devices need a passcode, or a user name and PIN.
+- **Sign-in:** other devices need a passcode, or a user name and password.
   - After five wrong attempts, that device waits five minutes.
-  - After ten wrong PINs for one person, from any devices, that person waits fifteen minutes.
-  - PINs are short, so use longer ones (letters work too) if people you don't know can reach your network.
+  - After ten wrong passwords for one person, from any devices, that person waits fifteen minutes.
+- **Passwords are never stored.** The app keeps only a salted hash of each password and of the network passcode (PBKDF2-HMAC-SHA256, 600,000 rounds), which can't be turned back into the password. Nobody, including admins, can read them, and they aren't in exports.
+  - New passwords need at least 8 characters, and very common ones are refused.
+  - Short PINs set before version 1.27 still work, and the app asks their owner to choose a password.
+  - Changing a password signs that person out on their other devices.
 - **Changes from another device:** network settings and the passcode can only be changed on the computer running the app, or over SSH on a server.
 - **Admin-only actions:**
   - installing updates (from a file or from GitHub);

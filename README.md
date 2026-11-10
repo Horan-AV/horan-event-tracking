@@ -367,12 +367,12 @@ People can edit or withdraw their own requests; admins can change any.
 
 ## Users and activity
 
-Add the people who use Horan Event Tracking in **Settings → Users**. Each has a name and a **PIN** (at least 4 characters).
+Add the people who use Horan Event Tracking in **Settings → Users**. Each has a name and a **password** (at least 8 characters; a few words together work well).
 - The first person you add is an **admin**, and is signed in straight away.
-- Once there are users, everyone signs in by picking their name and entering their PIN. This applies on the main computer and on phones and other devices on the network. Other devices then don't need the shared network passcode.
+- Once there are users, everyone signs in by picking their name and entering their password. This applies on the main computer and on phones and other devices on the network. Other devices then don't need the shared network passcode.
 - **Admins** can change settings, logos, network access, Zoho Books and software updates, and add, edit or disable users. Everyone else can do everything else: jobs, stock, scanning, clients and vendors.
 - **Switch user** at the bottom of the sidebar signs out so someone else can sign in. Disabling someone signs them out everywhere and keeps their history.
-- **Locked out?** On the computer running it, run `horan-rms reset-pin "Name" --admin` (on a Mac: `python3 ~/Library/Application\ Support/Horan\ Event\ Tracking/app/server.py --reset-pin "Name" --admin`).
+- **Locked out?** On the computer running it, run `horan-rms reset-password "Name" --admin` (on a Mac: `python3 ~/Library/Application\ Support/Horan\ Event\ Tracking/app/server.py --reset-pin "Name" --admin`).
 
 **Activity** (in the sidebar) records who did what, newest first, and can be filtered by person, by kind or by searching. It covers:
 - creating jobs and changing their status;
@@ -763,7 +763,7 @@ Manage it over SSH with the `horan-rms` command:
 | `horan-rms restart` / `stop` | Restart or stop the server |
 | `horan-rms logs` | Show the most recent log lines |
 | `horan-rms users` | List the people who can sign in |
-| `horan-rms reset-pin "Name" --admin` | Give someone a new PIN (and make them an admin) |
+| `horan-rms reset-password "Name" --admin` | Give someone a new password (and make them an admin) |
 | `horan-rms headless on\|off` | Server mode: lets admins install updates from any device. The installer turns it on; it's remembered however the server is restarted |
 
 **Updating a server.** From version 1.15, an admin can update it from any signed-in device. Go to **Settings → Updates → Software update → Install update from file…** and choose the new zip. The server backs up its data and the current version, installs the update and restarts, and every device then uses the new version. **Roll back** and **Restore from backup** work the same way. (Without users, anyone signed in with the passcode counts as the admin.)

@@ -160,12 +160,12 @@ class TestPermissions(ServerCase):
     def setUpClass(cls):
         super().setUpClass()
         admin = cls.c
-        assert admin.post("/users", {"name": "Admin", "pin": "1111"})[0] == 200
-        assert admin.post("/login", {"user_id": 1, "pin": "1111"})[0] == 200
-        status, sam = admin.post("/users", {"name": "Sam", "pin": "2222", "is_admin": False})
+        assert admin.post("/users", {"name": "Admin", "password": "correct horse"})[0] == 200
+        assert admin.post("/login", {"user_id": 1, "password": "correct horse"})[0] == 200
+        status, sam = admin.post("/users", {"name": "Sam", "password": "battery staple", "is_admin": False})
         assert status == 200, sam
         cls.sam = Client(cls.port)
-        assert cls.sam.post("/login", {"user_id": sam["id"], "pin": "2222"})[0] == 200
+        assert cls.sam.post("/login", {"user_id": sam["id"], "password": "battery staple"})[0] == 200
 
     def test_signed_out_gets_nothing(self):
         anon = Client(self.port)
@@ -184,8 +184,8 @@ class TestPermissions(ServerCase):
             sam.delete("/network/devices"),
             sam.get("/zoho"),
             sam.get("/zoho/options"),
-            sam.post("/users", {"name": "Eve", "pin": "3333", "is_admin": True}),
-            sam.put("/users/1", {"pin": "9999"}),
+            sam.post("/users", {"name": "Eve", "password": "a long password", "is_admin": True}),
+            sam.put("/users/1", {"password": "another long one"}),
             sam.put("/update/auto", {"mode": "install", "time": "03:00"}),
             sam.post("/update/github", {}),
             sam.post("/invoices/pdf", {"ids": [1], "doc": "quote", "layout": {"title": "x"}}),
@@ -215,13 +215,71 @@ class TestPermissions(ServerCase):
 
 class TestSignInLimit(ServerCase):
     def test_wrong_pins_are_limited(self):
-        self.assertEqual(self.c.post("/users", {"name": "Admin", "pin": "1111"})[0], 200)
+        self.assertEqual(self.c.post("/users", {"name": "Admin", "password": "correct horse"})[0], 200)
         guesser = Client(self.port)
-        seen = [guesser.post("/login", {"user_id": 1, "pin": f"000{i}"})[0] for i in range(7)]
+        seen = [guesser.post("/login", {"user_id": 1, "password": f"wrong guess {i}"})[0] for i in range(7)]
         self.assertEqual(seen[:5], [401] * 5)
         self.assertEqual(seen[5:], [429, 429])
         # even the right PIN is refused while locked out
-        self.assertEqual(guesser.post("/login", {"user_id": 1, "pin": "1111"})[0], 429)
+        self.assertEqual(guesser.post("/login", {"user_id": 1, "password": "correct horse"})[0], 429)
+
+
+class TestPasswords(ServerCase):
+    def db(self):
+        import sqlite3
+        return sqlite3.connect(os.path.join(self.tmp.name, "rms.db"), timeout=15)
+
+    def stored(self, uid):
+        conn = self.db()
+        try:
+            return conn.execute("SELECT pin_hash FROM users WHERE id = ?", (uid,)).fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_passwords(self):
+        c = self.c
+        # rules for new passwords
+        self.assertEqual(c.post("/users", {"name": "Admin", "password": "short"})[0], 400)
+        self.assertEqual(c.post("/users", {"name": "Admin", "password": "password123"})[0], 400)
+        self.assertEqual(c.post("/users", {"name": "Admin", "password": "aaaaaaaaaa"})[0], 400)
+        self.assertEqual(c.post("/users", {"name": "Admin", "password": "x" * 500})[0], 400)
+        self.assertEqual(c.post("/users", {"name": "Admin", "password": "correct horse"})[0], 200)
+        self.assertEqual(c.post("/login", {"user_id": 1, "password": "correct horse"})[1], {"ok": True, "weak": False})
+
+        # only a salted hash is stored, never the password, and two people with the same password differ
+        h = self.stored(1)
+        self.assertRegex(h, r"^pbkdf2_sha256\$600000\$[0-9a-f]{32}\$[0-9a-f]{64}$")
+        self.assertNotIn("correct horse", h)
+        _, sam = c.post("/users", {"name": "Sam", "password": "correct horse"})
+        self.assertNotEqual(self.stored(sam["id"]), h)
+        with open(os.path.join(self.tmp.name, "rms.db"), "rb") as f:
+            self.assertNotIn(b"correct horse", f.read())
+
+        # a short PIN from an older version still signs in, is re-hashed, and is flagged as weak
+        import hashlib
+        salt = "00112233445566778899aabbccddeeff"
+        old = salt + "$" + hashlib.pbkdf2_hmac("sha256", b"4321", bytes.fromhex(salt), 200_000).hex()
+        conn = self.db()
+        conn.execute("UPDATE users SET pin_hash = ? WHERE id = ?", (old, sam["id"]))
+        conn.commit()
+        conn.close()
+        s = Client(self.port)
+        self.assertEqual(s.post("/login", {"user_id": sam["id"], "pin": "4321"})[1], {"ok": True, "weak": True})
+        self.assertTrue(self.stored(sam["id"]).startswith("pbkdf2_sha256$600000$"))
+
+        # changing your own password needs the current one, and signs out your other devices
+        other = Client(self.port)
+        self.assertEqual(other.post("/login", {"user_id": sam["id"], "password": "4321"})[0], 200)
+        self.assertEqual(s.put("/me/password", {"current": "wrong", "new": "battery staple"})[0], 400)
+        self.assertEqual(s.put("/me/password", {"current": "4321", "new": "tiny"})[0], 400)
+        self.assertEqual(s.put("/me/password", {"current": "4321", "new": "battery staple"})[0], 200)
+        self.assertEqual(s.get("/jobs")[0], 200)
+        self.assertEqual(other.get("/jobs")[0], 401)
+        fresh = Client(self.port)
+        self.assertEqual(fresh.post("/login", {"user_id": sam["id"], "password": "4321"})[0], 401)
+        self.assertEqual(fresh.post("/login", {"user_id": sam["id"], "password": "battery staple"})[0], 200)
+        # an admin can't read a password, only replace it
+        self.assertFalse([u for u in c.get("/users")[1] if "pin_hash" in u or "password" in u])
 
 
 class TestJobs(ServerCase):

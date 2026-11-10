@@ -1244,18 +1244,50 @@ LOGIN_FAILS = {}            # ip -> [timestamps of failed passcode attempts]
 LOGIN_LOCK = threading.Lock()
 
 
-def hash_passcode(passcode, salt=None):
+# Passwords and passcodes are never stored. What's kept is a salted PBKDF2-HMAC-SHA256 hash, which can't be turned
+# back into the password: "pbkdf2_sha256$<rounds>$<salt>$<hash>". Hashes from before 1.27 ("<salt>$<hash>", 200,000
+# rounds) still work and are replaced with a stronger one the next time that person signs in.
+HASH_ROUNDS = 600_000
+PASSWORD_MAX = 200   # longer than anyone types; stops huge inputs being used to slow the server
+
+
+def hash_passcode(passcode, salt=None, rounds=HASH_ROUNDS):
     salt = salt or secrets.token_hex(16)
-    dk = hashlib.pbkdf2_hmac("sha256", passcode.encode("utf-8"), bytes.fromhex(salt), 200_000)
-    return f"{salt}${dk.hex()}"
+    dk = hashlib.pbkdf2_hmac("sha256", passcode.encode("utf-8"), bytes.fromhex(salt), rounds)
+    return f"pbkdf2_sha256${rounds}${salt}${dk.hex()}"
+
+
+def verify_passcode(passcode, stored):
+    """Does this password match the stored hash? (Compared in constant time.)"""
+    passcode = str(passcode or "")
+    if not stored or not passcode or len(passcode) > PASSWORD_MAX:
+        return False
+    try:
+        parts = stored.split("$")
+        if len(parts) == 4 and parts[0] == "pbkdf2_sha256":
+            rounds, salt, want = int(parts[1]), parts[2], parts[3]
+        elif len(parts) == 2:
+            rounds, salt, want = 200_000, parts[0], parts[1]
+        else:
+            return False
+        got = hashlib.pbkdf2_hmac("sha256", passcode.encode("utf-8"), bytes.fromhex(salt), rounds).hex()
+    except ValueError:
+        return False
+    return hmac.compare_digest(got, want)
+
+
+def hash_is_old(stored):
+    parts = (stored or "").split("$")
+    return not (len(parts) == 4 and parts[0] == "pbkdf2_sha256" and parts[1].isdigit() and int(parts[1]) >= HASH_ROUNDS)
 
 
 def check_passcode(conn, passcode):
     stored = get_secret(conn, "secret_passcode")
-    if not stored or "$" not in stored:
+    if not verify_passcode(passcode, stored):
         return False
-    salt = stored.split("$", 1)[0]
-    return hmac.compare_digest(hash_passcode(passcode, salt), stored)
+    if hash_is_old(stored):
+        set_secret(conn, "secret_passcode", hash_passcode(passcode))
+    return True
 
 
 def is_loopback(ip):
@@ -1349,7 +1381,7 @@ def api_network_put(req, conn):
     enabled = bool(d.get("enabled"))
     passcode = str(d.get("passcode") or "")
     if passcode:
-        if len(passcode) < 6:
+        if len(passcode) < 6 or len(passcode) > PASSWORD_MAX:
             raise ApiError(400, "Use a passcode of at least 6 characters")
         set_secret(conn, "secret_passcode", hash_passcode(passcode))
         conn.execute("DELETE FROM sessions")  # new passcode: every device signs in again
@@ -1394,10 +1426,11 @@ def api_login(req, conn):
             ufails = [t for t in LOGIN_FAILS.get(target, []) if now - t < 900]
             LOGIN_FAILS[target] = ufails
             if len(ufails) >= 10:
-                raise ApiError(429, "Too many wrong PINs for this person. Wait 15 minutes, or ask an admin to reset the PIN.")
-        user = None if remote_blocked or not uid else check_user_pin(conn, uid, str(d.get("pin") or ""))
+                raise ApiError(429, "Too many wrong passwords for this person. Wait 15 minutes, or ask an admin to reset it.")
+        secret = str(d.get("password") or d.get("pin") or "")
+        user = None if remote_blocked or not uid else check_user_pin(conn, uid, secret)
         ok = user is not None
-        msg = "That PIN isn't right"
+        msg = "That password isn't right"
     else:
         ok = not remote_blocked and req.remote and check_passcode(conn, str(d.get("passcode") or ""))
         msg = "That passcode isn't right"
@@ -1420,6 +1453,36 @@ def api_login(req, conn):
         LOGIN_FAILS.pop(ip, None)
         if target:
             LOGIN_FAILS.pop(target, None)
+    # An old short PIN still signs in, but the app asks them to choose a proper password.
+    return {"ok": True, "weak": bool(user) and len(secret) < USER_PIN_MIN}
+
+
+@route("PUT", "/api/me/password")
+def api_my_password(req, conn):
+    """Change your own password: needs the current one. Your other devices are signed out."""
+    me = current_user(conn, req)
+    if not me:
+        raise ApiError(400, "There are no users yet — add yourself under Settings → Users")
+    d = req.json() or {}
+    now = time.time()
+    target = f"user:{me['id']}"
+    with LOGIN_LOCK:
+        fails = [t for t in LOGIN_FAILS.get(target, []) if now - t < 900]
+        LOGIN_FAILS[target] = fails
+        if len(fails) >= 10:
+            raise ApiError(429, "Too many wrong passwords. Wait 15 minutes and try again.")
+    if not check_user_pin(conn, me["id"], str(d.get("current") or "")):
+        with LOGIN_LOCK:
+            LOGIN_FAILS.setdefault(target, []).append(now)
+        time.sleep(0.5)
+        raise ApiError(400, "Your current password isn't right")
+    new = check_new_password(d.get("new"), me["name"])
+    if new == str(d.get("current")):
+        raise ApiError(400, "Choose a password that's different from your current one")
+    conn.execute("UPDATE users SET pin_hash = ? WHERE id = ?", (hash_passcode(new), me["id"]))
+    mine = req.session["token_hash"] if req.session else ""
+    conn.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (me["id"], mine))
+    conn.commit()
     return {"ok": True}
 
 
@@ -1462,10 +1525,11 @@ def users_exist(conn):
 
 def check_user_pin(conn, uid, pin):
     u = one(conn.execute("SELECT * FROM users WHERE id = ? AND active = 1", (uid,)))
-    if not u or not u["pin_hash"] or "$" not in u["pin_hash"]:
+    if not u or not verify_passcode(pin, u["pin_hash"]):
         return None
-    salt = u["pin_hash"].split("$", 1)[0]
-    return u if hmac.compare_digest(hash_passcode(pin, salt), u["pin_hash"]) else None
+    if hash_is_old(u["pin_hash"]):  # signed in with the right password: store it with the stronger hash
+        conn.execute("UPDATE users SET pin_hash = ? WHERE id = ?", (hash_passcode(str(pin)), u["id"]))
+    return u
 
 
 def current_user(conn, req):
@@ -1565,18 +1629,33 @@ def new_session(conn, req, user_id=None):
     req.set_cookie = f"{SESSION_COOKIE}={token}; Path=/; Max-Age={SESSION_DAYS * 86400}; HttpOnly; SameSite=Strict"
 
 
-USER_PIN_MIN = 4
+USER_PIN_MIN = 8   # new passwords; shorter PINs set before 1.27 keep working until they're changed
+COMMON_PASSWORDS = {"password", "password1", "password123", "passw0rd", "12345678", "123456789", "1234567890", "87654321",
+                    "qwertyui", "qwerty123", "qwertyuiop", "11111111", "00000000", "letmein1", "iloveyou", "admin123",
+                    "administrator", "welcome1", "welcome123", "changeme", "abcdefgh", "abc12345", "1q2w3e4r", "football"}
 
 
-def clean_pin(pin, required):
+def check_new_password(pw, name=""):
+    """Rules for a new password. Returns it, or raises with what to change."""
+    pw = str(pw or "")
+    if len(pw) < USER_PIN_MIN:
+        raise ApiError(400, f"Passwords need at least {USER_PIN_MIN} characters. A few words together work well.")
+    if len(pw) > PASSWORD_MAX:
+        raise ApiError(400, f"Passwords can be up to {PASSWORD_MAX} characters")
+    low = pw.lower()
+    if low in COMMON_PASSWORDS or len(set(pw)) < 3 or (name and low == name.strip().lower()):
+        raise ApiError(400, "That password is too easy to guess — choose something else")
+    return pw
+
+
+def clean_pin(pin, required, name=""):
+    """A new password, checked and hashed (the column is still called pin_hash from when these were PINs)."""
     pin = str(pin or "")
     if not pin:
         if required:
-            raise ApiError(400, f"Choose a PIN of at least {USER_PIN_MIN} characters")
+            raise ApiError(400, f"Choose a password of at least {USER_PIN_MIN} characters")
         return None
-    if len(pin) < USER_PIN_MIN:
-        raise ApiError(400, f"PINs need at least {USER_PIN_MIN} characters")
-    return hash_passcode(pin)
+    return hash_passcode(check_new_password(pin, name))
 
 
 def user_row(u):
@@ -1603,7 +1682,7 @@ def api_users_post(req, conn):
         raise ApiError(400, "Enter their name")
     if conn.execute("SELECT 1 FROM users WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
         raise ApiError(400, f"There's already someone called {name}")
-    uid = insert(conn, "users", {"name": name, "pin_hash": clean_pin(d.get("pin"), True),
+    uid = insert(conn, "users", {"name": name, "pin_hash": clean_pin(d.get("password") or d.get("pin"), True, name),
                                  "is_admin": 1 if (first or d.get("is_admin")) else 0, "active": 1, "created_at": now_iso()})
     conn.commit()
     if first:
@@ -1631,8 +1710,8 @@ def api_user_put(req, conn, uid):
             raise ApiError(400, "Enter their name")
         if conn.execute("SELECT 1 FROM users WHERE name = ? COLLATE NOCASE AND id != ?", (data["name"], uid)).fetchone():
             raise ApiError(400, f"There's already someone called {data['name']}")
-    if d.get("pin"):
-        data["pin_hash"] = clean_pin(d["pin"], True)
+    if d.get("password") or d.get("pin"):
+        data["pin_hash"] = clean_pin(d.get("password") or d.get("pin"), True, data.get("name") or u["name"])
     if "is_admin" in d:
         data["is_admin"] = 1 if d["is_admin"] else 0
     if "active" in d:
@@ -1915,13 +1994,15 @@ def describe(fn_name, conn, req, groups, body, result, pre):
         if fn_name == "api_update" and body.get("dry_run"):
             return None
         return ("settings", simple[fn_name], None, None)
+    if fn_name == "api_my_password":
+        return ("user", "Changed their password", None, None)
     if fn_name == "api_users_post":
         return ("user", f"Added user {r.get('name', '')}{' (admin)' if r.get('is_admin') else ''}", None, None)
     if fn_name == "api_user_put" and pre:
         bits = []
         if "name" in body and body["name"] != pre["name"]:
             bits.append(f"renamed to {body['name']}")
-        if body.get("pin"):
+        if body.get("pin") or body.get("password"):
             bits.append("new PIN")
         if "is_admin" in body and bool(body["is_admin"]) != bool(pre["is_admin"]):
             bits.append("made admin" if body["is_admin"] else "removed admin")
@@ -7607,9 +7688,9 @@ def main():
     ap.add_argument("--network", choices=("on", "off"), help="turn network access on or off, then exit")
     ap.add_argument("--status", action="store_true", help="show the version, data folder and network addresses, then exit")
     ap.add_argument("--list-users", action="store_true", help="list the people who can sign in, then exit")
-    ap.add_argument("--reset-pin", metavar="NAME", help="give someone a new PIN (and make sure they're an active admin "
+    ap.add_argument("--reset-password", "--reset-pin", dest="reset_pin", metavar="NAME", help="give someone a new password (and make sure they're an active admin "
                     "with --admin), then exit - for when everyone is locked out")
-    ap.add_argument("--admin", action="store_true", help="with --reset-pin: also make them an admin")
+    ap.add_argument("--admin", action="store_true", help="with --reset-password: also make them an admin")
     ap.add_argument("--headless-mode", choices=("on", "off"),
                     help="remember that this is a server with no screen (admins can then update it from any device), "
                          "so it stays in server mode however it's started; then exit")
@@ -7713,20 +7794,22 @@ def cli_admin(args):
             pin = os.environ.get("HORAN_RMS_PIN", "")
             if not pin:
                 if not sys.stdin.isatty():
-                    print("No terminal to ask for the PIN: set HORAN_RMS_PIN instead.", file=sys.stderr)
+                    print("No terminal to ask for the password: set HORAN_RMS_PIN instead.", file=sys.stderr)
                     return 2
-                pin = getpass.getpass(f"New PIN for {u['name']} (at least {USER_PIN_MIN} characters): ")
+                pin = getpass.getpass(f"New password for {u['name']} (at least {USER_PIN_MIN} characters): ")
                 if pin != getpass.getpass("Type it again: "):
                     print("Those didn't match - nothing changed.", file=sys.stderr)
                     return 1
-            if len(pin) < USER_PIN_MIN:
-                print(f"Use at least {USER_PIN_MIN} characters - nothing changed.", file=sys.stderr)
+            try:
+                check_new_password(pin, u["name"])
+            except ApiError as e:
+                print(f"{e.message} - nothing changed.", file=sys.stderr)
                 return 1
             c.execute("UPDATE users SET pin_hash = ?, active = 1" + (", is_admin = 1" if args.admin else "") + " WHERE id = ?",
                       (hash_passcode(pin), u["id"]))
             c.execute("DELETE FROM sessions WHERE user_id = ?", (u["id"],))
             c.commit()
-            print(f"New PIN saved for {u['name']}{' (now an admin)' if args.admin else ''}.")
+            print(f"New password saved for {u['name']}{' (now an admin)' if args.admin else ''}.")
         if args.status:
             st = get_settings(c)
             on = st["network_access"] == "1" and bool(get_secret(c, "secret_passcode"))

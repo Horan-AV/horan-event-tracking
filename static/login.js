@@ -11,10 +11,9 @@ fetch('/api/login-options').then((r) => r.json()).then((o) => {
   $('intro').textContent = 'Enter the passcode set on the computer running ' + name + '.';
   if (o.mode !== 'users') { $('intro').textContent = 'This device is connecting over the network. Enter the passcode set on the computer running ' + name + '.'; return; }
   mode = 'users';
-  $('intro').textContent = 'Choose your name and enter your PIN.';
-  $('pc-label').textContent = 'PIN';
-  $('pc').setAttribute('inputmode', 'numeric');
-  $('pc').autocomplete = 'off';
+  $('intro').textContent = 'Choose your name and enter your password.';
+  $('pc-label').textContent = 'Password';
+  $('pc').autocomplete = 'current-password';
   $('who').hidden = false;
   let last = null;
   try { last = localStorage.getItem('het-last-user'); } catch (e) {}
@@ -38,10 +37,12 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   btn.disabled = true; err.textContent = '';
   try {
     const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'horan-rms' },
-      body: JSON.stringify(mode === 'users' ? { user_id: who, pin: $('pc').value } : { passcode: $('pc').value }) });
+      body: JSON.stringify(mode === 'users' ? { user_id: who, password: $('pc').value } : { passcode: $('pc').value }) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Sign-in failed');
     try { if (who) localStorage.setItem('het-last-user', String(who)); } catch (e2) {}
+    // Signed in with an old short PIN: the app will suggest choosing a proper password.
+    try { if (data.weak) sessionStorage.setItem('het-weak-password', '1'); } catch (e3) {}
     location.reload();
   } catch (ex) {
     err.textContent = ex.message;

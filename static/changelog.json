@@ -4,8 +4,17 @@
     {
       "version": "1.27.0",
       "date": "2026-11-10",
-      "title": "Security hardening and automated tests",
+      "title": "Passwords, security hardening and automated tests",
       "changes": [
+        {
+          "text": "Passwords instead of PINs: everyone signs in with a password of at least 8 characters, and very common ones are refused. Short PINs you already have still work, and the app asks you to choose a password."
+        },
+        {
+          "text": "Change your own password under Settings → Updates → Your details. It signs you out on your other devices."
+        },
+        {
+          "text": "Passwords are never stored — only a salted hash that can't be turned back into the password, now a stronger one (600,000 rounds). Existing ones are upgraded automatically the next time each person signs in."
+        },
         {
           "text": "Browser protection: the app now only lets its own script files run and can't be shown inside another website, so code hidden in a name or note could never run."
         },
@@ -13,7 +22,7 @@
           "text": "Admins only: signing out other devices, seeing which devices are signed in, the Zoho Books connection details, and the server's folder locations. Before, any signed-in user could do or see these."
         },
         {
-          "text": "Sign-in: wrong PINs are now also limited per person (10 in 15 minutes), not just per device."
+          "text": "Sign-in: wrong passwords are now also limited per person (10 in 15 minutes), not just per device."
         },
         {
           "text": "Where updates come from can only be changed on the computer running the app (or a server in server mode), not by an admin on another device."
@@ -112,24 +121,24 @@
       "fulfils": [],
       "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
     },
-  {
-    "version": "1.23.0",
-    "date": "2026-11-09",
-    "title": "ROI calculator and day rate suggestions",
-    "changes": [
-      {
-        "text": "Return on investment card on every equipment, power and flight case item: what it's earned (last 12 months, since its first hire, booked ahead), and a calculator for revenue, profit, payback time and return over its life."
-      },
-      {
-        "text": "Day rate help: suggested rates to pay an item back in your target time, to match your other stock in the same category, and a 3–5% rule of thumb. Use one with a click, then save it as the item's day rate."
-      },
-      {
-        "text": "Stock → ROI calculator works out whether kit you're thinking of buying is worth it, and what to hire it out for."
-      }
-    ],
-    "fulfils": [],
-    "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
-  },
+    {
+      "version": "1.23.0",
+      "date": "2026-11-09",
+      "title": "ROI calculator and day rate suggestions",
+      "changes": [
+        {
+          "text": "Return on investment card on every equipment, power and flight case item: what it's earned (last 12 months, since its first hire, booked ahead), and a calculator for revenue, profit, payback time and return over its life."
+        },
+        {
+          "text": "Day rate help: suggested rates to pay an item back in your target time, to match your other stock in the same category, and a 3–5% rule of thumb. Use one with a click, then save it as the item's day rate."
+        },
+        {
+          "text": "Stock → ROI calculator works out whether kit you're thinking of buying is worth it, and what to hire it out for."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
     {
       "version": "1.22.0",
       "date": "2026-11-08",

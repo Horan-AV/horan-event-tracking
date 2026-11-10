@@ -4340,13 +4340,37 @@ async function drawMeCard(view) {
       <label class="field half"><span>Name / alias</span><input data-me-alias value="${esc(me.alias)}" maxlength="80" placeholder="e.g. Jess, or SoundGuy"></label>
       <label class="field half"><span>Company</span><input data-me-company value="${esc(me.company)}" maxlength="120" placeholder="e.g. Smith Events Ltd"></label>
     </div>
-    <div class="actions" style="margin-top:10px"><button type="button" class="btn small" data-me-save>Save my details</button></div>`;
+    <div class="actions" style="margin-top:10px"><button type="button" class="btn small" data-me-save>Save my details</button></div>
+    ${S.meta && S.meta.user ? `<h3 class="net-h">Your password</h3>
+      <p class="muted small" style="margin-top:0">At least 8 characters — a few words together work well. Changing it signs you out on your other devices.</p>
+      <button type="button" class="btn small" data-me-password>Change my password…</button>` : ''}`;
+  const pwBtn = $('[data-me-password]', card);
+  if (pwBtn) pwBtn.onclick = () => changePasswordModal();
   $('[data-me-save]', card).onclick = async () => {
     try {
       await put('/me/identity', { alias: $('[data-me-alias]', card).value.trim(), company: $('[data-me-company]', card).value.trim() });
       toast('Your details are saved', 'ok');
     } catch (ex) { toast(ex.message, 'error'); }
   };
+}
+
+/** Change your own password (you need the current one). */
+async function changePasswordModal() {
+  const ok = await formModal({
+    title: 'Change my password',
+    fields: [
+      { name: 'current', label: 'Current password (or PIN)', type: 'password', required: true },
+      { name: 'new', label: 'New password', type: 'password', required: true, placeholder: 'At least 8 characters' },
+      { name: 'again', label: 'New password again', type: 'password', required: true },
+    ],
+    submitLabel: 'Change password',
+    onSubmit: async (v) => {
+      if (v.new !== v.again) throw new Error('The two new passwords don’t match');
+      return put('/me/password', { current: v.current, new: v.new });
+    },
+  });
+  if (ok) toast('Password changed. Your other devices have been signed out.', 'ok');
+  return ok;
 }
 
 function changeHTML(c) {
@@ -4956,15 +4980,15 @@ async function drawUsersCard(view) {
   const canEdit = !users.length || (me && me.is_admin);
   const active = users.filter((u) => u.active);
   $('.body', card).innerHTML = !users.length
-    ? `<p style="margin-top:0">Add the people who use ${esc(appName())}. Each gets a <strong>PIN</strong>, and the app records who creates jobs, adds kit, and scans items out and in (see <a href="#/activity">Activity</a>).</p>
-       <p class="muted small">Once there’s a user, everyone signs in with their name and PIN, on this computer too. Start with yourself. The first person is an admin, who can change settings and manage users.</p>
+    ? `<p style="margin-top:0">Add the people who use ${esc(appName())}. Each gets a <strong>password</strong>, and the app records who creates jobs, adds kit, and scans items out and in (see <a href="#/activity">Activity</a>).</p>
+       <p class="muted small">Once there’s a user, everyone signs in with their name and password, on this computer too. Start with yourself. The first person is an admin, who can change settings and manage users.</p>
        <button type="button" class="btn primary" data-user-add>Add the first user (you)</button>`
     : `<ul class="user-list">${users.map((u) => `<li><span class="u"><span class="avatar" style="${u.active ? '' : 'opacity:.4'}">${esc(initials(u.name))}</span>
         <span><strong>${esc(u.name)}</strong>${u.is_admin ? ' <span class="badge ok">Admin</span>' : ''}${u.active ? '' : ' <span class="pill">Disabled</span>'}${me && me.id === u.id ? ' <span class="muted small">(you)</span>' : ''}
         <br><span class="muted small">${u.last_activity ? `${esc(u.last_activity.summary)} · ${esc(fmtDate(u.last_activity.at.slice(0, 10)))} ${esc(u.last_activity.at.slice(11, 16))}` : 'No activity yet'}</span></span></span>
         ${canEdit ? `<button type="button" class="btn small" data-user-edit="${u.id}">Edit</button>` : ''}</li>`).join('')}</ul>
        ${canEdit ? '<div class="actions" style="margin-top:10px"><button type="button" class="btn primary small" data-user-add>Add user</button></div>' : ''}
-       <p class="muted small" style="margin-bottom:0">${num(active.length)} active. Disabling someone signs them out and keeps their history. Forgotten the only admin PIN? On the computer running it: <code>horan-rms reset-pin "Name" --admin</code>.</p>`;
+       <p class="muted small" style="margin-bottom:0">${num(active.length)} active. Disabling someone signs them out and keeps their history. Passwords are stored scrambled (hashed), so nobody — not even an admin — can read them. Forgotten the only admin password? On the computer running it: <code>horan-rms reset-password "Name" --admin</code>.</p>`;
   card.onclick = async (e) => {
     try {
       if (e.target.closest('[data-user-add]')) {
@@ -4973,7 +4997,8 @@ async function drawUsersCard(view) {
           title: first ? 'Add yourself' : 'Add user',
           fields: [
             { name: 'name', label: 'Name', required: true, placeholder: first ? 'e.g. Alex Smith' : 'e.g. Sam' },
-            { name: 'pin', label: 'PIN', type: 'password', required: true, half: true, placeholder: 'At least 4 characters' },
+            { name: 'password', label: 'Password', type: 'password', required: true, half: true, placeholder: 'At least 8 characters',
+              help: 'A few words together work well. They can change it later under Settings → Updates → Your details.' },
             ...(first ? [] : [{ name: 'is_admin', label: 'Admin — can change settings and manage users', type: 'checkbox' }]),
           ],
           submitLabel: 'Add',
@@ -4991,12 +5016,13 @@ async function drawUsersCard(view) {
           title: `Edit ${u.name}`,
           fields: [
             { name: 'name', label: 'Name', required: true },
-            { name: 'pin', label: 'New PIN', type: 'password', half: true, placeholder: 'Leave blank to keep it' },
+            { name: 'password', label: 'New password', type: 'password', half: true, placeholder: 'Leave blank to keep it',
+              help: 'At least 8 characters. Setting one signs them out everywhere.' },
             { name: 'is_admin', label: 'Admin — can change settings and manage users', type: 'checkbox' },
             { name: 'active', label: 'Can sign in (untick to disable — their history is kept)', type: 'checkbox' },
           ],
           values: { name: u.name, is_admin: u.is_admin, active: u.active },
-          onSubmit: (vals) => put(`/users/${u.id}`, { name: vals.name, pin: vals.pin || undefined, is_admin: !!Number(vals.is_admin), active: !!Number(vals.active) }),
+          onSubmit: (vals) => put(`/users/${u.id}`, { name: vals.name, password: vals.password || undefined, is_admin: !!Number(vals.is_admin), active: !!Number(vals.active) }),
         });
         if (v) { toast('Saved', 'ok'); if (me && me.id === u.id && !v.active) location.reload(); else drawUsersCard(view); }
       }
@@ -5036,7 +5062,7 @@ async function drawNetworkCard(view) {
       <p class="net-status ${on ? 'on' : ''}"><span class="dot"></span>${on ? `On — phones, tablets and other computers on this network can use ${esc(appName())}.` : `Off — only this computer can use ${esc(appName())}.`}</p>
       ${on ? `<p class="muted small" style="margin:0 0 6px">On another device connected to the same Wi-Fi or network, open:</p>${urls}` : ''}
       <label class="check" style="margin:12px 0 8px"><input type="checkbox" data-net-on ${n.enabled ? 'checked' : ''}> Let other devices on this network connect</label>
-      ${n.users ? `<p class="muted small" style="margin:4px 0 0">Everyone signs in with their own name and PIN (see Users), so no shared passcode is needed.</p><input type="hidden" data-net-pass value="">`
+      ${n.users ? `<p class="muted small" style="margin:4px 0 0">Everyone signs in with their own name and password (see Users), so no shared passcode is needed.</p><input type="hidden" data-net-pass value="">`
         : `<label class="field"><span>${n.has_passcode ? 'Change passcode' : 'Passcode'}</span><input type="password" data-net-pass autocomplete="new-password"
         placeholder="${n.has_passcode ? 'Leave blank to keep the current one' : 'At least 6 characters'}"></label>
       <p class="muted small" style="margin:4px 0 0">Other devices enter this once to sign in. This computer never needs it. Changing it signs every device out.</p>`}
@@ -6663,6 +6689,13 @@ async function boot() {
     labelsModal(b.dataset.printLabels.split(',').map(Number).filter(Boolean)).catch((ex) => toast(ex.message, 'error'));
   }, true);
   if (S.meta.is_admin && S.meta.can_update) offerScheduledUpdate();
+  try {  // signed in with an old short PIN: suggest a proper password, once per sign-in
+    if (sessionStorage.getItem('het-weak-password')) {
+      sessionStorage.removeItem('het-weak-password');
+      confirmModal('You signed in with a short PIN. Passwords now need at least 8 characters — choose a new one to keep your account safe.',
+        { title: 'Choose a password', okLabel: 'Change it now', danger: false }).then((yes) => { if (yes) changePasswordModal(); });
+    }
+  } catch { /* storage unavailable */ }
   try {
     const upd = sessionStorage.getItem('het-updated');
     if (upd) { sessionStorage.removeItem('het-updated'); toast(/^[0-9.]+$/.test(upd) ? `Now running version ${upd}` : upd, 'ok'); }
