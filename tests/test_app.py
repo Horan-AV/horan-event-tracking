@@ -186,6 +186,9 @@ class TestPermissions(ServerCase):
             sam.delete("/network/devices"),
             sam.get("/zoho"),
             sam.get("/zoho/options"),
+            sam.get("/tailscale"),
+            sam.post("/tailscale/install"),
+            sam.post("/tailscale/start"),
             sam.post("/users", {"name": "Eve", "password": "a long password", "is_admin": True}),
             sam.put("/users/1", {"password": "another long one"}),
             sam.put("/update/auto", {"mode": "install", "time": "03:00"}),
@@ -405,6 +408,98 @@ class TestHttps(unittest.TestCase):
         status, r, _ = plain.request("POST", "/api/login", {"user_id": 1, "password": "correct horse"}, raw=True)
         self.assertEqual(status, 200)
         self.assertNotIn("Secure", r.getheader("Set-Cookie"))
+
+
+class TestTailscale(unittest.TestCase):
+    """The guided Tailscale setup, against stand-ins for the `tailscale` and `pkexec` programs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.port = free_port()
+        d = cls.tmp.name
+        cls.bin, cls.state, cls.log = os.path.join(d, "bin"), os.path.join(d, "state.json"), os.path.join(d, "calls.log")
+        os.mkdir(cls.bin)
+        cls.write_state({"BackendState": "Stopped"})
+        scripts = {
+            "tailscale": '#!/bin/sh\ncase "$1" in status) cat "$TS_STATE";; *) echo "tailscale $*" >> "$TS_LOG";; esac\n',
+            # the stand-in for the password prompt: note what would run as admin, and "start" the service
+            "pkexec": '#!/bin/sh\necho "pkexec $*" >> "$TS_LOG"\n'
+                      'echo \'{"BackendState": "NeedsLogin", "AuthURL": "https://login.tailscale.com/a/abc123"}\' > "$TS_STATE"\n',
+        }
+        for name, body in scripts.items():
+            path = os.path.join(cls.bin, name)
+            with open(path, "w") as f:
+                f.write(body)
+            os.chmod(path, 0o755)
+        env = dict(os.environ, PATH=cls.bin + os.pathsep + os.environ.get("PATH", ""), TS_STATE=cls.state, TS_LOG=cls.log,
+                   HORAN_RMS_GITHUB_API="http://127.0.0.1:9")
+        cls.proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "server.py"), "--port", str(cls.port),
+                                     "--data", os.path.join(d, "data"), "--host", "0.0.0.0"], env=env,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.c = Client(cls.port)
+        for _ in range(100):
+            try:
+                if cls.c.get("/meta")[0] == 200:
+                    return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError("server did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        cls.proc.wait(timeout=10)
+        cls.tmp.cleanup()
+
+    @classmethod
+    def write_state(cls, state):
+        with open(cls.state, "w") as f:
+            json.dump(state, f)
+
+    def status(self):
+        return self.c.get("/tailscale?fresh=1")[1]
+
+    @unittest.skipIf(sys.platform == "darwin", "the Mac path opens the Tailscale app instead")
+    def test_setup_steps(self):
+        # 1. installed but off
+        t = self.status()
+        self.assertEqual((t["installed"], t["state"], t["is_local"]), (True, "stopped", True))
+
+        # 2. "Turn on": the system's password prompt is asked to start the service, then sign-in begins
+        self.assertEqual(self.c.post("/tailscale/start")[0], 200)
+        for _ in range(100):
+            t = self.status()
+            if not t["busy"]:
+                break
+            time.sleep(0.2)
+        self.assertEqual(t["error"], "")
+        self.assertEqual((t["state"], t["auth_url"]), ("needs_login", "https://login.tailscale.com/a/abc123"))
+        with open(self.log) as f:
+            calls = f.read()
+        self.assertIn("pkexec /bin/sh -c systemctl enable --now tailscaled", calls)
+        self.assertIn("tailscale up", calls)
+
+        # a sign-in link that isn't Tailscale's is never passed on
+        self.write_state({"BackendState": "NeedsLogin", "AuthURL": "https://evil.example.com/login"})
+        self.assertEqual(self.status()["auth_url"], "")
+
+        # 3. signed in: this computer's Tailscale address is offered to other devices
+        self.write_state({"BackendState": "Running",
+                          "Self": {"TailscaleIPs": ["100.101.102.103", "fd7a:115c:a1e0::1"], "DNSName": "office-pc.tail1234.ts.net."}})
+        t = self.status()
+        self.assertEqual((t["state"], t["ips"], t["name"]), ("connected", ["100.101.102.103"], "office-pc.tail1234.ts.net"))
+        self.assertIn(f"http://100.101.102.103:{self.port}/", self.c.get("/network")[1]["urls"])
+
+        # its own Tailscale name is accepted as an address; anyone else's isn't
+        self.assertEqual(self.c.request("GET", "/api/meta", headers={"Host": f"office-pc.tail1234.ts.net:{self.port}"})[0], 200)
+        self.assertEqual(self.c.request("GET", "/api/meta", headers={"Host": f"evil.tail9999.ts.net:{self.port}"})[0], 403)
+
+    def test_only_the_two_official_downloads(self):
+        with open(os.path.join(ROOT, "server.py"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertEqual(sorted(set(re.findall(r'TAILSCALE_\w+ = "(https://[^"]+)"', src))),
+                         ["https://pkgs.tailscale.com/stable/Tailscale-latest-macos.pkg", "https://tailscale.com/install.sh"])
 
 
 class TestJobs(ServerCase):

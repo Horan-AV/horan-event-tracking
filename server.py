@@ -1314,7 +1314,8 @@ def lan_addresses():
                 ips.append(ip)
     except OSError:
         pass
-    return [ip for ip in ips if not ip.startswith("127.") and not ip.startswith("169.254.")]
+    ips = [ip for ip in ips if not ip.startswith("127.") and not ip.startswith("169.254.")]
+    return ips + [ip for ip in tailscale_ips() if ip not in ips]   # and its address on Tailscale, if that's set up
 
 
 def session_for(conn, token):
@@ -7258,6 +7259,233 @@ class Request:
             raise ApiError(400, "Body is not valid JSON")
 
 
+# ---------------------------------------------------------------- remote access with Tailscale
+#
+# Tailscale is a free app that joins your devices into a private, encrypted network, so a phone at a venue can
+# reach this computer at home or in the office without opening anything to the internet. The app helps set it up:
+# it finds Tailscale, runs the official installer or turns it on (the computer asks for its own password - the app
+# never sees it), shows the sign-in link, and then lists the address other devices use.
+
+TAILSCALE_MAC_APP = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+TAILSCALE_MAC_PKG = "https://pkgs.tailscale.com/stable/Tailscale-latest-macos.pkg"
+TAILSCALE_LINUX_SCRIPT = "https://tailscale.com/install.sh"
+TAILSCALE_JOB = {"busy": False, "step": "", "error": ""}   # what the last install / turn-on is doing
+TAILSCALE_CACHE = {"at": 0.0, "status": None}
+
+
+def tailscale_bin():
+    exe = shutil.which("tailscale")
+    if not exe and sys.platform == "darwin" and os.path.isfile(TAILSCALE_MAC_APP):
+        exe = TAILSCALE_MAC_APP
+    return exe
+
+
+def tailscale_status(fresh=False):
+    """Is Tailscale installed, on and signed in - and this computer's address on it."""
+    now = time.time()
+    if not fresh and TAILSCALE_CACHE["status"] is not None and now - TAILSCALE_CACHE["at"] < 20:
+        return TAILSCALE_CACHE["status"]
+    exe = tailscale_bin()
+    out = {"installed": bool(exe), "state": "missing", "auth_url": "", "ips": [], "name": ""}
+    if exe:
+        out["state"] = "stopped"
+        try:
+            r = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=6)
+            data = json.loads(r.stdout) if r.stdout.strip().startswith("{") else {}
+        except (OSError, ValueError, subprocess.SubprocessError):
+            data = {}
+        backend = data.get("BackendState") or ""
+        me = data.get("Self") or {}
+        if backend == "Running":
+            out["state"] = "connected"
+            for ip in me.get("TailscaleIPs") or []:
+                try:
+                    if ipaddress.ip_address(ip).version == 4:
+                        out["ips"].append(ip)
+                except ValueError:
+                    pass
+            out["name"] = str(me.get("DNSName") or "").rstrip(".")[:200]
+        elif backend in ("NeedsLogin", "NeedsMachineAuth"):
+            out["state"] = "needs_login"
+            url = str(data.get("AuthURL") or "")
+            out["auth_url"] = url if url.startswith("https://login.tailscale.com/") else ""
+        elif backend in ("Stopped", "Starting", "NoState"):
+            out["state"] = "stopped" if backend != "Starting" else "needs_login"
+    TAILSCALE_CACHE.update(at=now, status=out)
+    return out
+
+
+def tailscale_ips():
+    try:
+        return tailscale_status()["ips"]
+    except Exception:  # noqa: BLE001 - never let this break listing addresses
+        return []
+
+
+def tailscale_user():
+    import getpass
+    u = getpass.getuser()
+    return u if re.match(r"^[a-z_][a-z0-9_-]{0,31}$", u) else ""
+
+
+def tailscale_manual():
+    """The same steps as commands, for when the computer can't show its password prompt (e.g. a server)."""
+    if sys.platform == "darwin":
+        return ["Download Tailscale from https://tailscale.com/download/mac, open it, and sign in."]
+    steps = []
+    if not tailscale_bin():
+        steps.append("curl -fsSL https://tailscale.com/install.sh | sh")
+    steps += ["sudo systemctl enable --now tailscaled", "sudo tailscale up"]
+    return steps
+
+
+def tailscale_run(job):
+    """Run an install / turn-on in the background; Settings polls /api/tailscale to follow it."""
+    def go():
+        try:
+            job()
+            TAILSCALE_JOB.update(error="")
+        except ApiError as e:
+            TAILSCALE_JOB.update(error=e.message)
+        except Exception as e:  # noqa: BLE001
+            TAILSCALE_JOB.update(error=str(e)[:300])
+        finally:
+            TAILSCALE_JOB.update(busy=False, step="")
+            TAILSCALE_CACHE["status"] = None
+    if TAILSCALE_JOB["busy"]:
+        raise ApiError(409, "Tailscale setup is already running — give it a moment")
+    TAILSCALE_JOB.update(busy=True, error="")
+    threading.Thread(target=go, daemon=True, name="tailscale").start()
+
+
+def as_root(command, what):
+    """Run a command with the computer's admin rights. The system shows its own password prompt (pkexec)."""
+    pk = shutil.which("pkexec")
+    if not pk:
+        raise ApiError(400, f"This computer can't show a password prompt to {what}. Run these in a terminal instead: "
+                            + "  ·  ".join(tailscale_manual()))
+    r = subprocess.run([pk] + command, capture_output=True, text=True, timeout=900)
+    if r.returncode in (126, 127):
+        raise ApiError(400, "The password prompt was cancelled or isn't available. Nothing was changed.")
+    if r.returncode != 0:
+        raise ApiError(500, f"Couldn't {what}: " + ((r.stderr or r.stdout).strip()[-300:] or f"exit code {r.returncode}"))
+
+
+def fetch_official(url, limit):
+    """Download from Tailscale's own site over verified https (only the two addresses above are ever fetched)."""
+    req = urllib.request.Request(url, headers={"User-Agent": f"Horan-Event-Tracking/{VERSION}"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            host = (urlparse(r.geturl()).hostname or "").lower()
+            if urlparse(r.geturl()).scheme != "https" or not (host == "tailscale.com" or host.endswith(".tailscale.com")):
+                raise ApiError(502, "The download was sent somewhere unexpected, so it was stopped")
+            body = r.read(limit + 1)
+    except (urllib.error.URLError, OSError) as e:
+        raise ApiError(502, f"Couldn't reach tailscale.com — is this computer online? ({getattr(e, 'reason', e)})")
+    if len(body) > limit:
+        raise ApiError(502, "The download was larger than expected, so it was stopped")
+    return body
+
+
+def tailscale_install_job():
+    if tailscale_bin():
+        return
+    if sys.platform == "darwin":
+        # The official installer package, opened with the Mac's own Installer (which checks Apple's signature on it).
+        TAILSCALE_JOB["step"] = "Downloading Tailscale…"
+        body = fetch_official(TAILSCALE_MAC_PKG, 200 * 1024 * 1024)
+        if not body.startswith(b"xar!"):
+            raise ApiError(502, "The download wasn't a Mac installer. Get Tailscale from https://tailscale.com/download/mac instead.")
+        path = os.path.join(DATA_DIR, "Tailscale-installer.pkg")
+        with open(path, "wb") as f:
+            f.write(body)
+        TAILSCALE_JOB["step"] = "Follow the Tailscale installer that has opened on this Mac…"
+        subprocess.run(["open", "-W", path], timeout=1800)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    # Linux: Tailscale's own install script, run with admin rights after the system's password prompt.
+    TAILSCALE_JOB["step"] = "Downloading the Tailscale installer…"
+    script = fetch_official(TAILSCALE_LINUX_SCRIPT, 2 * 1024 * 1024)
+    if not script.startswith(b"#!/bin/sh") or b"tailscale" not in script:
+        raise ApiError(502, "The download wasn't Tailscale's installer. See https://tailscale.com/download/linux instead.")
+    path = os.path.join(DATA_DIR, "tailscale-install.sh")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700)
+    with os.fdopen(fd, "wb") as f:
+        f.write(script)
+    TAILSCALE_JOB["step"] = "Enter this computer's password in the prompt to install Tailscale…"
+    try:
+        as_root(["/bin/sh", path], "install Tailscale")
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    if not tailscale_bin():
+        raise ApiError(500, "The installer finished but Tailscale wasn't found. See https://tailscale.com/download/linux")
+
+
+def tailscale_start_job():
+    exe = tailscale_bin()
+    if not exe:
+        raise ApiError(400, "Install Tailscale first")
+    if sys.platform == "darwin":
+        TAILSCALE_JOB["step"] = "Opening Tailscale — sign in from its icon in the menu bar…"
+        subprocess.run(["open", "-a", "Tailscale"], timeout=60)
+        return
+    user = tailscale_user()
+    TAILSCALE_JOB["step"] = "Enter this computer's password in the prompt to turn Tailscale on…"
+    # Start its background service now and at every boot, and let this account sign in without the password again.
+    script = "systemctl enable --now tailscaled && sleep 2" + (f" && tailscale set --operator={user}" if user else "")
+    as_root(["/bin/sh", "-c", script], "turn Tailscale on")
+    TAILSCALE_JOB["step"] = "Waiting for the Tailscale sign-in link…"
+    # "tailscale up" waits for the sign-in to finish; leave it going and let Settings pick up the link.
+    subprocess.Popen([exe, "up", "--timeout=600s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(40):
+        time.sleep(0.5)
+        st = tailscale_status(fresh=True)
+        if st["state"] == "connected" or st["auth_url"]:
+            return
+
+
+def tailscale_info(conn, req):
+    st = dict(tailscale_status(fresh=req.q("fresh") == "1"))
+    local = not req.remote
+    if st["ips"] and TLS_CTX is not None:
+        tls_refresh()  # so the https certificate covers this computer's Tailscale address straight away
+    st.update(busy=TAILSCALE_JOB["busy"], step=TAILSCALE_JOB["step"], error=TAILSCALE_JOB["error"], is_local=local,
+              platform="mac" if sys.platform == "darwin" else "linux", manual=tailscale_manual(), port=PORT,
+              scheme="https" if TLS_CTX is not None else "http",
+              network_on=HOST not in ("127.0.0.1", "localhost", "::1"))
+    return st
+
+
+@route("GET", "/api/tailscale")
+def api_tailscale(req, conn):
+    require_admin(req, conn)
+    return tailscale_info(conn, req)
+
+
+@route("POST", "/api/tailscale/install")
+def api_tailscale_install(req, conn):
+    """Install Tailscale with its official installer. Only from the computer itself, which asks for its password."""
+    require_admin(req, conn)
+    local_only(req)
+    tailscale_run(tailscale_install_job)
+    return tailscale_info(conn, req)
+
+
+@route("POST", "/api/tailscale/start")
+def api_tailscale_start(req, conn):
+    """Turn Tailscale on and begin signing in. Only from the computer itself."""
+    require_admin(req, conn)
+    local_only(req)
+    tailscale_run(tailscale_start_job)
+    return tailscale_info(conn, req)
+
+
 # ---------------------------------------------------------------- HTTPS with the app's own certificate
 #
 # Turning HTTPS on makes the app its own small certificate authority (kept in the data folder, never sent anywhere),
@@ -7427,17 +7655,22 @@ def tls_context():
     return ctx
 
 
+def tls_refresh():
+    """Renew the certificate if it's running out or this computer's addresses changed. New connections use it at once."""
+    try:
+        if TLS_CTX is not None and not tls_own_cert():
+            (cert, key), made = tls_ensure()
+            if made:
+                TLS_CTX.load_cert_chain(cert, key)
+    except Exception as e:  # noqa: BLE001
+        print(f"Couldn't renew the HTTPS certificate: {getattr(e, 'message', e)}", file=sys.stderr)
+
+
 def tls_keep_fresh():
-    """While HTTPS is on: renew the certificate before it runs out, or when this computer's address changes."""
+    """While HTTPS is on: check the certificate a few times a day."""
     while True:
         time.sleep(6 * 3600)
-        try:
-            if TLS_CTX is not None and not tls_own_cert():
-                (cert, key), made = tls_ensure()
-                if made:
-                    TLS_CTX.load_cert_chain(cert, key)  # new connections use it straight away
-        except Exception as e:  # noqa: BLE001
-            print(f"Couldn't renew the HTTPS certificate: {getattr(e, 'message', e)}", file=sys.stderr)
+        tls_refresh()
 
 
 def tls_info(conn):
@@ -7565,6 +7798,8 @@ class Handler(BaseHTTPRequestHandler):
             return True
         except ValueError:
             pass
+        if host.endswith(".ts.net") and host == (tailscale_status().get("name") or "").lower():
+            return True   # this computer's own name on Tailscale (never anyone else's)
         me = socket.gethostname().lower().split(".")[0]
         return ("." not in host or host.split(".")[0] == me
                 or host.endswith((".local", ".lan", ".home", ".internal", ".home.arpa")))

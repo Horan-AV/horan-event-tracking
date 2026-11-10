@@ -763,6 +763,22 @@ You do this once per device. After that there are no warnings, even if the compu
 - To use your own certificate instead, put `own-cert.pem` and `own-key.pem` in the `tls` folder inside the data folder and restart.
 - To turn it off: the same button, or `horan-rms https off`.
 
+## Using it from anywhere (Tailscale)
+
+[Tailscale](https://tailscale.com) is a free app that links your own devices into a private, encrypted network. With it, a phone at a venue or a laptop at home can reach the app without opening anything to the internet.
+
+**Settings → Users → Remote access** walks you through it, on the computer running the app:
+1. **Install Tailscale.** The app downloads Tailscale's official installer and runs it. On Linux the computer asks for its password; on a Mac the installer opens for you to follow. If Tailscale is already installed (it comes with Bazzite), this step is ticked.
+2. **Turn it on and sign in.** Press **Turn on Tailscale**, enter the computer's password when it asks, then press **Sign in to Tailscale**. Use a Google, Microsoft, Apple or GitHub account, or make a free Tailscale account.
+3. **Add your other devices.** Install the Tailscale app on each phone, tablet or laptop and sign in with the same account. Then open the address the card shows, e.g. `http://100.101.102.103:8765/`.
+
+**Good to know:**
+- **Network access** must be on, so other devices are allowed to connect.
+- Only devices signed in to your Tailscale account can reach the app. People still sign in to the app as usual.
+- If HTTPS is on, the app's certificate covers the Tailscale address too.
+- The app never sees the computer's password; the computer's own prompt asks for it.
+- On a server with no screen, or if no password prompt appears, the card shows the commands to run by hand.
+
 ## Running it on a server (no screen)
 
 You can run Horan Event Tracking on a Linux server or mini PC with no screen. Ubuntu, Debian, Fedora and most other systemd distributions work. Everyone then uses it from their own browser over the network. You need Python 3.9 or newer, which these all include (`sudo apt install python3` if it's missing).

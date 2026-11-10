@@ -4482,8 +4482,8 @@ async function renderRequests(view) {
 }
 
 const SETTINGS_TABS = [
-  { key: 'users', label: 'Users', cards: ['users', 'network'], admin: true, save: false,
-    sub: 'Who can sign in, and using the app from other devices.' },
+  { key: 'users', label: 'Users', cards: ['users', 'network', 'tailscale'], admin: true, save: false,
+    sub: 'Who can sign in, using the app from other devices, and reaching it from anywhere.' },
   { key: 'customise', label: 'Customisation', cards: ['logo', 'appearance', 'icons', 'sounds', 'doc-layout'], admin: true,
     sub: 'Logos, app icon, colours, light and dark mode, fonts, icons, scan sounds and the layout of quotes and invoices.' },
   { key: 'company', label: 'Company information', cards: ['company', 'invoicing', 'money', 'jobs-settings', 'documents'], admin: true,
@@ -4663,6 +4663,7 @@ async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
         <div class="card settings-section" id="changelog" data-changelog-card><header><h2>Change log</h2><span class="pill">Version ${esc(meta.version)}</span></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="users" data-users-card><header><h2>Users</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="network" data-net-card><header><h2>Network access</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
+        <div class="card settings-section" id="tailscale" data-ts-card><header><h2>Remote access</h2><span class="muted small">with Tailscale</span></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="update"><header><h2>Software update</h2><span class="pill">Version ${esc(meta.version)}</span></header>
           ${!meta.can_update ? `<div class="body"><p class="muted" style="margin:0">Updates are installed on the computer running ${esc(appName())} (${esc(meta.server_name)}).</p>
             <p class="muted small" style="margin:8px 0 0">If that’s a server with no screen, turn on server mode there once and admins can update it from here: run <code>horan-rms headless on</code>.</p></div>`
@@ -4708,6 +4709,7 @@ async function renderSettings(view, tab = location.hash.split('/')[2] || '') {
   drawSoundsCard(view);
   drawLayoutCard(view, s);
   drawNetworkCard(view);
+  drawTailscaleCard(view);
   drawUsersCard(view);
   drawMeCard(view);
   drawChangelogCard(view);
@@ -5036,6 +5038,60 @@ function deviceLabel(agent) {
     : /Windows/.test(a) ? 'Windows' : /CrOS/.test(a) ? 'Chromebook' : /Linux/.test(a) ? 'Linux' : 'Device';
   const br = /Edg\//.test(a) ? 'Edge' : /Firefox\//.test(a) ? 'Firefox' : /Chrome\//.test(a) ? 'Chrome' : /Safari\//.test(a) ? 'Safari' : 'browser';
   return `${os} · ${br}`;
+}
+
+/** Settings → Users → Remote access: set up Tailscale step by step, to use the app from anywhere. */
+let tsTimer = null;
+async function drawTailscaleCard(view, fresh = true) {
+  const card = $('[data-ts-card]', view);
+  clearTimeout(tsTimer);
+  if (!card || !document.body.contains(card)) return;
+  let t;
+  try { t = await get(`/tailscale${fresh ? '?fresh=1' : ''}`); } catch (ex) { $('.body', card).innerHTML = `<p class="form-error">${esc(ex.message)}</p>`; return; }
+  const step = (n, done, title, body) => `<li class="ts-step ${done ? 'done' : ''}"><span class="ts-n">${done ? '✓' : n}</span><div><strong>${title}</strong>${body ? `<div class="small">${body}</div>` : ''}</div></li>`;
+  const local = t.is_local;
+  const only = local ? '' : ' <span class="muted">(do this on the computer running the app)</span>';
+  const manual = `<details class="net-help"><summary>Do it by hand instead</summary><ul class="small">${t.manual.map((m) => `<li><code>${esc(m)}</code></li>`).join('')}</ul></details>`;
+  const urls = t.ips.map((ip) => `${t.scheme}://${ip}:${t.port}/`).concat(t.name && t.scheme === 'http' ? [`http://${t.name}:${t.port}/`] : []);
+  const s1 = t.installed ? '' : `Tailscale is a free app that links your devices into your own private, encrypted network.${only}
+      <div class="actions" style="margin-top:6px"><button type="button" class="btn primary small" data-ts="install" ${local && !t.busy ? '' : 'disabled'}>Install Tailscale</button>
+        <a class="btn small" href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com ↗</a></div>
+      <span class="muted">${t.platform === 'mac' ? 'It downloads the official installer and opens it; follow its steps.' : 'It runs Tailscale’s official installer. This computer asks for its password.'}</span>`;
+  const s2 = !t.installed ? '' : t.state === 'connected' ? '' : t.state === 'needs_login' && t.auth_url
+    ? `Sign in with a Google, Microsoft, Apple or GitHub account — or make a free Tailscale account.
+      <div class="actions" style="margin-top:6px"><a class="btn primary small" href="${esc(t.auth_url)}" target="_blank" rel="noopener">Sign in to Tailscale ↗</a></div>
+      <span class="muted">This page updates by itself once you’ve signed in.</span>`
+    : `${t.platform === 'mac' ? 'Open Tailscale and sign in from its icon in the menu bar.' : 'Start Tailscale on this computer. It asks for this computer’s password, then gives you a sign-in link.'}${only}
+      <div class="actions" style="margin-top:6px"><button type="button" class="btn primary small" data-ts="start" ${local && !t.busy ? '' : 'disabled'}>${t.platform === 'mac' ? 'Open Tailscale' : 'Turn on Tailscale'}</button></div>`;
+  const connected = t.state === 'connected';
+  const s3 = !connected ? 'Install the Tailscale app on your phone, tablet or laptop and sign in with the <strong>same account</strong>.'
+    : `Install the Tailscale app on each phone, tablet or laptop (<a href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com/download</a>) and sign in with the <strong>same account</strong>. Then open:
+      ${urls.length ? `<div class="net-urls">${urls.map((u) => `<div class="net-url"><span class="mono">${esc(u)}</span><button type="button" class="btn small" data-copy="${esc(u)}">Copy</button></div>`).join('')}</div>` : ''}
+      ${t.network_on ? '' : '<p class="banner warn" style="margin:8px 0 0">Network access is off, so other devices can’t connect yet. Turn it on in the Network access card.</p>'}`;
+  $('.body', card).innerHTML = `<p class="muted" style="margin-top:0">Use ${esc(appName())} from anywhere — a venue, home, on mobile data — without opening it to the internet. Only your own devices can reach it, and the connection is encrypted.</p>
+    ${t.busy ? `<p class="banner info"><span>⏳ ${esc(t.step || 'Working…')}</span></p>` : ''}
+    ${t.error ? `<p class="banner warn"><span>${esc(t.error)}</span></p>` : ''}
+    <ol class="ts-steps">
+      ${step(1, t.installed, 'Install Tailscale on this computer', s1)}
+      ${step(2, connected, connected ? `Signed in${t.name ? ` as ${esc(t.name)}` : ''}` : 'Turn it on and sign in', s2)}
+      ${step(3, false, 'Add your other devices', s3)}
+    </ol>
+    ${connected ? '' : (t.platform === 'mac' && t.installed ? '' : manual)}`;
+  card.onclick = async (e) => {
+    const cp = e.target.closest('[data-copy]');
+    if (cp) { try { await navigator.clipboard.writeText(cp.dataset.copy); toast('Copied', 'ok'); } catch { toast(cp.dataset.copy); } return; }
+    const b = e.target.closest('[data-ts]');
+    if (!b) return;
+    if (b.dataset.ts === 'install' && !await confirmModal(t.platform === 'mac'
+      ? 'Download Tailscale’s official installer from tailscale.com and open it on this Mac?'
+      : 'Download Tailscale’s official installer from tailscale.com and run it? This computer will ask for its password to allow it.',
+      { title: 'Install Tailscale?', okLabel: 'Install', danger: false })) return;
+    b.disabled = true;
+    try { await post(`/tailscale/${b.dataset.ts}`, {}); } catch (ex) { toast(ex.message, 'error'); }
+    drawTailscaleCard(view);
+  };
+  // While something is in progress (installing, waiting for a sign-in), keep the card up to date.
+  if (t.busy || (t.installed && !connected)) tsTimer = setTimeout(() => drawTailscaleCard(view), t.busy ? 2000 : 5000);
 }
 
 /** The HTTPS part of the Network access card. */
