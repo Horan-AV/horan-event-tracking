@@ -948,3 +948,6 @@ tr.bc-row td { background: var(--bg); padding: 8px 12px 12px; }
 .lbl-sample { background: #fff; color: #000; border: 1px dashed #aaa; border-radius: 4px; padding: 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; text-align: center; }
 .lbl-sample svg { width: 100%; flex: 1 1 auto; min-height: 0; }
 .lbl-sample .small { font-size: 9px; line-height: 1.1; }
+
+/* HTTPS (1.28) */
+.fp { font-size: 11px; overflow-wrap: anywhere; user-select: all; }

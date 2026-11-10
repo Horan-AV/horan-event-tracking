@@ -4,7 +4,13 @@ Horan Event Tracking is built to run on your own computer or a server on a netwo
 
 ## Know before you run it
 
-- **No encryption:** other devices connect over plain `http`, so don't turn on network access on public or venue Wi-Fi. To use it across the internet, put it behind a VPN, or behind a reverse proxy that adds HTTPS.
+- **Encryption is optional, and off by default.** Other devices connect over plain `http` unless you turn on **HTTPS** (Settings → Users → Network access, or `horan-rms https on`).
+  - With HTTPS off, don't turn on network access on public or venue Wi-Fi.
+  - With HTTPS on, the app makes its own certificate authority and certificate. Connections from other devices are encrypted (TLS 1.2 or newer), and plain `http` from another device is redirected and never accepts a sign-in.
+  - Devices show a warning until you install the app's certificate on them. Check the fingerprint shown in Settings when you do.
+  - The authority is limited to local names (`.local`, `.lan`, `.home`, `.internal`) and private addresses, so even if its key were stolen it could not be used to impersonate a website on the internet.
+  - Its keys stay in the data folder (`tls/`), readable only by the account running the app. They aren't in database backups or exports.
+  - To use the app across the internet, put it behind a VPN such as Tailscale rather than opening it to the internet.
 - **Sign-in:** other devices need a passcode, or a user name and password.
   - After five wrong attempts, that device waits five minutes.
   - After ten wrong passwords for one person, from any devices, that person waits fifteen minutes.

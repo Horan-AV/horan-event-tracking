@@ -2,6 +2,15 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.28.0 — 2026-11-10 · HTTPS with the app's own certificate
+
+- HTTPS: other devices can now connect over an encrypted https:// address, so passwords and data can't be read on the network. Turn it on under Settings → Users → Network access (or `horan-rms https on` on a server). It's off until you turn it on.
+- The app makes its own certificate. Devices show a warning the first time; install the app's certificate on a device (the steps are shown in Settings) and the warning goes for good, even if the computer's address changes.
+- Old http:// links from other devices are sent to the https:// address, and sign-ins are never accepted over plain http while HTTPS is on. The computer running the app works exactly as before.
+- The app's certificate only works for local names and private addresses, so it can't be misused for websites on the internet.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.27.0 — 2026-11-10 · Passwords, security hardening and automated tests
 
 - Passwords instead of PINs: everyone signs in with a password of at least 8 characters, and very common ones are refused. Short PINs you already have still work, and the app asks you to choose a password.

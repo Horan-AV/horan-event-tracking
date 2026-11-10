@@ -9,6 +9,7 @@
 #   horan-rms restart         restart the background service
 #   horan-rms logs            show the server log
 #   horan-rms url             print the address(es) to open
+#   horan-rms https on|off    encrypt connections from other devices, using the app's own certificate
 #   horan-rms users           list the people who can sign in
 #   horan-rms reset-password NAME  give someone a new password (add --admin to make them an admin too)
 #   horan-rms headless on|off server mode: admins can install updates from any device
@@ -87,6 +88,12 @@ case "${1:-open}" in
     case "${2:-}" in
       on|off) admin --network "$2" && restart_server && admin --status | grep -E "Network|Open on" ;;
       *) echo "Usage: horan-rms network on|off" >&2; exit 2 ;;
+    esac
+    ;;
+  https)
+    case "${2:-}" in
+      on|off) admin --https "$2" && restart_server && admin --status | grep -E "HTTPS|Open on" ;;
+      *) echo "Usage: horan-rms https on|off" >&2; exit 2 ;;
     esac
     ;;
   restart)

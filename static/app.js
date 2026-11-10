@@ -5038,6 +5038,36 @@ function deviceLabel(agent) {
   return `${os} · ${br}`;
 }
 
+/** The HTTPS part of the Network access card. */
+function httpsHTML(n) {
+  const h = n.https || {};
+  const trust = h.active && h.has_ca ? `<details class="net-help" ${n.is_local ? '' : 'open'}><summary>Stop the “not secure” warning on a device</summary>
+      <p class="small" style="margin:8px 0">The warning appears because the certificate was made by this app, not bought from a certificate company. The connection is still encrypted.
+        To remove the warning, tell each device to trust the app’s certificate — once per device:</p>
+      <div class="actions"><a class="btn small primary" href="/ca.crt" download>Download the certificate</a></div>
+      <ul class="small">
+        <li><strong>iPhone / iPad:</strong> open this page in Safari, download it, then Settings → General → VPN &amp; Device Management → install the profile. Then Settings → General → About → Certificate Trust Settings → switch it on.</li>
+        <li><strong>Android:</strong> Settings → Security → Encryption &amp; credentials → Install a certificate → CA certificate, and choose the file.</li>
+        <li><strong>Windows:</strong> open the file → Install Certificate → Local Machine → “Trusted Root Certification Authorities”.</li>
+        <li><strong>Mac:</strong> open the file (it goes into Keychain Access), then double-click it there → Trust → “Always Trust”.</li>
+        <li><strong>Linux / Bazzite:</strong> Firefox: Settings → Privacy &amp; Security → View Certificates → Authorities → Import. Chrome: Settings → Privacy and security → Security → Manage certificates → Authorities → Import.</li>
+      </ul>
+      <p class="small" style="margin:6px 0 0">Before trusting it, check the fingerprint the device shows matches this one:<br><span class="mono fp">${esc(h.fingerprint)}</span></p>
+      <p class="muted small" style="margin:6px 0 0">It only works for this app on your own network — it can’t be used for any website on the internet. Valid until ${esc(h.ca_expires ? fmtDate(h.ca_expires) : '—')}.</p></details>` : '';
+  if (!n.is_local) {
+    return h.active ? `<h3 class="net-h">HTTPS</h3><p class="net-status on"><span class="dot"></span>On — this connection is encrypted.</p>${trust}`
+      : '<h3 class="net-h">HTTPS</h3><p class="muted small">Off — this connection isn’t encrypted. It can be turned on at the computer running the app (Settings → Users → Network access).</p>';
+  }
+  return `<h3 class="net-h">HTTPS (encrypted connections)</h3>
+    <p class="net-status ${h.active ? 'on' : ''}"><span class="dot"></span><span>${h.active ? `On — other devices connect with https://, so passwords and data can’t be read on the network.${h.own ? ' Using your own certificate.' : ''}`
+      : 'Off — other devices connect with plain http. Fine on a network you trust; turn this on if others share the network.'}</span></p>
+    ${h.active ? '' : `<p class="muted small" style="margin:0 0 8px">The app makes its own certificate. Other devices show a “not secure” warning the first time, until you add the certificate to them (instructions appear here once it’s on).
+      Their address changes from http:// to https://, and old links are sent to the new one. This computer keeps working as it does now.</p>`}
+    ${!h.can_make && !h.active ? '<p class="banner warn">This needs the “openssl” tool, which isn’t installed on this computer.</p>' : ''}
+    <div class="actions"><button type="button" class="btn ${h.active ? '' : 'primary'}" data-https="${h.active ? '0' : '1'}" ${!h.can_make && !h.active ? 'disabled' : ''}>${h.active ? 'Turn HTTPS off' : 'Turn HTTPS on'}</button></div>
+    ${trust}`;
+}
+
 async function drawNetworkCard(view) {
   const card = $('[data-net-card]', view);
   if (!card) return;
@@ -5055,7 +5085,7 @@ async function drawNetworkCard(view) {
     body = `<p style="margin-top:0">You're connected over the network to <strong>${esc(S.meta.server_name)}</strong>. ${S.meta.headless
       ? 'It’s running as a server: change network access and the passcode over SSH with <code>horan-rms network on|off</code> and <code>horan-rms passcode</code>.'
       : 'Network settings and the passcode can only be changed on that computer.'}</p>
-      ${devices}<div class="actions" style="margin-top:12px"><button type="button" class="btn" data-net-logout>Sign out this device</button></div>`;
+      ${httpsHTML(n)}${devices}<div class="actions" style="margin-top:12px"><button type="button" class="btn" data-net-logout>Sign out this device</button></div>`;
   } else {
     const on = n.enabled && n.listening;
     body = `${n.fixed_host ? '<p class="banner warn">This copy was started with a fixed <code>--host</code>, so that setting decides who can connect.</p>' : ''}
@@ -5072,6 +5102,7 @@ async function drawNetworkCard(view) {
         <li><strong>Bazzite / Linux:</strong> allow the port through the firewall. Open a terminal and run<br><code>sudo firewall-cmd --permanent --add-port=${num(n.port)}/tcp &amp;&amp; sudo firewall-cmd --reload</code></li>
         <li><strong>Mac:</strong> if asked whether “python3” can accept incoming connections, click <strong>Allow</strong>. If you missed it, see System Settings → Network → Firewall → Options.</li>
         <li>This computer needs to be on and awake, with ${esc(appName())} running.</li></ul></details>` : ''}
+      ${httpsHTML(n)}
       ${devices}`;
   }
   $('.body', card).innerHTML = body;
@@ -5091,6 +5122,22 @@ async function drawNetworkCard(view) {
           return;
         }
         toast(passcode ? 'Passcode saved — other devices need to sign in again' : 'Saved', 'ok');
+        drawNetworkCard(view);
+        return;
+      }
+      const hb = e.target.closest('[data-https]');
+      if (hb) {
+        const on = hb.dataset.https === '1';
+        if (!await confirmModal(on
+          ? 'Turn on HTTPS? Other devices will use https:// and see a “not secure” warning until you add the app’s certificate to them. The app restarts.'
+          : 'Turn off HTTPS? Other devices go back to plain http://, which isn’t encrypted. The app restarts.',
+          { title: on ? 'Turn on HTTPS?' : 'Turn off HTTPS?', okLabel: on ? 'Turn on' : 'Turn off', danger: !on })) return;
+        hb.disabled = true;
+        const res = await put('/network/https', { enabled: on });
+        if (res.restarting) {
+          waitForRestart(null, { title: on ? 'Turning on HTTPS…' : 'Turning off HTTPS…', text: `Restarting ${appName()}. This takes a few seconds.`, done: on ? 'HTTPS is on' : 'HTTPS is off' });
+          return;
+        }
         drawNetworkCard(view);
         return;
       }

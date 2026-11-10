@@ -7,7 +7,9 @@ import http.client
 import json
 import os
 import re
+import shutil
 import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -280,6 +282,129 @@ class TestPasswords(ServerCase):
         self.assertEqual(fresh.post("/login", {"user_id": sam["id"], "password": "battery staple"})[0], 200)
         # an admin can't read a password, only replace it
         self.assertFalse([u for u in c.get("/users")[1] if "pin_hash" in u or "password" in u])
+
+
+def lan_ip():
+    """An address of this machine that isn't the loopback one, if it has one."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+            sk.connect(("10.255.255.255", 1))
+            ip = sk.getsockname()[0]
+        return None if ip.startswith("127.") else ip
+    except OSError:
+        return None
+
+
+@unittest.skipUnless(shutil.which("openssl"), "needs the openssl tool")
+class TestHttps(unittest.TestCase):
+    """HTTPS with the app's own certificate."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.port = free_port()
+        base = [sys.executable, os.path.join(ROOT, "server.py"), "--port", str(cls.port), "--data", cls.tmp.name]
+        out = subprocess.run(base + ["--https", "on"], capture_output=True, text=True, timeout=120)
+        assert out.returncode == 0, out.stderr
+        cls.cli_output = out.stdout
+        env = dict(os.environ, HORAN_RMS_GITHUB_API="http://127.0.0.1:9")
+        cls.proc = subprocess.Popen(base + ["--host", "0.0.0.0", "--demo"], env=env,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.tls = os.path.join(cls.tmp.name, "tls")
+        cls.ctx = ssl.create_default_context(cafile=os.path.join(cls.tls, "ca.pem"))
+        for _ in range(100):
+            try:
+                if cls.https("GET", "/api/meta")[0] == 200:
+                    return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError("https server did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        cls.proc.wait(timeout=10)
+        cls.tmp.cleanup()
+
+    @classmethod
+    def https(cls, method, path, body=None, host="localhost", ctx=None):
+        conn = http.client.HTTPSConnection(host, cls.port, context=ctx or cls.ctx, timeout=30)
+        conn.request(method, path, json.dumps(body) if body is not None else None, HDR)
+        r = conn.getresponse()
+        data = r.read()
+        conn.close()
+        return r.status, r, data
+
+    def test_trusted_once_the_certificate_is_installed(self):
+        for host in ("localhost", "127.0.0.1"):
+            self.assertEqual(self.https("GET", "/api/meta", host=host)[0], 200)
+
+    def test_not_trusted_without_it(self):
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            self.https("GET", "/api/meta", ctx=ssl.create_default_context())
+
+    def test_this_computer_can_still_use_plain_http(self):
+        # The launchers and the browser on the computer running the app use http://127.0.0.1.
+        self.assertEqual(Client(self.port).get("/meta")[0], 200)
+
+    def test_other_devices_are_sent_to_https(self):
+        ip = lan_ip()
+        if not ip:
+            self.skipTest("this machine has no network address")
+        conn = http.client.HTTPConnection(ip, self.port, timeout=30)
+        conn.request("GET", "/jobs?x=1", headers=HDR)
+        r = conn.getresponse()
+        r.read()
+        self.assertEqual(r.status, 301)
+        self.assertEqual(r.getheader("Location"), f"https://{ip}:{self.port}/jobs?x=1")
+        # and a sign-in is never accepted over plain http from another device
+        conn = http.client.HTTPConnection(ip, self.port, timeout=30)
+        conn.request("POST", "/api/login", json.dumps({"passcode": "x"}), HDR)
+        self.assertEqual(conn.getresponse().status, 400)
+
+    def test_keys_are_private_and_never_served(self):
+        if os.name == "posix":
+            for name in ("ca-key.pem", "key.pem"):
+                self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.tls, name)).st_mode), 0o600, name)
+            self.assertEqual(stat.S_IMODE(os.stat(self.tls).st_mode), 0o700)
+        status, r, data = self.https("GET", "/ca.crt")
+        self.assertEqual(status, 200)
+        self.assertTrue(data.startswith(b"-----BEGIN CERTIFICATE-----"))
+        self.assertNotIn(b"PRIVATE KEY", data)
+
+    def test_the_authority_cannot_vouch_for_internet_sites(self):
+        # Even with the authority's key, a certificate for a real website is refused by anything that trusts it.
+        d = self.tls
+        key, csr, crt, cnf = (os.path.join(self.tmp.name, n) for n in ("evil.key", "evil.csr", "evil.crt", "evil.cnf"))
+        with open(cnf, "w") as f:
+            f.write("[req]\ndistinguished_name=dn\nprompt=no\n[dn]\nCN=www.example.com\n[v3]\nsubjectAltName=DNS:www.example.com\n")
+        run = lambda *a: subprocess.run(["openssl"] + list(a), capture_output=True, text=True)
+        self.assertEqual(run("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", key).returncode, 0)
+        self.assertEqual(run("req", "-new", "-key", key, "-config", cnf, "-out", csr).returncode, 0)
+        self.assertEqual(run("x509", "-req", "-in", csr, "-CA", os.path.join(d, "ca.pem"), "-CAkey", os.path.join(d, "ca-key.pem"),
+                             "-set_serial", "7", "-days", "5", "-extfile", cnf, "-extensions", "v3", "-out", crt).returncode, 0)
+        bad = run("verify", "-CAfile", os.path.join(d, "ca.pem"), crt)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("permitted subtree violation", bad.stdout + bad.stderr)
+        good = run("verify", "-CAfile", os.path.join(d, "ca.pem"), os.path.join(d, "cert.pem"))
+        self.assertEqual(good.returncode, 0, good.stderr)
+
+    def test_settings_show_the_fingerprint(self):
+        status, r, data = self.https("GET", "/api/network")
+        h = json.loads(data)["https"]
+        self.assertTrue(h["enabled"] and h["active"] and h["has_ca"])
+        self.assertRegex(h["fingerprint"], r"^([0-9A-F]{2}:){31}[0-9A-F]{2}$")
+        self.assertIn(h["fingerprint"], self.cli_output)
+        self.assertIn("localhost", h["names"])
+
+    def test_sign_in_cookie_is_https_only_over_https(self):
+        status, r, data = self.https("POST", "/api/users", {"name": "Admin", "password": "correct horse"})
+        self.assertEqual(status, 200, data)
+        self.assertIn("Secure", r.getheader("Set-Cookie"))
+        plain = Client(self.port)
+        status, r, _ = plain.request("POST", "/api/login", {"user_id": 1, "password": "correct horse"}, raw=True)
+        self.assertEqual(status, 200)
+        self.assertNotIn("Secure", r.getheader("Set-Cookie"))
 
 
 class TestJobs(ServerCase):

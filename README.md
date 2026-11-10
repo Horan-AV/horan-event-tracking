@@ -738,6 +738,31 @@ The computer where Horan Event Tracking is installed acts as the server. Phones,
   - **Bazzite / Linux:** let the port through the firewall with `sudo firewall-cmd --permanent --add-port=8765/tcp && sudo firewall-cmd --reload`.
   - **Mac:** click **Allow** if asked whether "python3" can accept incoming connections.
 
+## HTTPS (encrypted connections)
+
+By default, other devices connect over plain `http`, which is fine on a network you trust. Turn on HTTPS if other people share the network.
+
+**Turn it on:** on the computer running the app, go to **Settings → Users → Network access → Turn HTTPS on**. On a server, run `horan-rms https on`. The app restarts.
+
+**What changes:**
+- Other devices use `https://` at the start of the address. Old `http://` links are sent to the new address automatically.
+- The computer running the app carries on exactly as before.
+- Passwords and data can no longer be read by anyone else on the network.
+
+**The warning.** The app makes its own certificate, so each device shows a "not secure" warning the first time. You can click through it (the connection is still encrypted), or remove it for good:
+1. On the device, open the app and go to **Settings → Users → Network access → Stop the "not secure" warning**, or open `https://<address>:8765/ca.crt`.
+2. Download the certificate and install it, following the steps shown for iPhone, Android, Windows, Mac or Linux.
+3. Check the fingerprint the device shows matches the one in Settings.
+
+You do this once per device. After that there are no warnings, even if the computer's address changes, because the app renews its own certificate by itself.
+
+**Good to know:**
+- The certificate only works for this app on your own network. It can't be used for any website on the internet.
+- It needs the `openssl` tool, which Macs and almost all Linux systems (including Bazzite) already have.
+- If the computer has a public internet address rather than a private one, that address isn't covered and keeps showing the warning.
+- To use your own certificate instead, put `own-cert.pem` and `own-key.pem` in the `tls` folder inside the data folder and restart.
+- To turn it off: the same button, or `horan-rms https off`.
+
 ## Running it on a server (no screen)
 
 You can run Horan Event Tracking on a Linux server or mini PC with no screen. Ubuntu, Debian, Fedora and most other systemd distributions work. Everyone then uses it from their own browser over the network. You need Python 3.9 or newer, which these all include (`sudo apt install python3` if it's missing).
@@ -763,6 +788,7 @@ Manage it over SSH with the `horan-rms` command:
 | `horan-rms restart` / `stop` | Restart or stop the server |
 | `horan-rms logs` | Show the most recent log lines |
 | `horan-rms users` | List the people who can sign in |
+| `horan-rms https on` / `off` | Encrypt connections from other devices, using the app's own certificate |
 | `horan-rms reset-password "Name" --admin` | Give someone a new password (and make them an admin) |
 | `horan-rms headless on\|off` | Server mode: lets admins install updates from any device. The installer turns it on; it's remembered however the server is restarted |
 
@@ -785,4 +811,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.27.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.28.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
