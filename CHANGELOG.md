@@ -2,6 +2,14 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.28.1 — 2026-11-11 · HTTPS can be turned on from any device, and no stale app after an update
+
+- HTTPS can now be turned on by an admin from any signed-in device, not just the computer running the app — useful for a server with no screen. The page reloads at the https:// address; accept the browser's warning once, then add the certificate to stop it.
+- If HTTPS is switched on but can't start (for example a certificate of your own that can't be used), Settings now says why, instead of quietly staying on plain http and showing the “Turn HTTPS on” button again. Turning it on checks the certificate first and explains any problem before anything changes.
+- After an update, browsers always load the new version of the app instead of a mix of old saved files and the new page. This is now built in, so the separate fix_frontend_cache.py script has been removed and isn't needed.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.28.0 — 2026-11-10 · HTTPS and remote access with Tailscale
 
 - HTTPS: other devices can now connect over an encrypted https:// address, so passwords and data can't be read on the network. Turn it on under Settings → Users → Network access (or `horan-rms https on` on a server). It's off until you turn it on.

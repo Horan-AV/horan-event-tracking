@@ -742,7 +742,7 @@ The computer where Horan Event Tracking is installed acts as the server. Phones,
 
 By default, other devices connect over plain `http`, which is fine on a network you trust. Turn on HTTPS if other people share the network.
 
-**Turn it on:** on the computer running the app, go to **Settings → Users → Network access → Turn HTTPS on**. On a server, run `horan-rms https on`. The app restarts.
+**Turn it on:** as an admin, go to **Settings → Users → Network access → Turn HTTPS on** — on the computer running the app or from any signed-in device. On a server you can also run `horan-rms https on`. The app restarts; a device you turned it on from reloads at the `https://` address. If it can't start, the reason is shown there.
 
 **What changes:**
 - Other devices use `https://` at the start of the address. Old `http://` links are sent to the new address automatically.
@@ -834,4 +834,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.28.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.28.1 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)

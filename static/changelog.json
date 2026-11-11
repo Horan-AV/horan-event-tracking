@@ -2,6 +2,24 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.28.1",
+      "date": "2026-11-11",
+      "title": "HTTPS can be turned on from any device, and no stale app after an update",
+      "changes": [
+        {
+          "text": "HTTPS can now be turned on by an admin from any signed-in device, not just the computer running the app — useful for a server with no screen. The page reloads at the https:// address; accept the browser's warning once, then add the certificate to stop it."
+        },
+        {
+          "text": "If HTTPS is switched on but can't start (for example a certificate of your own that can't be used), Settings now says why, instead of quietly staying on plain http and showing the “Turn HTTPS on” button again. Turning it on checks the certificate first and explains any problem before anything changes."
+        },
+        {
+          "text": "After an update, browsers always load the new version of the app instead of a mix of old saved files and the new page. This is now built in, so the separate fix_frontend_cache.py script has been removed and isn't needed."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.28.0",
       "date": "2026-11-10",
       "title": "HTTPS and remote access with Tailscale",
