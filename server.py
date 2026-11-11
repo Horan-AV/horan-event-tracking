@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.28.0"
+VERSION = "1.28.1"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -2519,6 +2519,15 @@ def install_files(files):
         with open(launcher, "wb") as f:
             f.write(files["horan-rms"])
         os.chmod(launcher, 0o755)
+
+
+STATIC_ASSET_RE = re.compile(rb'((?:src|href)="/static/[A-Za-z0-9_./-]+\.(?:js|css))"')
+
+
+def versioned_assets(html):
+    """Add the version to the page's script and style links, so after an update every browser fetches the new
+    files instead of mixing a cached old app.js with the new page."""
+    return STATIC_ASSET_RE.sub(lambda m: m.group(1) + b"?v=" + VERSION.encode() + b'"', html)
 
 
 def restart_soon():
@@ -7567,6 +7576,7 @@ def api_tailscale_start(req, conn):
 # website on the internet.
 
 TLS_CTX = None          # the TLS settings while HTTPS is on (None = plain http)
+TLS_ERROR = ""          # why HTTPS couldn't start, if it's switched on but isn't running
 TLS_LOCK = threading.Lock()
 CA_DAYS, LEAF_DAYS, LEAF_RENEW_DAYS = 3650, 800, 30
 LOCAL_SUFFIXES = ("local", "lan", "home", "internal", "home.arpa")
@@ -7751,6 +7761,7 @@ def tls_info(conn):
     wanted = get_settings(conn).get("https") == "1"
     own = bool(tls_own_cert())
     info = {"enabled": wanted, "active": TLS_CTX is not None, "own": own, "has_ca": False,
+            "error": TLS_ERROR if wanted and TLS_CTX is None else "",
             "can_make": bool(shutil.which("openssl")) or own, "fingerprint": "", "ca_expires": "", "names": []}
     if not own and os.path.isfile(tls_path("ca.pem")):
         try:
@@ -7769,15 +7780,20 @@ def tls_info(conn):
 def set_https(conn, on):
     """Turn HTTPS on (making the certificate first, so a problem is reported before anything changes) or off."""
     if on:
-        tls_ensure()
+        try:
+            tls_context()  # makes the certificate if needed, and checks it can really be used
+        except ApiError:
+            raise
+        except Exception as e:  # noqa: BLE001 - e.g. a broken certificate of your own
+            raise ApiError(400, f"HTTPS can't start with this certificate: {e}") from e
     set_secret(conn, "https", "1" if on else "0")
     conn.commit()
 
 
 @route("PUT", "/api/network/https")
 def api_network_https(req, conn):
+    """Admins can switch it from any signed-in device: a server often has no screen to do it on."""
     require_admin(req, conn)
-    local_only(req)
     on = bool((req.json() or {}).get("enabled"))
     set_https(conn, on)
     info = network_info(conn, req)
@@ -7885,7 +7901,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _login_page(self):
         with open(os.path.join(STATIC_DIR, "login.html"), "rb") as f:
-            body = f.read()
+            body = versioned_assets(f.read())
         self._send(200, body, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
 
     def _send(self, status, body, ctype, extra=None):
@@ -7917,6 +7933,8 @@ class Handler(BaseHTTPRequestHandler):
         with open(full, "rb") as f:
             body = f.read()
         ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+        if ctype == "text/html":
+            body = versioned_assets(body)
         if ctype.startswith("text/") or ctype in ("application/javascript",):
             ctype += "; charset=utf-8"
         self._send(200, body, ctype, {"Cache-Control": "no-cache"})
@@ -8329,7 +8347,7 @@ def main():
 
     mimetypes.add_type("application/javascript", ".js")
     mimetypes.add_type("image/svg+xml", ".svg")
-    global TLS_CTX
+    global TLS_CTX, TLS_ERROR
     c = db()
     try:
         want_https = get_settings(c).get("https") == "1"
@@ -8340,6 +8358,7 @@ def main():
             TLS_CTX = tls_context()
             threading.Thread(target=tls_keep_fresh, daemon=True, name="tls").start()
         except Exception as e:  # noqa: BLE001 - never refuse to start over a certificate problem
+            TLS_ERROR = str(getattr(e, "message", e))[:400] or e.__class__.__name__  # shown in Settings
             print(f"HTTPS is switched on but couldn't start, so the app is using plain http: {getattr(e, 'message', e)}", file=sys.stderr)
     server = QuietServer((HOST, PORT), Handler)
     print(f"Horan Event Tracking {VERSION} running at http://{'127.0.0.1' if HOST == '0.0.0.0' else HOST}:{PORT}"

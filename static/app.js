@@ -5142,15 +5142,17 @@ function httpsHTML(n) {
       </ul>
       <p class="small" style="margin:6px 0 0">Before trusting it, check the fingerprint the device shows matches this one:<br><span class="mono fp">${esc(h.fingerprint)}</span></p>
       <p class="muted small" style="margin:6px 0 0">It only works for this app on your own network — it can’t be used for any website on the internet. Valid until ${esc(h.ca_expires ? fmtDate(h.ca_expires) : '—')}.</p></details>` : '';
-  if (!n.is_local) {
+  const failed = h.enabled && !h.active && h.error
+    ? `<p class="banner warn">HTTPS is switched on but couldn’t start, so the app is still using plain http: ${esc(h.error)}</p>` : '';
+  if (!n.is_local && !S.meta.is_admin) {
     return h.active ? `<h3 class="net-h">HTTPS</h3><p class="net-status on"><span class="dot"></span>On — this connection is encrypted.</p>${trust}`
-      : '<h3 class="net-h">HTTPS</h3><p class="muted small">Off — this connection isn’t encrypted. It can be turned on at the computer running the app (Settings → Users → Network access).</p>';
+      : '<h3 class="net-h">HTTPS</h3><p class="muted small">Off — this connection isn’t encrypted. An admin can turn it on (Settings → Users → Network access).</p>';
   }
-  return `<h3 class="net-h">HTTPS (encrypted connections)</h3>
+  return `<h3 class="net-h">HTTPS (encrypted connections)</h3>${failed}
     <p class="net-status ${h.active ? 'on' : ''}"><span class="dot"></span><span>${h.active ? `On — other devices connect with https://, so passwords and data can’t be read on the network.${h.own ? ' Using your own certificate.' : ''}`
       : 'Off — other devices connect with plain http. Fine on a network you trust; turn this on if others share the network.'}</span></p>
     ${h.active ? '' : `<p class="muted small" style="margin:0 0 8px">The app makes its own certificate. Other devices show a “not secure” warning the first time, until you add the certificate to them (instructions appear here once it’s on).
-      Their address changes from http:// to https://, and old links are sent to the new one. This computer keeps working as it does now.</p>`}
+      Their address changes from http:// to https://, and old links are sent to the new one. ${n.is_local ? 'This computer keeps working as it does now.' : 'This device will reload at the https:// address — accept the warning once to carry on.'}</p>`}
     ${!h.can_make && !h.active ? '<p class="banner warn">This needs the “openssl” tool, which isn’t installed on this computer.</p>' : ''}
     <div class="actions"><button type="button" class="btn ${h.active ? '' : 'primary'}" data-https="${h.active ? '0' : '1'}" ${!h.can_make && !h.active ? 'disabled' : ''}>${h.active ? 'Turn HTTPS off' : 'Turn HTTPS on'}</button></div>
     ${trust}`;
@@ -5222,6 +5224,14 @@ async function drawNetworkCard(view) {
           { title: on ? 'Turn on HTTPS?' : 'Turn off HTTPS?', okLabel: on ? 'Turn on' : 'Turn off', danger: !on })) return;
         hb.disabled = true;
         const res = await put('/network/https', { enabled: on });
+        if (res.restarting && !n.is_local) {
+          // From another device the address itself changes (http ↔ https), so reload at the new one.
+          openModal(`<header><h2>${on ? 'Turning on HTTPS…' : 'Turning off HTTPS…'}</h2></header><div class="modal-body">
+            <p>Restarting ${esc(appName())}, then opening <strong>${on ? 'https' : 'http'}://${esc(location.host)}</strong>.${on
+    ? ' Your browser will warn that the connection isn’t private the first time — choose to continue (often under “Advanced”), then add the certificate from this page to stop the warning.' : ''}</p></div><footer></footer>`);
+          setTimeout(() => { location.href = `${on ? 'https' : 'http'}://${location.host}${location.pathname}`; }, 4000);
+          return;
+        }
         if (res.restarting) {
           waitForRestart(null, { title: on ? 'Turning on HTTPS…' : 'Turning off HTTPS…', text: `Restarting ${appName()}. This takes a few seconds.`, done: on ? 'HTTPS is on' : 'HTTPS is off' });
           return;

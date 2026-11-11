@@ -128,7 +128,7 @@ class TestSecurity(ServerCase):
         for path in ("/jobs", "/job/12", "/settings/company", "/print/3/quote"):
             status, r, data = self.c.request("GET", path, raw=True)
             self.assertEqual(status, 200, path)
-            self.assertIn(b'<script src="/static/app.js">', data, path)
+            self.assertRegex(data, rb'<script src="/static/app\.js\?v=[0-9.]+">', path)
         self.assertEqual(self.c.request("GET", "/api/nonsense")[0], 404)
         for name in ("app.js", "index.html"):
             with open(os.path.join(ROOT, "static", name), encoding="utf-8") as f:
@@ -514,6 +514,143 @@ class TestTailscale(unittest.TestCase):
 
 
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("openssl"), "server mode is Linux only; needs openssl")
+class TestPagesAfterAnUpdate(ServerCase):
+    def test_script_and_style_links_carry_the_version(self):
+        # so a browser can't keep an old cached app.js with a new page after an update
+        version = self.c.get("/meta")[1]["version"]
+        for path in ("/", "/jobs"):
+            data = self.c.request("GET", path, raw=True)[2].decode()
+            for f in ("theme.js", "style.css", "app.js"):
+                self.assertIn(f'/static/{f}?v={version}"', data, (path, f))
+        status, r, data = self.c.request("GET", "/static/app.js?v=" + version, raw=True)
+        self.assertEqual(status, 200)
+        self.assertEqual(r.getheader("Cache-Control"), "no-cache")
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "fix_frontend_cache.py")))
+
+
+@unittest.skipUnless(shutil.which("openssl"), "needs the openssl tool")
+class TestHttpsFromAnotherDevice(unittest.TestCase):
+    """An admin turns HTTPS on from another device (a server often has no screen), and a certificate that can't
+    be used is reported in Settings instead of HTTPS quietly staying off."""
+
+    PASSCODE = "network-passcode"
+
+    def setUp(self):  # each test gets a fresh data folder
+        self.setup_server()
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.stop)
+
+    @classmethod
+    def setup_server(cls):
+        cls.ip = lan_ip()
+        if not cls.ip:
+            raise unittest.SkipTest("this machine has no network address")
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.port = free_port()
+        cls.env = dict(os.environ, HORAN_RMS_GITHUB_API="http://127.0.0.1:9", HORAN_RMS_PASSCODE=cls.PASSCODE)
+        cls.base = [sys.executable, os.path.join(ROOT, "server.py"), "--port", str(cls.port), "--data", cls.tmp.name]
+        for args in (["--set-passcode"], ["--network", "on"]):
+            out = subprocess.run(cls.base + args, env=cls.env, capture_output=True, text=True, timeout=120)
+            assert out.returncode == 0, out.stderr
+        cls.proc = None
+        cls.cookie = ""
+
+    def sign_in_as_admin(self):
+        self.assertEqual(self.call("POST", "/api/login", {"passcode": self.PASSCODE})[0], 200)
+        self.assertEqual(self.call("POST", "/api/users", {"name": "Admin", "password": "correct horse"})[0], 200)
+
+    @classmethod
+    def start(cls):
+        cls.proc = subprocess.Popen(cls.base, env=cls.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.wait_for("http")
+
+    @classmethod
+    def stop(cls):
+        if cls.proc:
+            cls.proc.terminate()
+            cls.proc.wait(timeout=10)
+            cls.proc = None
+
+    @classmethod
+    def wait_for(cls, scheme):
+        for _ in range(150):
+            try:
+                if cls.call("GET", "/api/meta", scheme=scheme)[0] == 200:
+                    return
+            except OSError:
+                pass
+            time.sleep(0.1)
+        raise RuntimeError(f"server did not answer over {scheme}")
+
+    @classmethod
+    def call(cls, method, path, body=None, scheme="http"):
+        """A request from "another device", to the machine's network address."""
+        if scheme == "https":
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE   # like a device that clicked through the warning
+            conn = http.client.HTTPSConnection(cls.ip, cls.port, context=ctx, timeout=30)
+        else:
+            conn = http.client.HTTPConnection(cls.ip, cls.port, timeout=30)
+        h = dict(HDR)
+        if cls.cookie:
+            h["Cookie"] = cls.cookie
+        conn.request(method, path, json.dumps(body) if body is not None else None, h)
+        r = conn.getresponse()
+        data = r.read()
+        if r.getheader("Set-Cookie"):
+            cls.cookie = r.getheader("Set-Cookie").split(";")[0]
+        conn.close()
+        try:
+            return r.status, json.loads(data)
+        except ValueError:
+            return r.status, data
+
+    def test_turn_on_from_another_device(self):
+        self.start()
+        self.sign_in_as_admin()
+        n = self.call("GET", "/api/network")[1]
+        self.assertEqual((n["is_local"], n["https"]["active"]), (False, False))
+
+        status, n = self.call("PUT", "/api/network/https", {"enabled": True})
+        self.assertEqual(status, 200, n)
+        self.assertTrue(n["restarting"])
+        time.sleep(1.5)
+        self.wait_for("https")
+        n = self.call("GET", "/api/network", scheme="https")[1]
+        self.assertEqual((n["https"]["enabled"], n["https"]["active"], n["https"]["error"]), (True, True, ""))
+        self.assertEqual(self.call("GET", "/jobs")[0], 301)   # plain http is sent to https
+
+        # and back off again, over https
+        status, n = self.call("PUT", "/api/network/https", {"enabled": False}, scheme="https")
+        self.assertEqual(status, 200, n)
+        time.sleep(1.5)
+        self.wait_for("http")
+        self.assertFalse(self.call("GET", "/api/network")[1]["https"]["active"])
+
+    def test_a_certificate_that_cant_be_used_is_reported(self):
+        out = subprocess.run(self.base + ["--https", "on"], env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        # later, a certificate of your own that can't be used is put in the data folder
+        tls = os.path.join(self.tmp.name, "tls")
+        for name in ("own-cert.pem", "own-key.pem"):
+            with open(os.path.join(tls, name), "w") as f:
+                f.write("not a certificate\n")
+        # the app still starts, on plain http, and Settings says why
+        self.start()
+        self.sign_in_as_admin()
+        h = self.call("GET", "/api/network")[1]["https"]
+        self.assertEqual((h["enabled"], h["active"]), (True, False))
+        self.assertTrue(h["error"])
+        # trying again from Settings says what's wrong instead of restarting into the same problem
+        status, body = self.call("PUT", "/api/network/https", {"enabled": True})
+        self.assertEqual(status, 400, body)
+        self.assertIn("certificate", body["error"])
+        # and the command line refuses too
+        out = subprocess.run(self.base + ["--https", "on"], env=self.env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(out.returncode, 1)
+
+
 class TestTailscaleFromAnotherDevice(unittest.TestCase):
     """On a server with no screen, an admin sets Tailscale up from another device: over HTTPS, as a named admin,
     with the server's admin password (stand-ins for `sudo` and `tailscale` here)."""
