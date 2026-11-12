@@ -960,3 +960,43 @@ tr.bc-row td { background: var(--bg); padding: 8px 12px 12px; }
   background: var(--surface-2); border: 1px solid var(--border); }
 .ts-step.done .ts-n { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
 .ts-step.done strong { color: var(--muted); }
+
+/* stock categories: rename and move */
+.cat-pen { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; padding: 0 6px; margin-left: 4px; opacity: .55; }
+.cat-pen:hover, .cat-pen:focus-visible { opacity: 1; color: var(--brand); }
+tr.group:not(:hover) .cat-pen:not(:focus-visible) { opacity: .25; }
+.cat-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; background: var(--surface); }
+.cat-group.drop-on { border-color: var(--brand); box-shadow: 0 0 0 2px var(--brand-soft); }
+.cat-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; }
+.cat-row.sub { padding-left: 30px; border-top: 1px dashed var(--border); }
+.cat-row.dragging { opacity: .4; }
+.cat-row .grip { cursor: grab; color: var(--muted); letter-spacing: -2px; user-select: none; }
+.cat-row .cat-name { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid transparent; background: transparent; font-weight: 600; }
+.cat-row.sub .cat-name { font-weight: 400; }
+.cat-row .cat-name:hover, .cat-row .cat-name:focus { border-color: var(--border-strong); background: var(--surface); }
+.cat-row .muted.small { white-space: nowrap; }
+.cat-drop-top { border: 2px dashed var(--border); border-radius: 8px; padding: 10px; text-align: center; color: var(--muted); font-size: 13px; }
+.cat-drop-top.drop-on { border-color: var(--brand); color: var(--brand); }
+@media (max-width: 600px) { .cat-row .grip { display: none; } .cat-row.sub { padding-left: 16px; } }
+
+/* stock page: categories fold away */
+tr.foldable td { padding-top: 0; padding-bottom: 0; }
+.fold { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; padding: 9px 0; cursor: pointer;
+  font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; }
+.fold-row { display: flex; align-items: center; }
+.fold-fill { flex: 1; align-self: stretch; cursor: pointer; min-height: 34px; }
+.fold:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 4px; }
+.fold .chev { width: 12px; display: inline-block; color: var(--muted); }
+.fold-n { margin-left: 6px; font-weight: 500; letter-spacing: 0; color: var(--muted); background: var(--surface); border: 1px solid var(--border);
+  border-radius: 999px; padding: 0 7px; font-size: 11px; line-height: 17px; }
+tr.foldable:hover td { background: color-mix(in srgb, var(--brand) 6%, var(--surface-2)); }
+
+/* a small "More" menu for actions you don't need every day */
+.more-menu { position: relative; }
+.more-menu > summary { list-style: none; cursor: pointer; }
+.more-menu > summary::-webkit-details-marker { display: none; }
+.more-panel { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 230px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .14); padding: 6px; display: grid; }
+.more-panel > button, .more-panel > a { all: unset; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--text); }
+.more-panel > button:hover, .more-panel > a:hover, .more-panel > button:focus-visible, .more-panel > a:focus-visible { background: var(--surface-2); }
+.more-panel > button:disabled { opacity: .5; cursor: default; }

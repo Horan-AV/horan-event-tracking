@@ -28,18 +28,49 @@ function catMatch(p, sel) {
   const [c, sc] = sel.split(SUB_SEP);
   return (p.category || 'Uncategorised') === c && (sc === undefined || (p.subcategory || '') === sc);
 }
-/** Group header rows: a row per category, and a lighter one per subcategory within it. */
-function groupRows(list, ncols, rowFn, cls = 'group') {
+/** Group header rows: a row per category, and a lighter one per subcategory within it.
+ *  editable: a pencil to rename / move each one.  fold: { isOpen(key), on } — click a header to collapse or
+ *  expand it (key is the category, or category + SUB_SEP + subcategory); the headers then show how many items. */
+function groupRows(list, ncols, rowFn, cls = 'group', { editable = false, fold = null } = {}) {
   let lastCat = null, lastSub = null;
+  const pen = (c, sc) => (editable ? ` <button type="button" class="cat-pen" data-cat-edit="${esc(c + (sc ? SUB_SEP + sc : ''))}" title="Rename or move${sc ? ' this subcategory' : ' this category'}" aria-label="Rename or move">✎</button>` : '');
+  const counts = {};
+  if (fold) for (const p of list) {
+    const c = p.category || 'Uncategorised';
+    counts[c] = (counts[c] || 0) + 1;
+    if (p.subcategory) counts[c + SUB_SEP + p.subcategory] = (counts[c + SUB_SEP + p.subcategory] || 0) + 1;
+  }
+  const head = (key, label, extra) => {
+    if (!fold || !fold.on) return label + extra;
+    const open = fold.isOpen(key);
+    // the rest of the row is clickable too (fold-fill), so it's an easy target on a phone
+    return `<div class="fold-row"><button type="button" class="fold" data-fold-key="${esc(key)}" aria-expanded="${open}"><span class="chev" aria-hidden="true">${open ? '▾' : '▸'}</span>${label}<span class="fold-n">${num(counts[key] || 0)}</span></button>${extra}<span class="fold-fill" data-fold-key="${esc(key)}" aria-hidden="true"></span></div>`;
+  };
   return list.map((p) => {
     const cat = p.category || 'Uncategorised';
     const sub = p.subcategory || '';
+    const catOpen = !fold || !fold.on || fold.isOpen(cat);
     let r = '';
-    if (cat !== lastCat) { r += `<tr class="${cls}"><td colspan="${ncols}">${catIcon(p.category)}${esc(cat)}</td></tr>`; lastCat = cat; lastSub = ''; }
-    if (sub !== lastSub) { if (sub) r += `<tr class="${cls} subgroup"><td colspan="${ncols}">› ${esc(sub)}</td></tr>`; lastSub = sub; }
+    if (cat !== lastCat) {
+      r += `<tr class="${cls}${fold && fold.on ? ' foldable' : ''}"><td colspan="${ncols}">${head(cat, `${catIcon(p.category)}${esc(cat)}`, pen(p.category || '', ''))}</td></tr>`;
+      lastCat = cat; lastSub = '';
+    }
+    if (!catOpen) return r;
+    if (sub !== lastSub) {
+      if (sub) r += `<tr class="${cls} subgroup${fold && fold.on ? ' foldable' : ''}"><td colspan="${ncols}">${head(cat + SUB_SEP + sub, `› ${esc(sub)}`, pen(p.category || '', sub))}</td></tr>`;
+      lastSub = sub;
+    }
+    if (sub && fold && fold.on && !fold.isOpen(cat + SUB_SEP + sub)) return r;
     return r + rowFn(p);
   }).join('');
 }
+
+/* ---- the Stock page remembers which categories are open, on each device */
+const STOCK_FOLD_KEY = 'het-stock-open';
+function stockFold() {
+  try { const v = JSON.parse(localStorage.getItem(STOCK_FOLD_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
+}
+function saveStockFold(v) { try { localStorage.setItem(STOCK_FOLD_KEY, JSON.stringify(v)); } catch { /* not kept */ } }
 
 /* ---- sizes: stored in cm, shown in cm or mm (each device remembers) */
 const SIZE_UNIT_KEY = 'het-size-unit';
@@ -123,14 +154,18 @@ function fmtDate(s, withDay) {
     ? { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }
     : { day: 'numeric', month: 'short', year: 'numeric' });
 }
-function fmtRange(a, b) {
+function fmtRange(a, b, ta = '', tb = '') {
   if (!a) return '';
-  if (a === b) return fmtDate(a, true);
+  if (a === b) return fmtDate(a, true) + (ta && tb ? `, ${ta}–${tb}` : ta ? `, from ${ta}` : tb ? `, until ${tb}` : '');
   const da = parseISO(a), db = parseISO(b);
   const opts = { weekday: 'short', day: 'numeric', month: 'short' };
   if (da.getFullYear() !== db.getFullYear()) opts.year = 'numeric';
-  return `${da.toLocaleDateString('en-GB', opts)} – ${fmtDate(b, true)}`;
+  return `${da.toLocaleDateString('en-GB', opts)}${ta ? ', ' + ta : ''} – ${fmtDate(b, true)}${tb ? ', ' + tb : ''}`;
 }
+/** A job's dates, with its start and end times when it has them. */
+const jobWhen = (j) => fmtRange(j.start_date, j.end_date, j.start_time || '', j.end_time || '');
+/** "Fri 14 Nov 2026, 09:00" */
+const dateTime = (d, t) => fmtDate(d, true) + (t ? `, ${t}` : '');
 
 const nf = new Intl.NumberFormat('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function money(n) {
@@ -376,7 +411,7 @@ function fieldHTML(f, value) {
 }
 
 /** Show a form. onSubmit(values) may throw to keep the dialog open with an error. */
-function formModal({ title, fields, values = {}, submitLabel = 'Save', wide, onSubmit, onInput, intro, extraButton }) {
+function formModal({ title, fields, values = {}, submitLabel = 'Save', wide, onSubmit, onInput, intro, extraButton, after }) {
   return new Promise((resolve) => {
     const m = openModal(`<form novalidate>
         <header><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-x aria-label="Close">×</button></header>
@@ -394,6 +429,7 @@ function formModal({ title, fields, values = {}, submitLabel = 'Save', wide, onS
     $$('[data-x]', form).forEach((b) => (b.onclick = () => done(null)));
 
     if (onInput) form.addEventListener('input', (e) => onInput(e, form));
+    if (after) after(form);
     const xb = $('[data-extra]', form);
     if (xb) {
       xb.onclick = async () => {
@@ -467,6 +503,8 @@ function jobFields(contactOpts, { full } = {}) {
     { name: 'contact_id', label: 'Client', type: 'select', options: contactOpts },
     { name: 'start_date', label: 'Start (out) date', type: 'date', required: true, half: true },
     { name: 'end_date', label: 'End (return) date', type: 'date', required: true, half: true },
+    { name: 'start_time', label: 'Start time', type: 'time', half: true, help: 'Optional — e.g. when the kit leaves or the crew arrives.' },
+    { name: 'end_time', label: 'End time', type: 'time', half: true, help: 'Optional — e.g. when it’s due back.' },
     { name: 'venue', label: 'Venue', half: true },
     { name: 'reference', label: 'Client reference / PO', half: true },
     { name: 'status', label: 'Status', type: 'select', options: Object.entries(STATUS), half: true },
@@ -475,7 +513,6 @@ function jobFields(contactOpts, { full } = {}) {
     f.push(
       { name: 'charge_days', label: 'Chargeable days', type: 'number', step: 'any', min: 0, half: true,
         help: 'Leave blank to charge every day of the hire. Set e.g. 3 to charge a week as three days.' },
-      { name: 'discount_pct', label: 'Job discount %', type: 'number', step: 'any', min: 0, half: true },
       { name: 'notes', label: 'Notes for the client (on the quote and the Zoho invoice)', type: 'textarea' },
       { name: 'internal_notes', label: 'Internal notes (not printed)', type: 'textarea' },
     );
@@ -483,6 +520,54 @@ function jobFields(contactOpts, { full } = {}) {
     f.find((x) => x.name === 'status').half = false;
   }
   return f;
+}
+
+/** "Discount (10%)", or just "Discount" for a fixed amount. */
+function discountText(t) { return `Discount${t.discount_label ? ` (${t.discount_label})` : ''}`; }
+
+/** The discount off the whole job: a percentage or a fixed amount. */
+async function discountModal(view) {
+  const j = S.job, t = j.totals, cur = S.settings.currency ?? '£';
+  const isAmount = (j.discount_amount || 0) > 0;
+  const preview = (form) => {
+    const amount = form.elements.type.value === 'amount';
+    const n = Number(form.elements.value.value) || 0;
+    const off = amount ? Math.min(n, t.gross) : t.gross * Math.min(n, 100) / 100;
+    const lab = form.elements.value.closest('label').querySelector('span');
+    if (lab) lab.innerHTML = `${amount ? `Amount off (${esc(cur)})` : 'Percentage off (%)'} <em>*</em>`;
+    const el = $('[data-disc-preview]', form);
+    if (el) el.textContent = n > 0 ? `${money(-off)} — the job comes to ${money(t.gross - off)} before VAT.` : '';
+  };
+  const res = await formModal({
+    title: 'Discount on the whole job',
+    intro: `Taken off the job’s ${money(t.gross)} before VAT, and shown on the quote and invoice. (To discount one line, use that line’s Disc column.)`,
+    fields: [
+      { name: 'type', label: 'Give it as', type: 'select', options: [['pct', 'A percentage'], ['amount', `An amount (${cur})`]], half: true },
+      { name: 'value', label: isAmount ? `Amount off (${cur})` : 'Percentage off (%)', type: 'number', step: 'any', min: 0, half: true,
+        required: true, placeholder: isAmount ? 'e.g. 50' : 'e.g. 10' },
+    ],
+    values: { type: isAmount ? 'amount' : 'pct', value: isAmount ? j.discount_amount : (j.discount_pct || '') },
+    submitLabel: 'Save discount',
+    extraButton: t.discount ? { label: 'Remove discount', value: 'remove' } : null,
+    onInput: (e, form) => preview(form),
+    onSubmit: async (v, extra) => {
+      if (extra === 'remove') return put(`/jobs/${j.id}`, { discount_pct: 0, discount_amount: 0 });
+      const n = Number(v.value);
+      if (!(n > 0)) throw new Error('Enter a discount of more than 0');
+      if (v.type === 'pct' && n > 100) throw new Error('A percentage discount is 100% at most');
+      return put(`/jobs/${j.id}`, v.type === 'amount' ? { discount_amount: n, discount_pct: 0 } : { discount_pct: n, discount_amount: 0 });
+    },
+    after: (form) => {
+      $('.form-grid', form).insertAdjacentHTML('beforeend', '<p class="muted small" data-disc-preview style="grid-column:1/-1;margin:0"></p>');
+      form.elements.type.addEventListener('change', () => preview(form));
+      preview(form);
+    },
+  });
+  if (res) {
+    S.job = res;
+    drawJob(view);
+    toast(res.totals.discount ? `Discount of ${money(res.totals.discount)} saved` : 'Discount removed', 'ok');
+  }
 }
 
 function jobPayload(v) {
@@ -961,7 +1046,7 @@ function jobRow(j, { showStatus = true } = {}) {
   return `<tr class="click" data-href="/job/${j.id}">
     <td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong></td>
     <td>${esc(j.contact_company || j.contact_name || '')}${j.contact_company && j.contact_name ? `<br><span class="muted">${esc(j.contact_name)}</span>` : ''}</td>
-    <td>${esc(fmtRange(j.start_date, j.end_date))}</td>
+    <td>${esc(jobWhen(j))}</td>
     ${showStatus ? `<td>${pill(j.status)}</td>` : ''}
     <td class="n">${j.totals ? money(j.totals.net) : ''}</td>
   </tr>`;
@@ -1011,7 +1096,7 @@ async function renderDashboard(view) {
           <tbody>${d.upcoming.map((j) => `<tr class="click" data-href="/job/${j.id}">
             <td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong></td>
             <td>${esc(j.contact_company || j.contact_name || '')}</td>
-            <td>${esc(fmtRange(j.start_date, j.end_date))}</td><td>${pill(j.status)}</td></tr>`).join('')}</tbody></table></div>`
+            <td>${esc(jobWhen(j))}</td><td>${pill(j.status)}</td></tr>`).join('')}</tbody></table></div>`
           : '<div class="empty">Nothing booked in the next two weeks.</div>'}
       </div>
       <div class="stack">
@@ -1069,7 +1154,7 @@ async function renderJobs(view) {
         <tbody>${jobs.map((j) => `<tr class="click" data-href="/job/${j.id}">
           <td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong></td>
           <td>${esc(j.contact_company || j.contact_name || '—')}</td>
-          <td>${esc(fmtRange(j.start_date, j.end_date))}</td>
+          <td>${esc(jobWhen(j))}</td>
           <td>${esc(j.venue)}</td><td>${pill(j.status)}${overdueBadge(j)}${j.zoho_invoice_number ? `<br><span class="muted mono" title="Zoho Books invoice">${esc(j.zoho_invoice_number)}</span>` : ''}</td>
           <td class="n">${money(j.totals.net)}</td></tr>`).join('')}
           <tr><td colspan="5" class="muted">${plural(jobs.length, 'job')}</td><td class="n"><strong>${money(total)}</strong></td></tr>
@@ -1320,7 +1405,7 @@ function drawJob(view) {
       <div>
         <a class="crumb" href="/jobs">← Jobs &amp; quotes</a>
         <div class="job-title"><span class="job-number">${esc(j.number)}</span><h1>${esc(j.name)}</h1></div>
-        <div class="sub">${esc(fmtRange(j.start_date, j.end_date))} · ${plural(days, 'day')} hire · due back ${esc(fmtDate(j.end_date))}${j.venue ? ' · ' + esc(j.venue) : ''}</div>
+        <div class="sub">${esc(jobWhen(j))} · ${plural(days, 'day')} hire · due back ${esc(fmtDate(j.end_date))}${j.venue ? ' · ' + esc(j.venue) : ''}</div>
       </div>
       <div class="actions">
         <select class="status-select" data-status aria-label="Status">${Object.entries(STATUS).map(([k, l]) =>
@@ -1381,19 +1466,20 @@ function drawJob(view) {
             ${t.rental ? `<tr><td>Rental (${plural(t.charge_days, 'chargeable day')})</td><td>${money(t.rental)}</td></tr>` : ''}
             ${t.sale ? `<tr><td>Sales</td><td>${money(t.sale)}</td></tr>` : ''}
             ${t.service ? `<tr><td>Services &amp; labour</td><td>${money(t.service)}</td></tr>` : ''}
-            ${t.discount ? `<tr><td>Discount (${num(j.discount_pct)}%)</td><td>−${money(t.discount)}</td></tr>` : ''}
+            ${t.discount ? `<tr><td>Subtotal</td><td>${money(t.gross)}</td></tr><tr><td>${discountText(t)}</td><td>−${money(t.discount)}</td></tr>` : ''}
             ${t.vat_registered === false ? '' : `<tr><td><strong>Net</strong></td><td><strong>${money(t.net)}</strong></td></tr>
             <tr><td>VAT ${num(t.vat_rate)}%</td><td>${money(t.vat)}</td></tr>`}
             <tr class="grand"><td>Total</td><td>${money(t.total)}</td></tr>
-          </tbody></table></div></div>
+          </tbody></table>
+          <div class="actions" style="margin-top:10px"><button type="button" class="btn small" data-discount>${t.discount ? 'Change discount' : '+ Add discount'}</button></div></div></div>
         ${subHireJobCard(j)}
         ${powerCard(j)}
         <div class="card"><header><h2>Details</h2></header><div class="body">
           <dl class="facts">
             <div><dt>Client</dt><dd>${c ? `<a href="/contact/${c.id}">${esc(c.name)}</a>${c.company ? `<br>${esc(c.company)}` : ''}` : '<span class="muted">None</span>'}</dd></div>
             ${c && (c.email || c.phone) ? `<div><dt>Contact</dt><dd>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a><br>` : ''}${esc(c.phone)}</dd></div>` : ''}
-            <div><dt>Out</dt><dd>${esc(fmtDate(j.start_date, true))}</dd></div>
-            <div><dt>Return</dt><dd>${esc(fmtDate(j.end_date, true))}</dd></div>
+            <div><dt>Out</dt><dd>${esc(dateTime(j.start_date, j.start_time))}</dd></div>
+            <div><dt>Return</dt><dd>${esc(dateTime(j.end_date, j.end_time))}</dd></div>
             <div><dt>Venue</dt><dd>${esc(j.venue) || '<span class="muted">—</span>'}</dd></div>
             <div><dt>Reference</dt><dd>${esc(j.reference) || '<span class="muted">—</span>'}</dd></div>
             <div><dt>Charged days</dt><dd>${num(t.charge_days)}${j.charge_days != null ? ' <span class="muted">(custom)</span>' : ''}</dd></div>
@@ -1408,7 +1494,7 @@ function drawJob(view) {
   if (!canEditJob(j)) {
     const main = $('.grid-2.job > .stack', view);
     if (main) $$('input, select, textarea, button', main).forEach((x) => { x.disabled = true; });
-    $$('[data-status], [data-edit], [data-delete]', view).forEach((x) => { x.disabled = true; x.title = 'This job is locked'; });
+    $$('[data-status], [data-edit], [data-delete], [data-discount]', view).forEach((x) => { x.disabled = true; x.title = 'This job is locked'; });
   }
   clearTimeout(S.histTimer);
   S.histTimer = setTimeout(async () => {
@@ -1952,13 +2038,14 @@ function bindJob(view) {
         if (v) { S.job = await post(`/jobs/${S.job.id}/items`, { ...v, kind }); drawJob(view); }
         return;
       }
+      if (t.closest('[data-discount]')) { await discountModal(view); return; }
       if (t.closest('[data-edit]')) {
         const opts = await contactOptions();
         const before = { start: S.job.start_date, end: S.job.end_date };
         const res = await formModal({
           title: `Edit ${S.job.number}`, wide: true,
           fields: jobFields(opts, { full: true }),
-          values: { ...S.job, contact_id: S.job.contact_id ?? '', charge_days: S.job.charge_days ?? '', discount_pct: S.job.discount_pct || '' },
+          values: { ...S.job, contact_id: S.job.contact_id ?? '', charge_days: S.job.charge_days ?? '' },
           onSubmit: async (v) => put(`/jobs/${S.job.id}`, jobPayload(await resolveNewContact(v))),
         });
         if (res) {
@@ -2184,16 +2271,19 @@ async function renderStock(view) {
   view.innerHTML = `<div class="page">
     <div class="page-head"><div><h1>Stock</h1><div class="sub">Everything you hire out.</div></div>
       <div class="actions">
-        <button class="btn" data-import>Import CSV</button>
-        <button class="btn" data-export>Export CSV</button>
-        <a class="btn" href="/roi">ROI calculator</a>
-        <button class="btn" data-print-labels="" data-stock-labels>Print barcodes</button>
+        <details class="more-menu"><summary class="btn">More ▾</summary><div class="more-panel" role="menu">
+          <button type="button" data-cats>Rename &amp; arrange categories…</button>
+          <button type="button" data-print-labels="" data-stock-labels>Print barcodes</button>
+          <button type="button" data-import>Import CSV</button>
+          <button type="button" data-export>Export CSV</button>
+          <a href="/roi">ROI calculator</a></div></details>
         <button class="btn primary" data-add></button></div></div>
     <div class="toolbar">
       <div class="tabs">${Object.entries(TYPE_LABEL).map(([k, l]) => `<button data-tab="${k}" class="${S.stockTab === k ? 'active' : ''}">${l}</button>`).join('')}</div>
       <input class="search" type="search" placeholder="Search, or scan a barcode" value="${esc(S.stockQuery)}" data-q>
       <select data-cat style="width:auto"></select>
       <select data-brand style="width:auto"></select>
+      <button type="button" class="btn" data-fold-all hidden></button>
       <label class="check"><input type="checkbox" data-arch ${S.stockArchived ? 'checked' : ''}> Show archived</label>
     </div>
     <div class="card" data-list><div class="empty">Loading…</div></div></div>`;
@@ -2253,7 +2343,16 @@ async function renderStock(view) {
     const n = cols[tab].length;
     const lb = $('[data-stock-labels]', view);
     if (lb) { lb.dataset.printLabels = list.map((p) => p.id).join(','); lb.disabled = !list.length; lb.title = `Barcode labels for the ${plural(list.length, 'item')} listed`; }
-    const body = groupRows(list, n, (p) => `<tr class="click" data-href="/product/${p.id}">${row(p)}</tr>`);
+    // categories fold away; searching or filtering shows everything that matches
+    const state = stockFold()[tab] || {};
+    const open = new Set(state.open || []), shut = new Set(state.shut || []);
+    const catsHere = [...new Set(list.map((p) => p.category || 'Uncategorised'))];
+    const fold = { on: !q && !S.stockCat && !S.stockBrand && catsHere.length > 1,  // one category: nothing to fold
+      isOpen: (k) => (k.includes(SUB_SEP) ? !shut.has(k) : open.has(k)) };
+    const fa = $('[data-fold-all]', view);
+    fa.hidden = !fold.on || catsHere.length < 2;
+    fa.textContent = catsHere.some((c) => open.has(c)) ? 'Collapse all' : 'Expand all';
+    const body = groupRows(list, n, (p) => `<tr class="click" data-href="/product/${p.id}">${row(p)}</tr>`, 'group', { editable: true, fold });
     $('[data-list]', view).innerHTML = mine.length ? `<div class="table-wrap"><table class="table">
       <thead><tr>${cols[tab].map((c, i) => `<th class="${i >= 2 && tab !== 'cable' ? 'n' : ''}">${c}</th>`).join('')}</tr></thead>
       <tbody>${body || `<tr><td colspan="${n}" class="empty">No matches.</td></tr>`}
@@ -2274,6 +2373,31 @@ async function renderStock(view) {
       return;
     }
     if (e.target.closest('[data-import]')) { e.preventDefault(); if (await importModal('products')) load(); return; }
+    const menu = $('details.more-menu[open]', view);
+    if (menu && !e.target.closest('summary')) menu.open = false;
+    const fk = e.target.closest('[data-fold-key]');
+    if (fk) {
+      const all2 = stockFold(), st = all2[S.stockTab] || {}, key = fk.dataset.foldKey;
+      const sub = key.includes(SUB_SEP), list2 = new Set(st[sub ? 'shut' : 'open'] || []);
+      if (list2.has(key)) list2.delete(key); else list2.add(key);
+      all2[S.stockTab] = { ...st, [sub ? 'shut' : 'open']: [...list2] };
+      saveStockFold(all2); draw(); return;
+    }
+    if (e.target.closest('[data-fold-all]')) {
+      const all2 = stockFold(), st = all2[S.stockTab] || {};
+      const cats2 = [...new Set(all.filter((p) => p.item_type === S.stockTab).map((p) => p.category || 'Uncategorised'))];
+      const anyOpen = cats2.some((c) => (st.open || []).includes(c));
+      all2[S.stockTab] = { open: anyOpen ? [] : cats2, shut: [] };
+      saveStockFold(all2); draw(); return;
+    }
+    if (e.target.closest('[data-cats]')) { await categoriesModal(); S.stockCat = ''; load(); return; }
+    const pen = e.target.closest('[data-cat-edit]');
+    if (pen) {
+      e.stopPropagation();
+      const [c, sc] = pen.dataset.catEdit.split(SUB_SEP);
+      if (await categoryMoveModal(c, sc || '')) { S.stockCat = ''; load(); }
+      return;
+    }
     if (e.target.closest('[data-export]')) { download('/export/products.csv'); return; }
     base(e);
   };
@@ -2293,6 +2417,153 @@ async function renderStock(view) {
     if (e.target.matches('[data-arch]')) { S.stockArchived = e.target.checked; load(); }
   };
   await load();
+}
+
+/* ---- stock categories: rename, and put one inside another */
+
+const catName = (c) => c || 'Uncategorised';
+
+/** Rename or move every item in a category (or a subcategory). Returns the result, or null if nothing changed. */
+async function moveCategory(from, to) {
+  const res = await put('/categories', { from, to });
+  toast(res.summary, 'ok');
+  return res;
+}
+
+/** Rename a category or subcategory, or move it: a category inside another, a subcategory to another category or to the top. */
+async function categoryMoveModal(cat, sub, cats) {
+  cats = cats || await get('/categories');
+  const others = cats.filter((c) => c.name && c.name.toLowerCase() !== cat.toLowerCase()).map((c) => [c.name, c.name]);
+  const fields = sub
+    ? [{ name: 'name', label: 'Subcategory name', required: true },
+      { name: 'parent', label: 'In category', type: 'select', options: [[cat, catName(cat)], ...others, ['__top__', '— Make it a main category —']] }]
+    : [{ name: 'name', label: 'Category name', required: true },
+      { name: 'parent', label: 'Put it inside another category', type: 'select', options: [['', '— No, keep it a main category —'], ...others],
+        help: 'It becomes a subcategory of the one you choose. Any subcategories it has become “Name - Subcategory”.' }];
+  return formModal({
+    title: sub ? `Subcategory: ${catName(cat)} › ${sub}` : `Category: ${catName(cat)}`,
+    fields,
+    values: { name: sub || cat, parent: sub ? cat : '' },
+    submitLabel: 'Save',
+    onSubmit: async (v) => {
+      const name = v.name.trim();
+      let to;
+      if (sub) to = v.parent === '__top__' ? { category: name } : { category: v.parent, subcategory: name };
+      else to = v.parent ? { category: v.parent, subcategory: name } : { category: name };
+      if (to.category === cat && (to.subcategory || '') === sub) return null;  // nothing changed
+      const merge = !sub && !v.parent && cats.some((c) => c.name.toLowerCase() === name.toLowerCase() && c.name.toLowerCase() !== cat.toLowerCase());
+      if (merge && !await confirmModal(`There’s already a category called “${name}”. Put everything from “${catName(cat)}” into it?`,
+        { title: 'Merge categories?', okLabel: 'Merge', danger: false })) return null;
+      return moveCategory({ category: cat, subcategory: sub }, to);
+    },
+  });
+}
+
+/** Every category in one place: type to rename, drag one onto another to make it a subcategory. */
+function categoriesModal() {
+  return new Promise((resolve) => {
+    const m = openModal(`<header><h2>Categories</h2><button type="button" class="icon-btn" data-x aria-label="Close">×</button></header>
+      <div class="modal-body"><p class="muted small" style="margin-top:0">Type a new name and press Enter to rename it on every item.
+        Drag a category onto another to put it inside as a subcategory, or use <strong>Move…</strong>. Drag a subcategory to the bottom to make it a main category.</p>
+        <div data-tree><div class="empty">Loading…</div></div></div>
+      <footer><button type="button" class="btn primary" data-x>Done</button></footer>`, { wide: true });
+    let cats = [];
+    const done = () => { m.close(); resolve(); };
+    m.wrap.addEventListener('cancel', done);
+    $$('[data-x]', m.el).forEach((b) => (b.onclick = done));
+    const tree = $('[data-tree]', m.el);
+    const key = (c, sc) => c + SUB_SEP + (sc || '');
+    const row = (c, sc, count, cls) => `<div class="cat-row ${cls}" draggable="true" data-key="${esc(key(c, sc))}">
+        <span class="grip" aria-hidden="true">⋮⋮</span>${sc ? '<span class="muted">›</span>' : catIcon(c)}
+        <input class="cat-name" value="${esc(sc || c)}" data-key="${esc(key(c, sc))}" aria-label="${sc ? 'Subcategory' : 'Category'} name" ${!sc && !c ? 'placeholder="Uncategorised"' : ''}>
+        <span class="muted small">${plural(count, 'item')}</span>
+        <button type="button" class="btn small" data-move="${esc(key(c, sc))}">Move…</button></div>`;
+    const draw = async () => {
+      cats = await get('/categories');
+      tree.innerHTML = cats.length ? cats.map((c) => `<div class="cat-group">${row(c.name, '', c.count, 'top')}
+          ${c.subcategories.map((sc) => row(c.name, sc.name, sc.count, 'sub')).join('')}</div>`).join('')
+          + '<div class="cat-drop-top" data-drop-top>Drop a subcategory here to make it a main category</div>'
+        : '<div class="empty">No stock yet.</div>';
+    };
+    const split = (k) => { const [c, sc] = k.split(SUB_SEP); return { category: c, subcategory: sc || '' }; };
+    const run = async (fn) => { try { if (await fn()) await draw(); } catch (ex) { toast(ex.message, 'error'); await draw(); } };
+
+    tree.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target.matches('.cat-name')) { e.preventDefault(); e.target.blur(); }
+      if (e.key === 'Escape' && e.target.matches('.cat-name')) { e.stopPropagation(); draw(); }
+    });
+    tree.addEventListener('change', (e) => {
+      const i = e.target.closest('.cat-name');
+      if (!i) return;
+      const from = split(i.dataset.key), name = i.value.trim();
+      if (!name) { draw(); return; }
+      run(async () => {
+        if (from.subcategory) {
+          if (name === from.subcategory) return false;
+          return moveCategory(from, { category: from.category, subcategory: name });
+        }
+        if (name === from.category) return false;
+        if (cats.some((c) => c.name.toLowerCase() === name.toLowerCase() && c.name.toLowerCase() !== from.category.toLowerCase())
+          && !await confirmModal(`There’s already a category called “${name}”. Put everything from “${catName(from.category)}” into it?`,
+            { title: 'Merge categories?', okLabel: 'Merge', danger: false })) return true;
+        return moveCategory(from, { category: name });
+      });
+    });
+    tree.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-move]');
+      if (!b) return;
+      const f = split(b.dataset.move);
+      run(() => categoryMoveModal(f.category, f.subcategory, cats));
+    });
+    // drag and drop (mouse); on a phone, Move… does the same
+    let dragKey = null;
+    tree.addEventListener('dragstart', (e) => {
+      const r = e.target.closest('.cat-row');
+      if (!r || e.target.matches('input')) return;
+      dragKey = r.dataset.key;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', dragKey);
+      r.classList.add('dragging');
+    });
+    tree.addEventListener('dragend', () => { dragKey = null; $$('.dragging, .drop-on', tree).forEach((x) => x.classList.remove('dragging', 'drop-on')); });
+    const target = (e) => {
+      if (!dragKey) return null;
+      const top = e.target.closest('[data-drop-top]');
+      if (top) return split(dragKey).subcategory ? top : null;
+      const r = e.target.closest('.cat-group');
+      if (!r) return null;
+      const into = split($('.cat-row.top', r).dataset.key).category;
+      const f = split(dragKey);
+      if (!f.subcategory && into.toLowerCase() === f.category.toLowerCase()) return null;  // onto itself
+      if (f.subcategory && into.toLowerCase() === f.category.toLowerCase()) return null;   // already there
+      return r;
+    };
+    tree.addEventListener('dragover', (e) => {
+      const t = target(e);
+      $$('.drop-on', tree).forEach((x) => { if (x !== t) x.classList.remove('drop-on'); });
+      if (!t) return;
+      e.preventDefault();
+      t.classList.add('drop-on');
+    });
+    tree.addEventListener('drop', (e) => {
+      const t = target(e);
+      if (!t) return;
+      e.preventDefault();
+      const f = split(dragKey);
+      t.classList.remove('drop-on');
+      run(async () => {
+        if (t.matches('[data-drop-top]')) return moveCategory(f, { category: f.subcategory });
+        const into = split($('.cat-row.top', t).dataset.key).category;
+        if (f.subcategory) return moveCategory(f, { category: into, subcategory: f.subcategory });
+        const c = cats.find((x) => x.name === f.category);
+        const extra = c && c.subcategories.length ? ` Its subcategories become “${c.subcategories[0].name}” → “${catName(f.category)} - ${c.subcategories[0].name}” and so on.` : '';
+        if (!await confirmModal(`Put “${catName(f.category)}” inside “${catName(into)}” as a subcategory?${extra}`,
+          { title: 'Make it a subcategory?', okLabel: 'Move it', danger: false })) return false;
+        return moveCategory(f, { category: into, subcategory: catName(f.category) });
+      });
+    });
+    draw();
+  });
 }
 
 /* ---- packages */
@@ -3284,7 +3555,7 @@ async function renderCheck(view, id, dir) {
   const other = dir === 'out' ? 'in' : 'out';
   view.innerHTML = `<div class="page check-page">
     <div class="page-head"><div><a class="crumb" href="/job/${id}">← ${esc(job.number)} ${esc(job.name)}</a>
-      <h1>${dir === 'out' ? 'Check out' : 'Check in'}</h1><div class="sub">${esc(fmtRange(job.start_date, job.end_date))}${job.venue ? ' · ' + esc(job.venue) : ''}</div></div>
+      <h1>${dir === 'out' ? 'Check out' : 'Check in'}</h1><div class="sub">${esc(jobWhen(job))}${job.venue ? ' · ' + esc(job.venue) : ''}</div></div>
       <div class="actions"><a class="btn" href="/check/${id}/${other}">Switch to check ${other}</a>
         <a class="btn" href="/print/${id}/picklist">Prep list</a></div></div>
     <div class="card scan-card"><div class="body">
@@ -3824,7 +4095,7 @@ async function renderScan(view) {
     scan.classList.add('flash-' + flashKind(kind));
   };
   const jobRow = (j) => `<tr class="click" data-href="/job/${j.id}"><td><span class="mono muted">${esc(j.number)}</span> <strong>${esc(j.name)}</strong> ${pill(j.status)}
-      ${j.current ? '<span class="badge ok">on now</span>' : ''}<br><span class="muted small">${esc(fmtRange(j.start_date, j.end_date))}${j.venue ? ' · ' + esc(j.venue) : ''}</span></td>
+      ${j.current ? '<span class="badge ok">on now</span>' : ''}<br><span class="muted small">${esc(jobWhen(j))}${j.venue ? ' · ' + esc(j.venue) : ''}</span></td>
     <td class="n">${num(j.quantity)} on job</td><td class="n">${num(j.out)} out · ${num(j.in)} back</td>
     <td class="n"><a class="btn small" href="/check/${j.id}/in">Check in</a></td></tr>`;
   const drawResult = (r) => {
@@ -3957,7 +4228,7 @@ async function renderContact(view, id) {
         ${c.jobs.length ? `<table class="table"><thead><tr><th>Job</th><th>Dates</th><th>Status</th><th class="n">Net</th></tr></thead>
           <tbody>${c.jobs.map((j) => `<tr class="click" data-href="/job/${j.id}">
             <td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong></td>
-            <td>${esc(fmtRange(j.start_date, j.end_date))}</td><td>${pill(j.status)}</td>
+            <td>${esc(jobWhen(j))}</td><td>${pill(j.status)}</td>
             <td class="n">${money(j.totals.net)}</td></tr>`).join('')}</tbody></table>`
           : '<div class="empty">No jobs yet.</div>'}
       </div>
@@ -4104,7 +4375,7 @@ async function renderVendor(view, id) {
         <div class="card"><header><h2>Coming up</h2><span class="muted">jobs using their kit</span></header>
           ${v.upcoming.length ? `<table class="table"><thead><tr><th>Job</th><th>Dates</th><th>Item</th><th class="n">Qty</th></tr></thead><tbody>
             ${v.upcoming.map((j) => `<tr class="click" data-href="/job/${j.id}"><td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong> ${pill(j.status)}</td>
-              <td>${esc(fmtRange(j.start_date, j.end_date))}</td><td>${esc(j.item)}</td><td class="n"><strong>${num(j.quantity)}</strong></td></tr>`).join('')}</tbody></table>`
+              <td>${esc(jobWhen(j))}</td><td>${esc(j.item)}</td><td class="n"><strong>${num(j.quantity)}</strong></td></tr>`).join('')}</tbody></table>`
             : '<div class="empty">Nothing booked from them yet.</div>'}
         </div>
       </div>
@@ -4223,7 +4494,7 @@ async function invoicesModal(preselect = null) {
         <div class="inv-tools"><label class="check"><input type="checkbox" data-all> All</label>
           <span class="muted small">Ticked to start: on hire or returned, and not exported yet.</span></div>
         <div class="inv-list">${all.length ? all.map((j) => `<label class="inv-row"><input type="checkbox" value="${j.id}" ${def(j) ? 'checked' : ''}>
-          <span><span class="mono muted">${esc(j.number)}</span> <strong>${esc(j.name)}</strong><br><span class="muted small">${esc(j.contact_company || j.contact_name || 'No client')} · ${esc(fmtRange(j.start_date, j.end_date))}</span></span>
+          <span><span class="mono muted">${esc(j.number)}</span> <strong>${esc(j.name)}</strong><br><span class="muted small">${esc(j.contact_company || j.contact_name || 'No client')} · ${esc(jobWhen(j))}</span></span>
           <span class="n">${pill(j.status)}${j.exported_at ? `<br><span class="muted small" title="${esc(fmtDate(j.exported_at.slice(0, 10)))}">exported to ${esc((ACCOUNTING[j.exported_to] || {}).label || j.exported_to)}</span>` : ''}<br><strong>${money(j.totals.total)}</strong></span></label>`).join('')
           : '<div class="empty">No confirmed, on-hire, returned or invoiced jobs.</div>'}</div>
         <div class="form-grid" style="padding:12px 0 0">
@@ -6052,7 +6323,7 @@ function optionsDocHTML(job, s, doc, L) {
       <div><h3>${inv ? 'Invoice to' : 'Prepared for'}</h3>
         <p>${c ? `<strong>${esc(c.company || c.name)}</strong>${c.company ? `\n${esc(c.name)}` : ''}${L.show_client_contact && c.address ? `\n${esc(c.address)}` : ''}${L.show_client_contact && c.email ? `\n${esc(c.email)}` : ''}` : '—'}</p></div>
       ${L.show_job ? `<div><h3>Job</h3><p><strong>${esc(job.name)}</strong>${job.venue ? `\n${esc(job.venue)}` : ''}
-${esc(fmtRange(job.start_date, job.end_date))}
+${esc(jobWhen(job))}
 Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date) + 1, 'day')}</p></div>` : ''}
     </div>`;
 
@@ -6087,7 +6358,7 @@ Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date)
       ${showRate ? `<th class="n">${hasRental ? 'Rate' : 'Price'}</th>` : ''}${showDays ? '<th class="n">Days</th>' : ''}${anyDisc ? '<th class="n">Disc</th>' : ''}${showTot ? '<th class="n">Total</th>' : ''}</tr></thead>
       <tbody>${sections || `<tr><td colspan="${cols}">No items.</td></tr>`}</tbody></table>
     <div class="doc-totals"><table><tbody>
-      ${t.discount ? `<tr><td>Subtotal</td><td>${money(t.gross)}</td></tr><tr><td>Discount (${num(job.discount_pct)}%)</td><td>−${money(t.discount)}</td></tr>` : ''}
+      ${t.discount ? `<tr><td>Subtotal</td><td>${money(t.gross)}</td></tr><tr><td>${discountText(t)}</td><td>−${money(t.discount)}</td></tr>` : ''}
       ${registered ? `<tr><td>Net</td><td>${money(t.net)}</td></tr><tr><td>VAT ${num(t.vat_rate)}%</td><td>${money(t.vat)}</td></tr>` : ''}
       <tr class="grand"><td>Total</td><td>${money(t.total)}</td></tr>
     </tbody></table></div>
@@ -6173,10 +6444,12 @@ function templateData(job, s, doc) {
     logo: s.has_logo ? '/logo?v=1' : '', colour: s.brand_primary || '#1f5c3d', accent: s.brand_accent || '#c9a227',
     client: { name: c.name || '', company: c.company || '', display: c.company || c.name || '', address: c.address || '', email: c.email || '', phone: c.phone || '' },
     job: { number: job.number, name: job.name, venue: job.venue || '', reference: job.reference || '', status: STATUS[job.status] || job.status,
-      dates: fmtRange(job.start_date, job.end_date), start: fmtDate(job.start_date), end: fmtDate(job.end_date),
+      dates: jobWhen(job), start: fmtDate(job.start_date), end: fmtDate(job.end_date),
+      start_time: job.start_time || '', end_time: job.end_time || '',
       hire_days: num(job.hire_days || daysBetween(job.start_date, job.end_date) + 1), notes: job.notes || '' },
     groups,
-    totals: { gross: money(t.gross), discount: t.discount ? money(t.discount) : '', discount_pct: job.discount_pct ? num(job.discount_pct) : '',
+    totals: { gross: money(t.gross), discount: t.discount ? money(t.discount) : '',
+      discount_pct: t.discount ? num(+(t.discount_share_pct || 0).toFixed(1)) : '', discount_label: t.discount_label || '',
       net: money(t.net), vat: money(t.vat), vat_rate: num(t.vat_rate), total: money(t.total), vat_registered: registered },
     payment_details: inv ? (s.payment_details || '') : '', terms: (inv ? s.invoice_terms : s.quote_terms) || '',
   };
@@ -6230,7 +6503,7 @@ const DEFAULT_DOC_TEMPLATE = `<style>
     </tbody>
   </table>
   <table class="totals">
-    {{#totals.discount}}<tr><td>Discount ({{totals.discount_pct}}%)</td><td class="n">−{{totals.discount}}</td></tr>{{/totals.discount}}
+    {{#totals.discount}}<tr><td>Discount{{#totals.discount_label}} ({{totals.discount_label}}){{/totals.discount_label}}</td><td class="n">−{{totals.discount}}</td></tr>{{/totals.discount}}
     {{#totals.vat_registered}}<tr><td>Net</td><td class="n">{{totals.net}}</td></tr><tr><td>VAT {{totals.vat_rate}}%</td><td class="n">{{totals.vat}}</td></tr>{{/totals.vat_registered}}
     <tr class="grand"><td>Total</td><td class="n">{{totals.total}}</td></tr>
   </table>
@@ -6243,9 +6516,9 @@ const DEFAULT_DOC_TEMPLATE = `<style>
 const TEMPLATE_HELP = `<details class="tpl-help"><summary>What you can use in a template</summary><div class="small">
   <p><code>{{name}}</code> puts in a value (made safe), <code>{{#name}}…{{/name}}</code> repeats for each item in a list or shows only if it has a value, <code>{{^name}}…{{/name}}</code> shows only when it’s empty. Scripts don’t run.</p>
   <p><b>doc</b>: title, number, date, due, is_invoice, is_quote · <b>company</b>: name, address, email, phone, website, number, vat_number · <b>logo</b> (image address) · <b>colour</b>, <b>accent</b><br>
-  <b>client</b>: display, name, company, address, email, phone · <b>job</b>: number, name, venue, reference, status, dates, start, end, hire_days, notes<br>
+  <b>client</b>: display, name, company, address, email, phone · <b>job</b>: number, name, venue, reference, status, dates, start, end, start_time, end_time, hire_days, notes<br>
   <b>groups</b> (Equipment hire / Sales / Labour): label, subtotal, <b>items</b>: description, brand, code, quantity, rate, days, discount, total, summary, is_accessory, is_included<br>
-  <b>totals</b>: gross, discount, discount_pct, net, vat, vat_rate, total, vat_registered · <b>payment_details</b> (invoices) · <b>terms</b></p></div></details>`;
+  <b>totals</b>: gross, discount, discount_label (e.g. 10%; empty for a fixed amount), discount_pct, net, vat, vat_rate, total, vat_registered · <b>payment_details</b> (invoices) · <b>terms</b></p></div></details>`;
 
 /** A full page for a template, shown in a sandboxed frame (nothing in it can run scripts). */
 function templatePage(bodies) {
@@ -6625,7 +6898,7 @@ function docHTML(job, s, doc, title, planData) {
       <div><h3>${doc === 'invoice' ? 'Invoice to' : doc === 'picklist' ? 'Client' : 'Prepared for'}</h3>
         <p>${c ? `<strong>${esc(c.company || c.name)}</strong>${c.company ? `\n${esc(c.name)}` : ''}${c.address ? `\n${esc(c.address)}` : ''}${c.email ? `\n${esc(c.email)}` : ''}${doc === 'picklist' && c.phone ? `\n${esc(c.phone)}` : ''}` : '—'}</p></div>
       <div><h3>Job</h3><p><strong>${esc(job.name)}</strong>${job.venue ? `\n${esc(job.venue)}` : ''}
-${esc(fmtRange(job.start_date, job.end_date))}
+${esc(jobWhen(job))}
 Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date) + 1, 'day')} · back by ${esc(fmtDate(job.end_date))}${job.reference ? `\nYour ref: ${esc(job.reference)}` : ''}</p></div>
     </div>${doc === 'picklist' && job.overdue ? `<div class="doc-overdue">OVERDUE — due back ${esc(fmtDate(job.due_back))}, ${plural(job.days_late, 'day')} late</div>` : ''}`;
 
@@ -6743,7 +7016,7 @@ Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date)
       ${hasRental ? '<th class="n">Days</th>' : ''}${anyDisc ? '<th class="n">Disc</th>' : ''}<th class="n">Total</th></tr></thead>
       <tbody>${sections || `<tr><td colspan="${cols}">No items.</td></tr>`}</tbody></table>
     <div class="doc-totals"><table><tbody>
-      ${t.discount ? `<tr><td>Subtotal</td><td>${money(t.gross)}</td></tr><tr><td>Discount (${num(job.discount_pct)}%)</td><td>−${money(t.discount)}</td></tr>` : ''}
+      ${t.discount ? `<tr><td>Subtotal</td><td>${money(t.gross)}</td></tr><tr><td>${discountText(t)}</td><td>−${money(t.discount)}</td></tr>` : ''}
       ${t.vat_registered === false ? '' : `<tr><td>Net</td><td>${money(t.net)}</td></tr>
       <tr><td>VAT ${num(t.vat_rate)}%</td><td>${money(t.vat)}</td></tr>`}
       <tr class="grand"><td>Total</td><td>${money(t.total)}</td></tr>
@@ -6841,6 +7114,11 @@ async function boot() {
     if (!typing && e.key === 'n' && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); newJob(); }
   });
   router();
+  // a "More" menu closes when you click anywhere else, or press Escape
+  document.addEventListener('click', (e) => {
+    $$('details.more-menu[open]').forEach((d) => { if (!d.contains(e.target)) d.open = false; });
+  }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $$('details.more-menu[open]').forEach((d) => { d.open = false; }); });
   // "Print barcodes" buttons anywhere: data-print-labels="id,id,…"
   document.addEventListener('click', (e) => {
     const b = e.target.closest('[data-print-labels]');

@@ -235,7 +235,7 @@ The prep list keeps its own layout.
 
 ## Barcode labels
 
-**Print barcodes** is on every item's page, and on the Stock page for everything in the current list (filter by category, brand or search first).
+**Print barcodes** is on every item's page, and on the Stock page (under **More**) for everything in the current list (filter by category, brand or search first).
 - **What prints:** a label for each unit's own barcode, and the item code for items counted by quantity, as many copies as you like.
 - **Label stock:** A4 sheets (65, 24, 21 or 14 per page, e.g. Avery L7651, L7159, L7160, L7163) or label printer rolls (62 × 29, 57 × 32 or 50 × 25 mm).
 - **Part-used sheets:** skip the labels already used.
@@ -457,6 +457,13 @@ Stock is split into three tabs, each with only the fields that matter to it. Eve
 - The category filter lists each subcategory under its category, so you can pick all lighting or just the IP-rated fixtures.
 - Subcategories are included in search, on the job's equipment search, on the prep list, and in CSV import (a `Subcategory` or `Sub group` column) and export.
 
+**Rename and arrange categories.** Open **Stock → More → Rename & arrange categories**, or press the ✎ on a category's header in the Stock list:
+- Type a new name and press Enter to rename a category or subcategory on every item, archived ones too. Renaming to a name that already exists merges the two (you're asked first).
+- Drag a category onto another to put it inside as a subcategory. Its own subcategories become "Name - Subcategory".
+- **Move…** does the same without dragging (handy on a phone), moves a subcategory to another category, or makes it a main category.
+
+**Folding categories.** The Stock list shows one line per category with how many items are in it. Click a category (or subcategory) to open or close it, or use **Expand all** / **Collapse all**. Each device remembers which are open. Searching, or picking a category or brand, shows everything that matches.
+
 **Kinds of equipment.** When adding or editing equipment, first choose **what kind of item it is**. Only the details that matter for that kind are shown:
 
 | Kind | Extra details |
@@ -582,7 +589,7 @@ Add them under **Stock → Flight cases**. Each case has an outside size, an ins
 
 ## Return on investment and day rates
 
-Every equipment, power and flight case item has a **Return on investment** card on its page. For kit you haven't bought yet, use **Stock → ROI calculator**.
+Every equipment, power and flight case item has a **Return on investment** card on its page. For kit you haven't bought yet, use **Stock → More → ROI calculator**.
 
 **What it's earned** (for items in stock). This comes from confirmed, on-hire, returned and invoiced jobs:
 - revenue and unit-days out over the last 12 months, and since its first hire;
@@ -687,8 +694,8 @@ Linking only affects items added to a job *after* you set up the link.
 ## First steps
 
 1. **Settings**: add your logo, company details, VAT number, terms and payment details.
-2. **Stock**: add items, or **Import CSV** from a Current RMS product export. Then link accessories.
-3. **New job**: you can also press `N` anywhere. Pick a client and dates, then type in the "Add equipment" box. Each result shows how many are free for those dates and how many accessories are linked.
+2. **Stock**: add items, or **More → Import CSV** from a Current RMS product export. Then link accessories.
+3. **New job**: you can also press `N` anywhere. Pick a client and dates (and start and end times if you like), then type in the "Add equipment" box. Each result shows how many are free for those dates and how many accessories are linked.
 4. Move the job through its statuses: Enquiry → Quotation → Provisional → Confirmed → On hire → Returned → Invoiced.
 
 ### How pricing works
@@ -696,7 +703,7 @@ Linking only affects items added to a job *after* you set up the link.
 - A rental line costs quantity × day rate × days, less any line discount.
 - "Days" defaults to every day of the hire. To charge a week as three days, set **Chargeable days** on the job.
 - Labour/service lines and sale lines cost quantity × price.
-- The job discount comes off the subtotal, then VAT is added.
+- The job discount comes off the subtotal, then VAT is added. Add it with **Add discount** under the job's **Totals**: a percentage, or a fixed amount (never more than the job). Change or remove it with the same button.
 - **Not VAT registered?** Untick **VAT registered** in Settings → Company information → Money & numbering. No VAT is added or shown on jobs, quotes, invoices, PDFs or Zoho invoices, accounting exports use the program's "No VAT" code, and your VAT number is left off documents. Ticking it again brings VAT back for every job, at your VAT rate.
 
 ### How availability works
@@ -834,4 +841,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.28.1 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.29.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)

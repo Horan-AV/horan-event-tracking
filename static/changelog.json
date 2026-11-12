@@ -2,6 +2,36 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.29.0",
+      "date": "2026-11-12",
+      "title": "Job discount button, start and end times, easier categories and a tidier Stock page",
+      "changes": [
+        {
+          "text": "Discount the whole job from its own button: on a job, under Totals, press Add discount and give it as a percentage or as a fixed amount (e.g. £50 off). It shows what the job comes to as you type, and can be changed or removed the same way. A fixed amount is never more than the job itself."
+        },
+        {
+          "text": "The discount shows on the quote, invoice and PDFs (“Discount (10%)”, or just “Discount” for an amount), is sent to Zoho as a percentage or an amount, and is spread across the lines in accounting exports as before."
+        },
+        {
+          "text": "Start and end times on jobs: optional times next to the out and return dates (Edit details). They show on the job, in job lists and on the quote, invoice and prep list, and a copied job keeps them."
+        },
+        {
+          "text": "Categories are quicker to change: Stock → More → Rename & arrange categories lists every category and subcategory. Type a new name and press Enter to rename it on every item, or drag a category onto another to make it a subcategory. Move… does the same on a phone, and also moves a subcategory to another category or makes it a main category. A category's icon goes with it when it's renamed."
+        },
+        {
+          "text": "Each category and subcategory header on the Stock page also has a pencil to rename or move it."
+        },
+        {
+          "text": "A tidier Stock page: categories fold away, so you see one line per category with how many items it has. Click a header to open it, or use Expand all / Collapse all. Each device remembers which are open; searching or filtering shows everything that matches."
+        },
+        {
+          "text": "Import and export CSV, Print barcodes, the ROI calculator and categories are now under the Stock page's More button."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.28.1",
       "date": "2026-11-11",
       "title": "HTTPS can be turned on from any device, and no stale app after an update",
