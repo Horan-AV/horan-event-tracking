@@ -13,6 +13,7 @@ import ssl
 import stat
 import subprocess
 import sys
+import zlib
 import tempfile
 import time
 import unittest
@@ -835,6 +836,123 @@ class TestJobs(ServerCase):
         h = self.c.get(f"/products/{spk['id']}/roi")[1]["history"]
         self.assertEqual(h["all"]["unit_days"], 12)
         self.assertAlmostEqual(h["all"]["revenue"], 4 * 3 * spk["day_rate"] * 0.9)
+
+
+class TestDiscountsAndTimes(ServerCase):
+    def priced_job(self, **extra):
+        job = self.new_job(**extra)
+        _, job = self.c.post(f"/jobs/{job['id']}/items", {"product_id": self.product("AUD-LA12")["id"], "quantity": 2})
+        self.assertGreater(job["totals"]["gross"], 0)
+        return job
+
+    def test_percentage_discount_on_the_whole_job(self):
+        job = self.priced_job()
+        gross = job["totals"]["gross"]
+        status, job = self.c.put(f"/jobs/{job['id']}", {"discount_pct": 10, "discount_amount": 0})
+        self.assertEqual(status, 200, job)
+        t = job["totals"]
+        self.assertEqual((t["discount"], t["discount_label"]), (round(gross * 0.1, 2), "10%"))
+        self.assertEqual(t["net"], round(gross * 0.9, 2))
+
+    def test_fixed_amount_discount_replaces_a_percentage(self):
+        job = self.priced_job()
+        gross = job["totals"]["gross"]
+        self.c.put(f"/jobs/{job['id']}", {"discount_pct": 10})
+        status, job = self.c.put(f"/jobs/{job['id']}", {"discount_amount": 25, "discount_pct": 0})
+        self.assertEqual(status, 200, job)
+        self.assertEqual((job["discount_pct"], job["discount_amount"]), (0, 25))
+        t = job["totals"]
+        self.assertEqual((t["discount"], t["discount_label"], t["net"]), (25, "", round(gross - 25, 2)))
+        self.assertAlmostEqual(t["discount_share_pct"], 100 * 25 / gross, places=3)
+        # never more than the job itself
+        job = self.c.put(f"/jobs/{job['id']}", {"discount_amount": 10 ** 6})[1]
+        self.assertEqual((job["totals"]["discount"], job["totals"]["net"]), (gross, 0))
+        # and setting a percentage again clears the amount
+        job = self.c.put(f"/jobs/{job['id']}", {"discount_pct": 5})[1]
+        self.assertEqual((job["discount_pct"], job["discount_amount"]), (5, 0))
+        # it's on the printed quote
+        status, r, data = self.c.request("POST", "/api/invoices/pdf", {"ids": [job["id"]], "doc": "quote"}, raw=True)
+        self.assertEqual(status, 200)
+        text = b"".join(zlib.decompress(m) for m in re.findall(rb"stream\n(.*?)\nendstream", data, re.S))
+        self.assertIn(rb"Discount \(5%\)", text)   # brackets are escaped in PDF text
+
+    def test_discounts_are_checked(self):
+        job = self.priced_job()
+        for body in ({"discount_pct": 120}, {"discount_pct": -1}, {"discount_amount": -5},
+                     {"discount_pct": 5, "discount_amount": 5}):
+            self.assertEqual(self.c.put(f"/jobs/{job['id']}", body)[0], 400, body)
+
+    def test_start_and_end_times(self):
+        job = self.new_job(start_time="9:00", end_time="18:30")
+        self.assertEqual((job["start_time"], job["end_time"]), ("09:00", "18:30"))
+        job = self.c.put(f"/jobs/{job['id']}", {"end_time": ""})[1]
+        self.assertEqual((job["start_time"], job["end_time"]), ("09:00", ""))
+        self.assertEqual(self.c.put(f"/jobs/{job['id']}", {"start_time": "25:00"})[0], 400)
+        # a one-day job can't end before it starts; over several days it can
+        one = self.new_job(start_date="2030-02-01", end_date="2030-02-01")
+        self.assertEqual(self.c.put(f"/jobs/{one['id']}", {"start_time": "19:00", "end_time": "08:00"})[0], 400)
+        self.assertEqual(self.c.put(f"/jobs/{job['id']}", {"start_time": "19:00", "end_time": "08:00"})[0], 200)
+        # a copy keeps the times
+        status, copy = self.c.post(f"/jobs/{job['id']}/duplicate", {})
+        self.assertEqual(status, 200, copy)
+        self.assertEqual((copy["start_time"], copy["end_time"]), ("19:00", "08:00"))
+
+
+class TestCategories(ServerCase):
+    def add(self, name, category, subcategory=""):
+        status, p = self.c.post("/products", {"name": name, "category": category, "subcategory": subcategory})
+        self.assertEqual(status, 200, p)
+        return p
+
+    def cat_of(self, p):
+        p = self.c.get(f"/products/{p['id']}")[1]
+        p = p.get("product", p)
+        return p["category"], p["subcategory"]
+
+    def move(self, src, dst):
+        return self.c.put("/categories", {"from": src, "to": dst})
+
+    def test_rename_a_category_and_a_subcategory(self):
+        a = self.add("Par can", "Test lights")
+        b = self.add("Moving head", "Test lights", "Movers")
+        status, r = self.move({"category": "test LIGHTS"}, {"category": "Test lighting"})   # any case finds it
+        self.assertEqual((status, r["changed"]), (200, 2), r)
+        self.assertEqual((self.cat_of(a), self.cat_of(b)), (("Test lighting", ""), ("Test lighting", "Movers")))
+        self.move({"category": "Test lighting", "subcategory": "Movers"}, {"category": "Test lighting", "subcategory": "Moving heads"})
+        self.assertEqual(self.cat_of(b), ("Test lighting", "Moving heads"))
+        names = {c["name"]: c for c in self.c.get("/categories")[1]}
+        self.assertEqual(names["Test lighting"]["count"], 2)
+        self.assertEqual([s["name"] for s in names["Test lighting"]["subcategories"]], ["Moving heads"])
+        self.assertIn("Renamed subcategory", self.c.get("/activity")[1][0]["summary"])
+
+    def test_put_a_category_inside_another(self):
+        a = self.add("Hazer", "Effects")
+        b = self.add("Confetti cannon", "Effects", "Pyro")
+        self.add("Strobe", "Lamps")
+        self.assertEqual(self.move({"category": "Effects"}, {"category": "Lamps", "subcategory": "Effects"})[0], 200)
+        self.assertEqual((self.cat_of(a), self.cat_of(b)), (("Lamps", "Effects"), ("Lamps", "Effects - Pyro")))
+        self.assertNotIn("Effects", [c["name"] for c in self.c.get("/categories")[1]])
+        # and back out: a subcategory made a main category of its own
+        self.move({"category": "Lamps", "subcategory": "Effects"}, {"category": "Effects"})
+        self.assertEqual(self.cat_of(a), ("Effects", ""))
+        # move a subcategory to another category
+        self.move({"category": "Lamps", "subcategory": "Effects - Pyro"}, {"category": "Effects", "subcategory": "Pyro"})
+        self.assertEqual(self.cat_of(b), ("Effects", "Pyro"))
+
+    def test_moves_are_checked(self):
+        self.add("Thing", "Bits")
+        self.assertEqual(self.move({"category": "Bits"}, {"category": ""})[0], 400)
+        self.assertEqual(self.move({"category": "Bits"}, {"category": "Bits", "subcategory": "Bits"})[0], 400)
+        self.assertEqual(self.move({"category": "No such category"}, {"category": "X"})[0], 404)
+        self.assertEqual(self.move({"category": "Bits"}, {"category": "x" * 81})[0], 400)
+
+    def test_the_icon_goes_with_a_renamed_category(self):
+        self.add("Widget", "Gadgets")
+        self.assertEqual(self.c.put("/icons", {"target": "cat:Gadgets", "lib": "star"})[0], 200)
+        self.move({"category": "Gadgets"}, {"category": "Gizmos"})
+        icons = self.c.get("/settings")[1]["custom_icons"]
+        self.assertIn("cat:gizmos", icons)
+        self.assertNotIn("cat:gadgets", icons)
 
 
 class TestSettings(ServerCase):

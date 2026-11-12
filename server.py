@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.28.1"
+VERSION = "1.29.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -502,6 +502,17 @@ def kind_field(v, field):
     return v
 
 
+def time_field(v, field):
+    """A time of day as HH:MM (24-hour), or blank for none."""
+    v = as_str(v, field)
+    if not v:
+        return ""
+    m = re.match(r"^([01]?\d|2[0-3])[:.]([0-5]\d)$", v)
+    if not m:
+        raise ApiError(400, "Times are like 09:30 or 18:00")
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
 def float_or_none(v, field):
     return as_float(v, field, allow_none=True)
 
@@ -674,7 +685,8 @@ def check_contact_numbering(data):
 JOB_SPEC = {
     "name": required(as_str), "contact_id": int_or_none, "venue": as_str,
     "reference": as_str, "start_date": date_field_req, "end_date": date_field_req,
-    "charge_days": float_or_none, "status": status_field, "discount_pct": as_float,
+    "charge_days": float_or_none, "status": status_field, "discount_pct": as_float, "discount_amount": as_float,
+    "start_time": lambda v, f: time_field(v, f), "end_time": lambda v, f: time_field(v, f),
     "notes": as_str, "internal_notes": as_str, "power_supply": lambda v, f: supply_field(v, f),
 }
 ITEM_SPEC = {
@@ -736,12 +748,27 @@ def price_items(job, items):
     return items
 
 
+def job_discount(job, gross):
+    """The discount off the whole job: a fixed amount (never more than the job's total), or a percentage."""
+    amount = job.get("discount_amount") or 0
+    if amount > 0:
+        return min(float(amount), max(gross, 0.0))
+    return gross * (job.get("discount_pct") or 0) / 100.0
+
+
+def discount_label(job, gross):
+    """How the discount is described: "10%" for a percentage, "" for a fixed amount."""
+    if (job.get("discount_amount") or 0) > 0:
+        return ""
+    return f"{fmt_num(job.get('discount_pct') or 0)}%" if job.get("discount_pct") else ""
+
+
 def totals(job, items, vat_rate, registered=True):
     by_kind = {k: 0.0 for k in KINDS}
     for it in items:
         by_kind[it["kind"]] = by_kind.get(it["kind"], 0.0) + it["line_total"]
     gross = sum(by_kind.values())
-    discount = gross * (job.get("discount_pct") or 0) / 100.0
+    discount = job_discount(job, gross)
     net = gross - discount
     vat = net * vat_rate / 100.0
     return {
@@ -750,6 +777,9 @@ def totals(job, items, vat_rate, registered=True):
         "service": round(by_kind["service"], 2),
         "gross": round(gross, 2),
         "discount": round(discount, 2),
+        "discount_label": discount_label(job, gross),
+        # the discount as a share of the job, also when it's a fixed amount (for exports and statistics)
+        "discount_share_pct": round(100 * discount / gross, 4) if gross > 0 else 0,
         "net": round(net, 2),
         "vat_rate": vat_rate,
         "vat_registered": bool(registered),
@@ -1802,7 +1832,8 @@ def _changed_fields(body, labels):
 
 
 JOB_FIELD_LABELS = {"name": "name", "contact_id": "client", "start_date": "dates", "end_date": "dates", "venue": "venue",
-                    "reference": "reference", "notes": "notes", "discount_pct": "discount", "charge_days": "charged days",
+                    "reference": "reference", "notes": "notes", "discount_pct": "discount", "discount_amount": "discount",
+                    "start_time": "times", "end_time": "times", "charge_days": "charged days",
                     "power_supply": "power supply", "status": "status"}
 
 
@@ -1999,6 +2030,8 @@ def describe(fn_name, conn, req, groups, body, result, pre):
         if fn_name == "api_update" and body.get("dry_run"):
             return None
         return ("settings", simple[fn_name], None, None)
+    if fn_name == "api_categories_put":
+        return ("stock", r.get("summary") or "Changed a category", None, None)
     if fn_name == "api_my_password":
         return ("user", "Changed their password", None, None)
     if fn_name == "api_users_post":
@@ -3150,21 +3183,31 @@ def zoho_invoice_body(conn, job, customer_id, tax_id):
     if not lines:
         raise ApiError(400, "This job has nothing to invoice yet")
     ref = job["number"] + (f" / {job['reference']}" if job.get("reference") else "")
-    when = fmt_range(job["start_date"], job["end_date"])
+    when = job_when(job)
     notes = "\n".join(x for x in (f"{job['name']}" + (f" — {job['venue']}" if job.get("venue") else ""),
                                    when, job.get("notes") or "") if x)
     body = {"customer_id": customer_id, "reference_number": ref[:50], "date": dt.date.today().isoformat(),
             "line_items": lines, "notes": notes[:5000]}
-    if job.get("discount_pct"):
-        body.update({"discount": f"{fmt_num(job['discount_pct'])}%", "is_discount_before_tax": True,
+    t = job.get("totals") or {}
+    if t.get("discount"):
+        # a percentage stays a percentage on the invoice; a fixed amount is sent as an amount
+        amount = f"{t['discount']:.2f}"
+        body.update({"discount": t["discount_label"] or amount, "is_discount_before_tax": True,
                      "discount_type": "entity_level"})
     return body
 
 
-def fmt_range(a, b):
+def fmt_range(a, b, ta="", tb=""):
+    """Fri 14 Nov 2026 – Sat 15 Nov 2026, with the times when the job has them."""
     da, db_ = dt.date.fromisoformat(a), dt.date.fromisoformat(b)
     f = lambda d: d.strftime("%a %d %b %Y").replace(" 0", " ")
-    return f(da) if a == b else f"{f(da)} – {f(db_)}"
+    if a == b:
+        return f(da) + (f", {ta}–{tb}" if ta and tb else f", from {ta}" if ta else f", until {tb}" if tb else "")
+    return f"{f(da)}{', ' + ta if ta else ''} – {f(db_)}{', ' + tb if tb else ''}"
+
+
+def job_when(job):
+    return fmt_range(job["start_date"], job["end_date"], job.get("start_time") or "", job.get("end_time") or "")
 
 
 HELV_W = [278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584, 761, 556, 0, 222, 556, 333, 1000, 556, 556, 333, 1000, 667, 333, 1000, 0, 611, 0, 0, 222, 222, 333, 333, 350, 556, 1000, 333, 1000, 500, 333, 944, 0, 500, 667, 278, 333, 556, 556, 556, 556, 260, 556, 333, 737, 370, 556, 584, 333, 737, 333, 400, 584, 333, 333, 333, 556, 537, 278, 333, 333, 365, 556, 834, 834, 834, 611, 667, 667, 667, 667, 667, 667, 1000, 722, 667, 667, 667, 667, 278, 278, 278, 278, 722, 722, 778, 778, 778, 778, 778, 584, 778, 722, 722, 722, 722, 667, 667, 611, 556, 556, 556, 556, 556, 556, 889, 500, 556, 556, 556, 556, 278, 278, 278, 278, 556, 556, 556, 556, 556, 556, 556, 584, 611, 556, 556, 556, 556, 500, 556, 500]
@@ -3237,7 +3280,9 @@ def invoice_lines(job, vat_rate, cur="£"):
     """Billable lines, with the job discount folded into each line (accounting imports don't take negative lines).
     Free included accessories and cable-run / stage headings aren't billed."""
     lines = []
-    disc = job.get("discount_pct") or 0
+    disc = job["totals"].get("discount_share_pct") or 0
+    disc_text = (f"less {job['totals']['discount_label']} job discount" if job["totals"].get("discount_label")
+                 else "less job discount")
     for it, depth in _ordered_items(job):
         total = it["line_total"]
         if not total and not it["unit_price"]:
@@ -3249,7 +3294,7 @@ def invoice_lines(job, vat_rate, cur="£"):
         if it["discount_pct"]:
             bits.append(f"{fmt_num(it['discount_pct'])}% discount")
         if disc:
-            bits.append(f"less {fmt_num(disc)}% job discount")
+            bits.append(disc_text)
         lines.append({"name": (it["description"] or "Item")[:100], "kind": it["kind"], "qty": it["quantity"] or 0,
                       "amount": round(total * (1 - disc / 100.0), 2), "bits": bits, "sku": it.get("product_sku") or ""})
     net = job["totals"]["net"]
@@ -3302,7 +3347,7 @@ def accounting_rows(fmt, jobs, s, vat_rate):
         c = job.get("contact") or {}
         customer = c.get("company") or c.get("name") or "Customer"
         ref = job["number"] + (f" / {job['reference']}" if job.get("reference") else "")
-        memo = f"{job['name']}" + (f" — {job['venue']}" if job.get("venue") else "") + f", {fmt_range(job['start_date'], job['end_date'])}"
+        memo = f"{job['name']}" + (f" — {job['venue']}" if job.get("venue") else "") + f", {job_when(job)}"
         lines = invoice_lines(job, vat_rate, cur)
         if not lines:
             raise ApiError(400, f"{job['number']} {job['name']} has nothing to invoice")
@@ -3676,7 +3721,7 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate, layout=None):
         who += [x for x in (c.get("address") or "").split("\n") if x.strip()] + ([c["email"]] if c.get("email") else [])
     hire = (dt.date.fromisoformat(job["end_date"]) - dt.date.fromisoformat(job["start_date"])).days + 1
     jl = [job["name"]] + ([job["venue"]] if job.get("venue") else []) + \
-         [fmt_range(job["start_date"], job["end_date"]), f"Hire period: {hire} day{'s' if hire != 1 else ''}"]
+         [job_when(job), f"Hire period: {hire} day{'s' if hire != 1 else ''}"]
     pdf.text(L, y, "INVOICE TO" if doc == "invoice" else "PREPARED FOR", 7.5, True, grey)
     yy = yj = y
     for i, ln in enumerate(who):
@@ -3767,7 +3812,7 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate, layout=None):
 
     tot = []
     if t["discount"]:
-        tot += [("Subtotal", money_(t["gross"]), False), (f"Discount ({fmt_num(job.get('discount_pct') or 0)}%)", money_(-t["discount"]), False)]
+        tot += [("Subtotal", money_(t["gross"]), False), ("Discount" + (f" ({t['discount_label']})" if t.get("discount_label") else ""), money_(-t["discount"]), False)]
     if registered:
         tot += [("Net", money_(t["net"]), False), (f"VAT {fmt_num(t['vat_rate'])}%", money_(t["vat"]), False)]
     tot += [("Total", money_(t["total"]), True)]
@@ -4132,11 +4177,13 @@ def hire_history(conn, pid):
     out["first_hire"] = None
     items = load_items(conn, [j["id"] for j in jobs])
     for j in jobs:
-        lines = [it for it in price_items(j, items[j["id"]]) if it["product_id"] == pid and it["kind"] == "rental"]
+        priced = price_items(j, items[j["id"]])
+        lines = [it for it in priced if it["product_id"] == pid and it["kind"] == "rental"]
         if not lines:
             continue
         start, end = parse_date(j["start_date"]), parse_date(j["end_date"])
-        job_disc = 1 - (j.get("discount_pct") or 0) / 100.0
+        gross = sum(it["line_total"] for it in priced)
+        job_disc = 1 - (job_discount(j, gross) / gross if gross > 0 else 0)
         # The part of the hire inside the last 12 months counts towards "this year".
         days_total = (end - start).days + 1
         days_year = max(0, (min(end, today) - max(start, year_ago)).days + 1) if end >= year_ago and start <= today else 0
@@ -5090,6 +5137,85 @@ def api_accessory_delete(req, conn, lid):
     return api_product(req, conn, link["product_id"])
 
 
+# ---------------------------------------------------------------- stock categories
+#
+# Categories are names on each item (category, and an optional subcategory), so renaming or moving one changes
+# every item that has it - archived ones and cable lengths too.
+
+def category_name(v, what):
+    v = re.sub(r"\s+", " ", str(v or "")).strip()
+    if len(v) > 80:
+        raise ApiError(400, f"A {what} name is up to 80 characters")
+    if re.search(r"[\x00-\x1f]", v):
+        raise ApiError(400, f"That {what} name has a character it can't use")
+    return v
+
+
+@route("GET", "/api/categories")
+def api_categories(req, conn):
+    """Every category and its subcategories, with how many items each has."""
+    cats = {}
+    for r in conn.execute("SELECT category, subcategory, COUNT(*) AS n, SUM(archived = 0) AS live FROM products "
+                          "WHERE parent_id IS NULL GROUP BY category COLLATE NOCASE, subcategory COLLATE NOCASE"):
+        c = cats.setdefault((r["category"] or "").lower(), {"name": r["category"] or "", "count": 0, "subcategories": []})
+        c["count"] += r["n"]
+        if r["subcategory"]:
+            c["subcategories"].append({"name": r["subcategory"], "count": r["n"]})
+    out = sorted(cats.values(), key=lambda c: (c["name"] == "", c["name"].lower()))
+    for c in out:
+        c["subcategories"].sort(key=lambda x: x["name"].lower())
+    return out
+
+
+@route("PUT", "/api/categories")
+def api_categories_put(req, conn):
+    """Rename or move a category or a subcategory, for every item in it.
+    from {category, subcategory?} → to {category, subcategory?}:
+      a category → another name (renamed; merges if that one exists already)
+      a category → inside another as a subcategory (its own subcategories become "Old - Sub")
+      a subcategory → renamed, moved to another category, or made a category of its own."""
+    d = req.json() or {}
+    src, dst = d.get("from") or {}, d.get("to") or {}
+    if not isinstance(src, dict) or not isinstance(dst, dict):
+        raise ApiError(400, "Say which category to change, and to what")
+    fc, fs = category_name(src.get("category"), "category"), category_name(src.get("subcategory"), "subcategory")
+    tc, ts = category_name(dst.get("category"), "category"), category_name(dst.get("subcategory"), "subcategory")
+    if not tc:
+        raise ApiError(400, "Give the category a name")
+    where = "category = ? COLLATE NOCASE" + (" AND subcategory = ? COLLATE NOCASE" if fs else "")
+    params = [fc] + ([fs] if fs else [])
+    n_all, n = conn.execute(f"SELECT COUNT(*), SUM(parent_id IS NULL) FROM products WHERE {where}", params).fetchone()
+    n = n or 0  # items as the Stock page counts them (a cable's lengths are part of it)
+    if not n_all:
+        raise ApiError(404, "No items are in that category any more — reload the page")
+    old = (fc or "Uncategorised") + (f" › {fs}" if fs else "")
+    if not fs and ts:
+        if tc.lower() == fc.lower():
+            raise ApiError(400, "A category can't go inside itself")
+        conn.execute(f"UPDATE products SET category = ?, subcategory = CASE WHEN subcategory = '' THEN ? "
+                     f"ELSE ? || ' - ' || subcategory END WHERE {where}", [tc, ts, ts] + params)
+        summary = f"Put category {old} inside {tc} (as {ts})"
+    elif not fs:
+        conn.execute(f"UPDATE products SET category = ? WHERE {where}", [tc] + params)
+        summary = f"Renamed category {old} to {tc}"
+    else:
+        conn.execute(f"UPDATE products SET category = ?, subcategory = ? WHERE {where}", [tc, ts] + params)
+        summary = (f"Made {old} a category of its own: {tc}" if not ts else
+                   f"Renamed subcategory {old} to {ts}" if tc.lower() == fc.lower() else f"Moved {old} to {tc} › {ts}")
+    # a category's own icon goes with it when it's renamed (subcategories don't have icons)
+    if not fs:
+        icons = custom_icons(conn)
+        oldk, newk = f"cat:{fc.lower()}", f"cat:{tc.lower()}"
+        if oldk in icons and oldk != newk and not ts:
+            icons.setdefault(newk, icons[oldk])
+            del icons[oldk]
+            save_custom_icons(conn, icons)
+            conn.execute("UPDATE files SET key = ? WHERE key = ? AND NOT EXISTS (SELECT 1 FROM files WHERE key = ?)",
+                         (f"uicon:{newk}", f"uicon:{oldk}", f"uicon:{newk}"))
+    conn.commit()
+    return {"changed": n, "summary": f"{summary} ({n} item{'s' if n != 1 else ''})"}
+
+
 @route("PUT", r"/api/products/(\d+)")
 def api_product_put(req, conn, pid):
     cur = one(conn.execute("SELECT * FROM products WHERE id = ?", (pid,)))
@@ -5238,6 +5364,24 @@ def validate_job_dates(data):
     if "start_date" in data and "end_date" in data:
         if parse_date(data["end_date"]) < parse_date(data["start_date"]):
             raise ApiError(400, "End date must be on or after the start date")
+        if (data["start_date"] == data["end_date"] and data.get("start_time") and data.get("end_time")
+                and data["end_time"] < data["start_time"]):
+            raise ApiError(400, "On a one-day job the end time must be after the start time")
+    if not 0 <= (data.get("discount_pct") or 0) <= 100:
+        raise ApiError(400, "A discount is between 0 and 100%")
+    if (data.get("discount_amount") or 0) < 0:
+        raise ApiError(400, "A discount can't be less than nothing")
+
+
+def settle_discount(data):
+    """A job has a percentage discount or a fixed one, not both: setting one clears the other."""
+    pct, amount = data.get("discount_pct") or 0, data.get("discount_amount") or 0
+    if pct > 0 and amount > 0:
+        raise ApiError(400, "Give the discount as a percentage or as an amount, not both")
+    if pct > 0:
+        data["discount_amount"] = 0.0
+    elif amount > 0:
+        data["discount_pct"] = 0.0
 
 
 JOB_LIST_SQL = """SELECT j.*, c.name AS contact_name, c.company AS contact_company
@@ -5307,6 +5451,7 @@ def api_jobs(req, conn):
 @route("POST", "/api/jobs")
 def api_jobs_post(req, conn):
     data = clean(req.json(), JOB_SPEC)
+    settle_discount(data)
     validate_job_dates(data)
     data.setdefault("status", "enquiry")
     data["number"] = next_job_number(conn, data.get("contact_id"))
@@ -5391,6 +5536,7 @@ def api_job_put(req, conn, jid):
     if not current:
         raise ApiError(404, "Job not found")
     data = clean(req.json(), JOB_SPEC, partial=True)
+    settle_discount(data)
     merged = dict(current, **data)
     validate_job_dates(merged)
     data["updated_at"] = now_iso()
@@ -5413,7 +5559,8 @@ def api_job_duplicate(req, conn, jid):
         raise ApiError(404, "Job not found")
     body = req.json() or {}
     new = {k: src[k] for k in ("name", "contact_id", "venue", "reference", "start_date", "end_date",
-                               "charge_days", "discount_pct", "notes", "internal_notes")}
+                               "charge_days", "discount_pct", "discount_amount", "start_time", "end_time",
+                               "notes", "internal_notes")}
     if body.get("start_date"):
         # Shift the job to the new start date, keeping the same length.
         length = (parse_date(src["end_date"]) - parse_date(src["start_date"])).days
@@ -8168,7 +8315,10 @@ def init_db():
                              ("products", "case_for_id", "INTEGER REFERENCES products(id) ON DELETE SET NULL"),
                              ("job_checks", "case_id", "INTEGER REFERENCES job_cases(id) ON DELETE SET NULL"),
                              ("contacts", "job_prefix", "TEXT NOT NULL DEFAULT ''"),
-                             ("contacts", "next_job_number", "INTEGER")):
+                             ("contacts", "next_job_number", "INTEGER"),
+                             ("jobs", "discount_amount", "REAL NOT NULL DEFAULT 0"),
+                             ("jobs", "start_time", "TEXT NOT NULL DEFAULT ''"),
+                             ("jobs", "end_time", "TEXT NOT NULL DEFAULT ''")):
         if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():

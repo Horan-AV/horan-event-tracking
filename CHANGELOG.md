@@ -2,6 +2,18 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.29.0 — 2026-11-12 · Job discount button, start and end times, easier categories and a tidier Stock page
+
+- Discount the whole job from its own button: on a job, under Totals, press Add discount and give it as a percentage or as a fixed amount (e.g. £50 off). It shows what the job comes to as you type, and can be changed or removed the same way. A fixed amount is never more than the job itself.
+- The discount shows on the quote, invoice and PDFs (“Discount (10%)”, or just “Discount” for an amount), is sent to Zoho as a percentage or an amount, and is spread across the lines in accounting exports as before.
+- Start and end times on jobs: optional times next to the out and return dates (Edit details). They show on the job, in job lists and on the quote, invoice and prep list, and a copied job keeps them.
+- Categories are quicker to change: Stock → More → Rename & arrange categories lists every category and subcategory. Type a new name and press Enter to rename it on every item, or drag a category onto another to make it a subcategory. Move… does the same on a phone, and also moves a subcategory to another category or makes it a main category. A category's icon goes with it when it's renamed.
+- Each category and subcategory header on the Stock page also has a pencil to rename or move it.
+- A tidier Stock page: categories fold away, so you see one line per category with how many items it has. Click a header to open it, or use Expand all / Collapse all. Each device remembers which are open; searching or filtering shows everything that matches.
+- Import and export CSV, Print barcodes, the ROI calculator and categories are now under the Stock page's More button.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.28.1 — 2026-11-11 · HTTPS can be turned on from any device, and no stale app after an update
 
 - HTTPS can now be turned on by an admin from any signed-in device, not just the computer running the app — useful for a server with no screen. The page reloads at the https:// address; accept the browser's warning once, then add the certificate to stop it.
