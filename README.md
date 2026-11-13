@@ -573,7 +573,8 @@ On a job, click **Check out** (or **Check in**):
   - An **asset number** ticks that exact unit and lists it under the line.
   - An **item code** ticks one of that item.
   - A beep and colour tell you if the code isn't on the job, was already scanned, is quarantined, or you already have them all.
-- **Tick by hand** with **+ / −**, **✓ All**, or **Tick everything**.
+- **Tick by hand** with **+ / −**, **✓ All**, or **Tick everything**. The page stays where you are, and the scan box stays ready for the next scan.
+- **Default or Linked.** The switch above the list changes how it's laid out (each device remembers it). **Default** groups items by category. **Linked** puts each item's accessories straight under it — e.g. a speaker with its stand and cable — and the contents of packages, stages and cable runs under their name, in the job's order. An accessory that's also on the job in its own right stays a line of its own.
 - Click × on a scanned asset to undo it.
 
 When everything is checked, you're offered **Mark job as On hire** (out) or **Returned** (in). Progress for both shows on the job page.
@@ -868,4 +869,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.30.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.31.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)

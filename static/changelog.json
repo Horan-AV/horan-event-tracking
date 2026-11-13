@@ -2,6 +2,21 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.31.0",
+      "date": "2026-11-14",
+      "title": "Linked view for check out and in, and no more jumping to the top",
+      "changes": [
+        {
+          "text": "Check out and check in have a Default / Linked switch (each device remembers it). Default lists items by category, as before. Linked puts each item's accessories straight under it — the stands, cables and PSUs with the speaker or radio mic they go with — and package, stage and cable run contents under their name, in the job's order."
+        },
+        {
+          "text": "Fix: on check out and check in, ticking an item by hand (+, −, ✓ All, Undo) jumped the page back to the top. It now stays where you are, and the scan box is still ready for the next scan."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.30.0",
       "date": "2026-11-13",
       "title": "Patch sheets, terms of hire, calendar feed, Zoho quotes, client payment terms, and fixes",

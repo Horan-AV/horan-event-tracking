@@ -3627,6 +3627,40 @@ function casesCardHTML(cases, openId, closeCode) {
       : '<div class="empty">No flight cases loaded yet.</div>'}</div>`;
 }
 
+/* The check out / in list: "default" groups lines by category; "linked" puts accessories under their item (each
+   device remembers which). */
+const CHECK_VIEW_KEY = 'het-check-view';
+function checkView() { try { return localStorage.getItem(CHECK_VIEW_KEY) === 'linked' ? 'linked' : 'default'; } catch { return 'default'; } }
+function setCheckView(v) { try { localStorage.setItem(CHECK_VIEW_KEY, v); } catch { /* not kept */ } }
+
+/** Linked view: items in the job's order, each followed by its accessories (and theirs); package, stage and cable run
+ *  contents under a heading with that name. */
+function linkedRows(lines, rowFn) {
+  const byPid = new Map(lines.map((l) => [l.product_id, l]));
+  const kids = new Map(), groups = new Map(), tops = [];
+  for (const l of lines) {
+    const par = l.parent;
+    if (par && par.product_id && byPid.has(par.product_id)) (kids.get(par.product_id) || kids.set(par.product_id, []).get(par.product_id)).push(l);
+    else if (par && par.group) {
+      if (!groups.has(par.group)) groups.set(par.group, { label: par.label, order: l.order, lines: [] });
+      groups.get(par.group).lines.push(l);
+    } else tops.push(l);
+  }
+  const seen = new Set();
+  const tree = (l, depth) => {
+    if (seen.has(l.product_id)) return '';
+    seen.add(l.product_id);
+    return rowFn(l, depth) + (kids.get(l.product_id) || []).sort((a, b) => a.order - b.order).map((k) => tree(k, depth + 1)).join('');
+  };
+  const blocks = [...tops.map((l) => ({ order: l.order, html: () => tree(l, 0) })),
+    ...[...groups.values()].map((g) => ({ order: g.order, html: () => `<tr class="group"><td colspan="4">${esc(g.label)}</td></tr>`
+      + g.lines.sort((a, b) => a.order - b.order).map((l) => tree(l, 1)).join('') }))];
+  let out = blocks.sort((a, b) => a.order - b.order).map((b) => b.html()).join('');
+  // anything left over (e.g. two items listed as each other's accessories) still appears
+  out += lines.filter((l) => !seen.has(l.product_id)).map((l) => tree(l, 0)).join('');
+  return out;
+}
+
 async function renderCheck(view, id, dir) {
   let st = await get(`/jobs/${id}/check?dir=${dir}`);
   const settings = dir === 'out' ? await get('/settings').catch(() => ({})) : {};
@@ -3657,7 +3691,25 @@ async function renderCheck(view, id, dir) {
         <span class="muted">· ${plural(c.item_count, 'item')} · ${kg(c.total_kg)}</span></span>
         <button class="btn small primary" data-case-close>Close case</button></div>` : '';
   };
+  // one line of the list; depth > 0 is an accessory shown under its item (linked view)
+  const lineRow = (l, depth = 0) => {
+    const full = l.done >= l.needed;
+    return `<tr class="${full ? 'full' : l.done ? 'part' : ''}${depth ? ' acc' : ''}" data-line="${l.product_id}" style="--depth:${depth}">
+            <td>${depth ? '<span class="acc-mark" aria-hidden="true">↳</span>' : ''}<strong>${esc(l.name)}</strong><br><span class="mono muted small">${esc(l.sku || '')}</span>${l.by && l.by.length ? ` <span class="by-note">· by ${esc(l.by.join(', '))}</span>` : ''}
+              ${noteHTML(l)}
+              ${l.assets.length ? `<div class="chips">${l.assets.map((a) => `<span class="chip" title="${esc(a.by ? `Scanned by ${a.by}` : 'Scanned')}${a.at ? ` at ${a.at.slice(11, 16)}` : ''}">${esc(a.asset_number)}<button data-undo="${a.check_id}" title="Undo this scan" aria-label="Undo">×</button></span>`).join('')}</div>` : ''}</td>
+            <td class="n count"><strong>${num(l.done)}</strong> / ${num(l.needed)}</td>
+            <td class="nowrap"><button class="btn small" data-delta="-1" ${l.done ? '' : 'disabled'} aria-label="One less">−</button>
+              <button class="btn small" data-delta="1" ${full ? 'disabled' : ''} aria-label="One more">+</button></td>
+            <td class="n"><button class="btn small ${full ? '' : 'primary'}" data-tick>${full ? 'Undo' : '✓ All'}</button></td></tr>`;
+  };
   const drawBody = () => {
+    // keep your place: redrawing the list must never jump the page back to the top
+    const sc = document.scrollingElement, top = sc ? sc.scrollTop : 0;
+    drawBodyInner();
+    if (sc) sc.scrollTop = top;
+  };
+  const drawBodyInner = () => {
     if (dir === 'out') drawPacking();
     const pct = st.needed ? Math.round(100 * st.done / st.needed) : 0;
     const complete = st.needed && st.done >= st.needed;
@@ -3665,24 +3717,17 @@ async function renderCheck(view, id, dir) {
     for (const l of st.lines) (groups[l.category || 'Other'] ||= []).push(l);
     $('[data-body]', view).innerHTML = `
       <div class="card"><header><h2>${num(st.done)} of ${num(st.needed)} ${dir === 'out' ? 'checked out' : 'checked back in'}</h2>
-        <div class="actions"><button class="btn small" data-all>Tick everything</button><button class="btn small danger" data-clear-all>Clear all</button></div></header>
+        <div class="actions"><div class="seg" role="group" aria-label="List view">
+            <button class="${checkView() === 'default' ? 'on' : ''}" data-check-view="default" aria-pressed="${checkView() === 'default'}" title="Grouped by category">Default</button>
+            <button class="${checkView() === 'linked' ? 'on' : ''}" data-check-view="linked" aria-pressed="${checkView() === 'linked'}" title="Accessories under the item they go with">Linked</button></div>
+          <button class="btn small" data-all>Tick everything</button><button class="btn small danger" data-clear-all>Clear all</button></div></header>
         <div class="body"><div class="bar big"><i style="width:${pct}%"></i></div>
         ${complete ? `<div class="banner ok-banner">✓ Everything is ${dir === 'out' ? 'checked out' : 'back'}.
           ${dir === 'out' && job.status !== 'out' ? '<button class="btn small primary" data-status="out">Mark job as On hire</button>' : ''}
           ${dir === 'in' && !['returned', 'invoiced'].includes(job.status) ? '<button class="btn small primary" data-status="returned">Mark job as Returned</button>' : ''}</div>` : ''}
         </div>
-        ${st.lines.length ? `<div class="table-wrap"><table class="table check-table"><tbody>
-        ${Object.keys(groups).sort().map((g) => `<tr class="group"><td colspan="4">${esc(g)}</td></tr>` + groups[g].map((l) => {
-          const full = l.done >= l.needed;
-          return `<tr class="${full ? 'full' : l.done ? 'part' : ''}" data-line="${l.product_id}">
-            <td><strong>${esc(l.name)}</strong><br><span class="mono muted small">${esc(l.sku || '')}</span>${l.by && l.by.length ? ` <span class="by-note">· by ${esc(l.by.join(', '))}</span>` : ''}
-              ${noteHTML(l)}
-              ${l.assets.length ? `<div class="chips">${l.assets.map((a) => `<span class="chip" title="${esc(a.by ? `Scanned by ${a.by}` : 'Scanned')}${a.at ? ` at ${a.at.slice(11, 16)}` : ''}">${esc(a.asset_number)}<button data-undo="${a.check_id}" title="Undo this scan" aria-label="Undo">×</button></span>`).join('')}</div>` : ''}</td>
-            <td class="n count"><strong>${num(l.done)}</strong> / ${num(l.needed)}</td>
-            <td class="nowrap"><button class="btn small" data-delta="-1" ${l.done ? '' : 'disabled'} aria-label="One less">−</button>
-              <button class="btn small" data-delta="1" ${full ? 'disabled' : ''} aria-label="One more">+</button></td>
-            <td class="n"><button class="btn small ${full ? '' : 'primary'}" data-tick>${full ? 'Undo' : '✓ All'}</button></td></tr>`;
-        }).join('')).join('')}</tbody></table></div>` : '<div class="empty">Nothing on this job to check yet.</div>'}
+        ${st.lines.length ? `<div class="table-wrap"><table class="table check-table ${checkView() === 'linked' ? 'linked' : ''}"><tbody>
+        ${checkView() === 'linked' ? linkedRows(st.lines, lineRow) : Object.keys(groups).sort().map((g) => `<tr class="group"><td colspan="4">${esc(g)}</td></tr>` + groups[g].map((l) => lineRow(l)).join('')).join('')}</tbody></table></div>` : '<div class="empty">Nothing on this job to check yet.</div>'}
       </div>
       ${(st.free || []).length || freeScanOn() ? `<div class="card free-card"><header><h2>Free scan <span class="muted">— not on the job</span></h2>
         <span class="muted">${plural((st.free || []).reduce((a, f) => a + f.done, 0), 'item')}</span></header>
@@ -3748,7 +3793,7 @@ async function renderCheck(view, id, dir) {
   view.onchange = (e) => {
     if (e.target.matches('[data-free-toggle]')) {
       try { localStorage.setItem('het-free-scan', e.target.checked ? '1' : '0'); } catch { /* ignore */ }
-      drawBody(); scan.focus();
+      drawBody(); scan.focus({ preventScroll: true });
       toast(e.target.checked ? 'Free scan on — items not on the job go in their own section' : 'Free scan off');
     }
     if (e.target.matches('[data-note-input]')) saveNote(e.target);
@@ -3765,6 +3810,8 @@ async function renderCheck(view, id, dir) {
   };
   view.onclick = async (e) => {
     const t = e.target;
+    const cv = t.closest('[data-check-view]');
+    if (cv) { setCheckView(cv.dataset.checkView); drawBody(); scan.focus({ preventScroll: true }); return; }
     const line = t.closest('[data-line]');
     const pid = line ? Number(line.dataset.line) : null;
     if (t.closest('[data-note-open]')) {
@@ -3810,9 +3857,9 @@ async function renderCheck(view, id, dir) {
         await put(`/jobs/${id}`, { status: t.closest('[data-status]').dataset.status });
         job.status = t.closest('[data-status]').dataset.status;
         toast(`Job marked ${STATUS[job.status]}`, 'ok');
-      } else { if (!t.closest('a,input,button')) scan.focus(); return; }
+      } else { if (!t.closest('a,input,button')) scan.focus({ preventScroll: true }); return; }
       drawBody();
-      scan.focus();
+      scan.focus({ preventScroll: true });
     } catch (ex) { toast(ex.message, 'error'); }
   };
 }

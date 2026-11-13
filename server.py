@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.30.0"
+VERSION = "1.31.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -6307,6 +6307,27 @@ def check_lines(conn, jid, direction):
         lines.append(n)
     extra = [c for c in checks if c["product_id"] not in need]
     lines.sort(key=lambda l: ((l["category"] or "").lower(), (l["name"] or "").lower()))
+    # For the linked view: where each line belongs - under the item it's an accessory of (or the package, stage or
+    # cable run it's part of), going by its first place on the job; None for items on the job in their own right.
+    by_id = {it["id"]: it for it in items}
+    home, order = {}, {}
+    for n_, it in enumerate(sorted(items, key=lambda x: (x["sort"] or 0, x["id"]))):
+        pid = it["product_id"]
+        if it["kind"] != "rental" or not pid or pid not in need:
+            continue
+        order.setdefault(pid, n_)
+        if pid in home:
+            continue
+        par = by_id.get(it.get("parent_item_id"))
+        if not par:
+            home[pid] = None
+        elif par["product_id"] in need and par["product_id"] != pid:
+            home[pid] = {"product_id": par["product_id"]}
+        else:   # a package, stage or cable run: not something you tick itself, so it's a heading
+            home[pid] = {"group": par["id"], "label": par["description"] or par.get("product_name") or "Package"}
+    for l in lines:
+        l["parent"] = home.get(l["product_id"])
+        l["order"] = order.get(l["product_id"], 0)
     notes = {r["product_id"]: r for r in rows(conn.execute(
         "SELECT product_id, note, user_name, updated_at FROM check_notes WHERE job_id = ? AND direction = ?", (jid, direction)))}
     for l in lines:
