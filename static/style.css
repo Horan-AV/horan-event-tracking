@@ -1020,3 +1020,9 @@ tr.foldable:hover td { background: color-mix(in srgb, var(--brand) 6%, var(--sur
 .patch-chip.ok { color: var(--ok, #1f7a4a); border-color: currentColor; }
 .zoho-row { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; border-bottom: 1px dashed var(--border); }
 .zoho-box .actions { flex-wrap: wrap; }
+
+/* check out / in: linked view (accessories under their item) */
+.check-table.linked tr.acc td { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+.check-table.linked tr.acc td:first-child { padding-left: calc(10px + (var(--depth, 1) - 1) * 18px); }
+.check-table.linked tr.acc strong { font-weight: 600; }
+.check-page .card > header .actions { flex-wrap: wrap; }

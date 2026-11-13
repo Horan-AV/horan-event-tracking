@@ -1188,6 +1188,26 @@ class TestCalendarFeed(ServerCase):
         self.assertEqual(self.c.request("GET", f"/cal/{new}.ics", headers={}, raw=True)[0], 404)
 
 
+class TestCheckLinkedView(ServerCase):
+    def test_lines_know_which_item_they_go_with(self):
+        job = self.new_job(status="confirmed")
+        k12 = self.product("AUD-K12")
+        self.c.post(f"/jobs/{job['id']}/items", {"product_id": k12["id"], "quantity": 2})   # brings its accessories
+        lines = self.c.get(f"/jobs/{job['id']}/check?dir=out")[1]["lines"]
+        by = {l["sku"]: l for l in lines}
+        self.assertIsNone(by["AUD-K12"]["parent"])
+        accessories = [l for l in lines if l["parent"] and l["parent"].get("product_id") == k12["id"]]
+        self.assertTrue(accessories, lines)
+        self.assertTrue(all(l["order"] > by["AUD-K12"]["order"] for l in accessories))
+        # an accessory that's also on the job in its own right first stays a line of its own
+        stand = accessories[0]
+        job2 = self.new_job(status="confirmed")
+        self.c.post(f"/jobs/{job2['id']}/items", {"product_id": stand["product_id"], "quantity": 1})
+        self.c.post(f"/jobs/{job2['id']}/items", {"product_id": k12["id"], "quantity": 1})
+        lines2 = {l["product_id"]: l for l in self.c.get(f"/jobs/{job2['id']}/check?dir=out")[1]["lines"]}
+        self.assertIsNone(lines2[stand["product_id"]]["parent"])
+
+
 class TestSettings(ServerCase):
     def test_layout_is_checked(self):
         bad = json.dumps({"logo_position": "sideways", "colour": "red;}", "title": "Estimate", "evil": 1, "show_rate": 0})

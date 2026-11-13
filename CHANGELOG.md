@@ -2,6 +2,13 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.31.0 — 2026-11-14 · Linked view for check out and in, and no more jumping to the top
+
+- Check out and check in have a Default / Linked switch (each device remembers it). Default lists items by category, as before. Linked puts each item's accessories straight under it — the stands, cables and PSUs with the speaker or radio mic they go with — and package, stage and cable run contents under their name, in the job's order.
+- Fix: on check out and check in, ticking an item by hand (+, −, ✓ All, Undo) jumped the page back to the top. It now stays where you are, and the scan box is still ready for the next scan.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.30.0 — 2026-11-13 · Patch sheets, terms of hire, calendar feed, Zoho quotes, client payment terms, and fixes
 
 - Fix: sending a job to Zoho Books marked it Invoiced, so it disappeared from your open jobs — and, because Invoiced jobs don't reserve stock, a job invoiced before its hire freed its kit for other bookings. Now the job's status only changes if you tick Mark this job as Invoiced (completed) when sending it. Invoicing several jobs with “Mark finished jobs as Invoiced” only changes jobs whose hire is over, and jobs invoiced in advance are tagged “invoiced” in the list.
