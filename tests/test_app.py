@@ -489,7 +489,9 @@ class TestTailscale(unittest.TestCase):
         self.assertEqual((t["state"], t["auth_url"]), ("needs_login", "https://login.tailscale.com/a/abc123"))
         with open(self.log) as f:
             calls = f.read()
-        self.assertIn("pkexec /bin/sh -c systemctl enable --now tailscaled", calls)
+        self.assertIn("pkexec /bin/sh -c", calls)
+        self.assertIn("systemctl start tailscaled", calls)
+        self.assertIn("tailscaled.sock", calls)   # waits for the service to be ready, not a fixed time
         self.assertIn("tailscale up", calls)
 
         # a sign-in link that isn't Tailscale's is never passed on
@@ -621,6 +623,13 @@ class TestHttpsFromAnotherDevice(unittest.TestCase):
         n = self.call("GET", "/api/network", scheme="https")[1]
         self.assertEqual((n["https"]["enabled"], n["https"]["active"], n["https"]["error"]), (True, True, ""))
         self.assertEqual(self.call("GET", "/jobs")[0], 301)   # plain http is sent to https
+        # ...except setting a device up to trust the certificate, which holds no secret
+        status, page = self.call("GET", "/trust")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Install in Firefox", page)
+        self.assertEqual(self.call("GET", "/ca.crt")[0], 200)
+        self.assertEqual(self.call("GET", "/static/trust.css")[0], 200)
+        self.assertEqual(self.call("POST", "/api/login", {"passcode": self.PASSCODE})[0], 400)   # never a sign-in
 
         # and back off again, over https
         status, n = self.call("PUT", "/api/network/https", {"enabled": False}, scheme="https")
@@ -753,7 +762,8 @@ class TestTailscaleFromAnotherDevice(unittest.TestCase):
         self.assertEqual((t["state"], t["auth_url"]), ("needs_login", "https://login.tailscale.com/a/xyz"))
         with open(self.log) as f:
             calls = f.read()
-        self.assertIn("sudo /bin/sh -c systemctl enable --now tailscaled", calls)
+        self.assertIn("sudo /bin/sh -c", calls)
+        self.assertIn("systemctl start tailscaled", calls)
 
         # the server's admin password is used once and kept nowhere
         self.assertNotIn(self.SUDO, calls)
@@ -953,6 +963,229 @@ class TestCategories(ServerCase):
         icons = self.c.get("/settings")[1]["custom_icons"]
         self.assertIn("cat:gizmos", icons)
         self.assertNotIn("cat:gadgets", icons)
+
+
+class FakeZoho:
+    """A stand-in for Zoho's sign-in and Books API, recording what the app sends."""
+
+    def __init__(self):
+        import http.server
+        import threading
+        self.calls = []
+        fake = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _reply(self, obj):
+                body = json.dumps(obj).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                fake.calls.append(("GET", self.path, None))
+                if self.path.startswith("/books/v3/contacts"):
+                    return self._reply({"code": 0, "contacts": [{"contact_id": "C1", "contact_name": "Zed Events",
+                                                                 "company_name": "Zed Events"}]})
+                self._reply({"code": 0})
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n).decode() if n else ""
+                if self.path.startswith("/oauth/v2/token"):
+                    return self._reply({"access_token": "tok", "expires_in": 3600})
+                body = json.loads(raw) if raw else {}
+                fake.calls.append(("POST", self.path, body))
+                if self.path.startswith("/books/v3/invoices"):
+                    return self._reply({"code": 0, "invoice": {"invoice_id": "I1", "total": 1,
+                                                               "invoice_number": body.get("invoice_number") or "INV-000009"}})
+                if self.path.startswith("/books/v3/estimates"):
+                    return self._reply({"code": 0, "estimate": {"estimate_id": "E1", "total": 1,
+                                                                "estimate_number": body.get("estimate_number") or "EST-1"}})
+                self._reply({"code": 0})
+            do_PUT = do_POST
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def last(self, prefix):
+        return next(c for c in reversed(self.calls) if c[0] == "POST" and c[1].startswith(prefix))
+
+
+class TestInvoicingAndZoho(ServerCase):
+    def connect_zoho(self):
+        import sqlite3
+        self.zoho = FakeZoho()
+        self.addCleanup(self.zoho.server.shutdown)
+        db = sqlite3.connect(os.path.join(self.tmp.name, "rms.db"))
+        for k, v in {"zoho_accounts_url": self.zoho.url, "zoho_api_domain": self.zoho.url, "zoho_client_id": "id",
+                     "zoho_client_secret": "secret", "zoho_refresh_token": "refresh", "zoho_org_id": "42"}.items():
+            db.execute("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (k, v))
+        db.commit()
+        db.close()
+        self.c.put("/zoho", {"numbering": "app"})   # the default: Zoho takes the app's numbers
+
+    def zed_job(self, **extra):
+        status, c = self.c.post("/contacts", {"name": "Zed Events", "company": "Zed Events", **extra.pop("client", {})})
+        self.assertEqual(status, 200, c)
+        job = self.new_job(contact_id=c["id"], reference="PO-778", **extra)
+        _, job = self.c.post(f"/jobs/{job['id']}/items", {"product_id": self.product("AUD-LA12")["id"], "quantity": 1})
+        return job
+
+    def test_client_invoice_prefix_and_payment_terms(self):
+        job = self.zed_job(client={"invoice_prefix": "ZED-", "payment_terms": "0"})
+        inv = self.c.get(f"/jobs/{job['id']}")[1]["invoice"]
+        self.assertEqual((inv["number"], inv["terms"], inv["due"]), (f"ZED-{job['number']}", "Due on receipt", inv["date"]))
+        cid = job["contact_id"]
+        self.c.put(f"/contacts/{cid}", {"name": "Zed Events", "payment_terms": "eom", "invoice_prefix": ""})
+        inv = self.c.get(f"/jobs/{job['id']}")[1]["invoice"]
+        import datetime as dt
+        d = dt.date.fromisoformat(inv["date"])
+        nxt = (d.replace(day=1) + dt.timedelta(days=32)).replace(day=1)
+        self.assertEqual(inv["due"], ((nxt + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)).isoformat())
+        self.assertEqual(inv["terms"], "Due end of next month")
+        self.assertFalse(inv["number"].startswith("ZED-"))
+        self.assertEqual(self.c.put(f"/contacts/{cid}", {"name": "Zed Events", "payment_terms": "net-ish"})[0], 400)
+        self.assertEqual(self.c.put(f"/contacts/{cid}", {"name": "Zed Events", "invoice_prefix": "has space"})[0], 400)
+
+    def test_zoho_invoice_uses_the_job_number_and_the_client_po(self):
+        self.connect_zoho()
+        job = self.zed_job(start_date="2030-05-01", end_date="2030-05-02", status="confirmed")
+        status, out = self.c.post(f"/jobs/{job['id']}/zoho", {})
+        self.assertEqual(status, 200, out)
+        method, path, body = self.zoho.last("/books/v3/invoices")
+        self.assertIn("ignore_auto_number_generation=true", path)
+        self.assertEqual(body["invoice_number"], job["number"])        # the same number in both places
+        self.assertEqual(body["reference_number"], "PO-778")           # Zoho's Order Number is the client's PO
+        self.assertEqual((body["payment_terms"], body["payment_terms_label"]), (30, "Net 30"))
+        # sending it doesn't mark the job Invoiced (or hide it, or free its kit) unless you ask
+        self.assertEqual((out["status"], out["zoho_invoice_number"]), ("confirmed", job["number"]))
+        self.assertEqual(self.c.get("/jobs?status=confirmed")[0], 200)
+        self.assertIn(job["id"], [j["id"] for j in self.c.get("/jobs?status=confirmed")[1]])
+        out = self.c.post(f"/jobs/{job['id']}/zoho", {"mark_invoiced": True})[1]
+        self.assertEqual(out["status"], "invoiced")
+        # or let Zoho number its own invoices
+        self.c.put("/zoho", {"numbering": "zoho"})
+        self.c.post(f"/jobs/{job['id']}/zoho", {})
+        self.assertNotIn("invoice_number", self.zoho.last("/books/v3/invoices")[2])
+
+    def test_zoho_quote(self):
+        self.connect_zoho()
+        job = self.zed_job()
+        status, out = self.c.post(f"/jobs/{job['id']}/zoho/estimate", {})
+        self.assertEqual(status, 200, out)
+        _, path, body = self.zoho.last("/books/v3/estimates")
+        self.assertEqual((body["estimate_number"], body["reference_number"]), (job["number"], "PO-778"))
+        self.assertIn("expiry_date", body)
+        self.assertNotIn("due_date", body)
+        self.assertEqual((out["zoho_estimate_number"], out["status"]), (job["number"], "quote"))  # an enquiry is now quoted
+        self.c.post(f"/jobs/{job['id']}/zoho/estimate", {})
+        self.assertTrue(self.zoho.last("/books/v3/estimates/E1"))   # the second time updates it
+        out = self.c.post(f"/jobs/{job['id']}/zoho/estimate/unlink", {})[1]
+        self.assertIsNone(out["zoho_estimate_id"])
+
+    def test_invoicing_ahead_keeps_the_job_and_its_kit(self):
+        job = self.zed_job(start_date="2031-01-10", end_date="2031-01-11", status="confirmed")
+        status, r, _ = self.c.request("POST", "/api/invoices/pdf", {"ids": [job["id"]], "doc": "invoice", "mark_invoiced": True}, raw=True)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.c.get(f"/jobs/{job['id']}")[1]["status"], "confirmed")   # still to happen
+        old = self.zed_job(start_date="2020-01-10", end_date="2020-01-11", status="returned")
+        self.c.request("POST", "/api/invoices/pdf", {"ids": [old["id"]], "doc": "invoice", "mark_invoiced": True}, raw=True)
+        self.assertEqual(self.c.get(f"/jobs/{old['id']}")[1]["status"], "invoiced")
+
+
+class TestPatch(ServerCase):
+    def test_dmx_frequencies_and_audio(self):
+        _, light = self.c.post("/products", {"name": "Wash Light", "sku": "LX-T-WASH", "quantity": 8, "dmx_channels": 16})
+        _, mic = self.c.post("/products", {"name": "Radio Mic", "sku": "RF-T-MIC", "quantity": 4, "wireless": 1,
+                                           "rf_band": "G50 470–534 MHz"})
+        job = self.new_job()
+        self.c.post(f"/jobs/{job['id']}/items", {"product_id": light["id"], "quantity": 3})
+        job = self.c.post(f"/jobs/{job['id']}/items", {"product_id": mic["id"], "quantity": 2})[1]
+        status, p = self.c.get(f"/jobs/{job['id']}/patch")
+        self.assertEqual(status, 200, p)
+        self.assertEqual([(l["name"], l["footprint"], len(l["units"])) for l in p["dmx"]], [("Wash Light", 16, 3)])
+        self.assertEqual(p["rf"][0]["range"], [470.0, 534.0])
+        li, ri = p["dmx"][0]["item_id"], p["rf"][0]["item_id"]
+        status, p = self.c.put(f"/jobs/{job['id']}/patch", {
+            "dmx": [{"item_id": li, "footprint": 16, "units": [{"u": 1, "a": 1, "n": "FOH 1"}, {"u": 1, "a": 17}, {"u": 2, "a": 1}]}],
+            "rf": [{"item_id": ri, "units": [{"f": "606.5", "n": "Presenter"}, {"f": ""}]}],
+            "audio": {"inputs": [{"ch": "1", "source": "Kick", "mic": "Beta 91", "phantom": "Y"}, {"ch": "", "source": ""}],
+                      "outputs": [{"out": "1", "dest": "Wedge 1"}]}})
+        self.assertEqual(status, 200, p)
+        self.assertEqual([(u["u"], u["a"]) for u in p["dmx"][0]["units"]], [(1, 1), (1, 17), (2, 1)])
+        self.assertEqual(p["rf"][0]["units"][0]["f"], "606.500")
+        self.assertEqual(len(p["audio"]["inputs"]), 1)                 # empty lines are dropped
+        self.assertEqual(p["audio"]["outputs"][0]["dest"], "Wedge 1")
+        # the job's lines carry it, for the chips on the job page
+        line = next(i for i in self.c.get(f"/jobs/{job['id']}")[1]["items"] if i["id"] == li)
+        self.assertEqual(json.loads(line["patch"])["dmx"][0]["n"], "FOH 1")
+        for bad in ({"dmx": [{"item_id": li, "footprint": 16, "units": [{"u": 1, "a": 500}]}]},   # runs past 512
+                    {"dmx": [{"item_id": li, "footprint": 16, "units": [{"u": 1, "a": 0}]}]},
+                    {"rf": [{"item_id": ri, "units": [{"f": "loud"}]}]},
+                    {"dmx": [{"item_id": 999999, "units": []}]}):
+            self.assertEqual(self.c.put(f"/jobs/{job['id']}/patch", bad)[0], 400, bad)
+
+
+class TestStageBolts(ServerCase):
+    def test_bolted_decks(self):
+        decks = self.c.get("/stage-decks")[1]
+        self.assertTrue(decks)
+        _, bolt = self.c.post("/products", {"name": "M10 Deck Bolt", "sku": "BOLT-M10", "quantity": 400})
+        _, nut = self.c.post("/products", {"name": "M10 Nut", "sku": "NUT-M10", "quantity": 400})
+        fixings = [f["id"] for f in self.c.get("/stage-extras")[1]["fixings"]]
+        self.assertIn(bolt["id"], fixings)
+        job = self.new_job()
+        status, out = self.c.post(f"/jobs/{job['id']}/stage", {
+            "width": 4, "depth": 2, "count": 1, "deck_ids": [d["id"] for d in decks], "join": "bolts",
+            "bolt_product_id": bolt["id"], "nut_product_id": nut["id"], "bolts_per_joint": 2, "clamp_all": True})
+        self.assertEqual(status, 200, out)
+        joints = out["stage_plan"]["joints"]
+        self.assertGreater(joints, 0)
+        kids = {i["product_id"]: i["quantity"] for i in out["items"] if i["parent_item_id"]}
+        self.assertEqual((kids.get(bolt["id"]), kids.get(nut["id"])), (joints * 2, joints * 2))
+        stage = next(i for i in out["items"] if i["product_id"] is None and not i["parent_item_id"])
+        # switch it to clamps: the bolts and nuts go
+        clamp = self.c.get("/stage-extras")[1]["clamps"][0]["id"]
+        meta = json.loads(stage["meta"])
+        out = self.c.put(f"/stages/{stage['id']}", {"join": "clamps", "clamp_product_id": clamp,
+                                                     "clamp_points": meta["clamps"]["points"]})[1]
+        kids = {i["product_id"]: i["quantity"] for i in out["items"] if i["parent_item_id"]}
+        self.assertNotIn(bolt["id"], kids)
+        self.assertEqual(kids.get(clamp), joints)
+
+
+class TestCalendarFeed(ServerCase):
+    def test_feed(self):
+        job = self.new_job(name="Gala, dinner", start_time="09:00", end_time="18:00", status="confirmed", venue="Hall; East")
+        status, c = self.c.put("/calendar", {"on": True})
+        self.assertEqual(status, 200, c)
+        url = c["urls"][0]
+        token = url.rsplit("/", 1)[1][:-4]
+        status, r, data = self.c.request("GET", f"/cal/{token}.ics", headers={}, raw=True)
+        self.assertEqual(status, 200)
+        self.assertTrue(r.getheader("Content-Type").startswith("text/calendar"))
+        text = data.decode()
+        self.assertTrue(text.startswith("BEGIN:VCALENDAR\r\n") and text.endswith("END:VCALENDAR\r\n"))
+        self.assertIn(f"SUMMARY:{job['number']} Gala\\, dinner", text)
+        self.assertIn("DTSTART:20300110T090000", text)
+        self.assertIn("LOCATION:Hall\\; East", text)
+        self.assertTrue(all(len(line.encode()) <= 75 for line in text.split("\r\n")))
+        # only the kinds of job you choose
+        self.c.put("/calendar", {"statuses": ["provisional"]})
+        self.assertNotIn(job["number"], self.c.request("GET", f"/cal/{token}.ics", headers={}, raw=True)[2].decode())
+        # a new link stops the old one; a wrong one never works
+        new = self.c.put("/calendar", {"reset": True})[1]["urls"][0].rsplit("/", 1)[1][:-4]
+        self.assertNotEqual(new, token)
+        self.assertEqual(self.c.request("GET", f"/cal/{token}.ics", headers={}, raw=True)[0], 404)
+        self.assertEqual(self.c.request("GET", f"/cal/{new}.ics", headers={}, raw=True)[0], 200)
+        self.c.put("/calendar", {"on": False})
+        self.assertEqual(self.c.request("GET", f"/cal/{new}.ics", headers={}, raw=True)[0], 404)
 
 
 class TestSettings(ServerCase):

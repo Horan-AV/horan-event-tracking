@@ -1,0 +1,15 @@
+/* the page for setting up a device to trust the app's HTTPS (/trust) */
+:root { color-scheme: light dark; --brand: #1f5c3d; --bg: #f3f4f1; --surface: #fff; --text: #1b201e; --muted: #5f6762; --border: #dfe3dc; --warn: #fff4d6; }
+@media (prefers-color-scheme: dark) { :root { --bg: #121514; --surface: #1b1f1d; --text: #e8ebe9; --muted: #a2aaa5; --border: #2f3531; --warn: #3a3118; } }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 720px; margin: 24px auto; padding: 20px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+h1 { font-size: 22px; margin: 0 0 8px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn { display: inline-block; padding: 9px 14px; border-radius: 8px; border: 1px solid var(--border); color: var(--text); text-decoration: none; font-weight: 600; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+.steps li { margin-bottom: 8px; }
+.fp { word-break: break-all; font-size: 13px; }
+.muted { color: var(--muted); font-size: 13px; }
+.banner.warn { background: var(--warn); border-radius: 8px; padding: 10px 12px; }
+a { color: var(--brand); }
+@media (prefers-color-scheme: dark) { a { color: #7fc79d; } }

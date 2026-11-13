@@ -766,6 +766,12 @@ function productFields(type, { cats, subcats = [], cableTypes, joinerOpts, track
       help: 'Counted when working out how many extension leads and sockets a job needs — even if you don’t know its power draw.' },
     { name: 'power_watts', label: 'Watts', type: 'number', min: 0, step: 'any', half: true, placeholder: 'e.g. 400', group: 'k-powered' },
     { name: 'power_amps', label: 'Amps', type: 'number', min: 0, step: 'any', half: true, placeholder: 'e.g. 1.7', group: 'k-powered' },
+    { type: 'heading', label: 'DMX and radio', help: 'For the patch sheet: lighting gets DMX addresses, wireless kit gets frequencies.', group: 'k-powered' },
+    { name: 'dmx_channels', label: 'DMX footprint (channels)', type: 'number', min: 0, max: 512, step: 1, half: true, placeholder: 'e.g. 16', group: 'k-powered',
+      help: 'How many DMX channels one unit uses in its usual mode. Leave blank if it isn’t DMX-controlled.' },
+    { name: 'rf_band', label: 'Radio band', half: true, placeholder: 'e.g. G50 470–534 MHz', group: 'k-powered',
+      help: 'Frequencies outside this range are flagged.' },
+    { name: 'wireless', label: 'Wireless (radio mic, in-ear, transmitter…) — give each unit a frequency', type: 'checkbox', group: 'k-powered' },
     ...size,
     { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 }];
 }
@@ -912,6 +918,12 @@ const CONTACT_FIELDS = [
   { type: 'heading', label: 'Job numbers (optional)', help: 'Give this client their own job number prefix and count, e.g. ACME-1, ACME-2. Leave blank to use your usual numbering.' },
   { name: 'job_prefix', label: 'Job number prefix', half: true, placeholder: 'e.g. ACME-' },
   { name: 'next_job_number', label: 'Their next job number', type: 'number', min: 1, step: 1, half: true, placeholder: '1' },
+  { type: 'heading', label: 'Invoices (optional)', help: 'Leave blank to use your usual invoice prefix and payment terms from Settings.' },
+  { name: 'invoice_prefix', label: 'Invoice number prefix', half: true, placeholder: 'e.g. ACME-INV-',
+    help: 'Used instead of your usual invoice prefix for this client.' },
+  { name: 'payment_terms', label: 'Payment terms', type: 'select', half: true, options: [['', 'Usual terms (from Settings)'], ['0', 'Due on receipt'],
+    ['7', 'Net 7'], ['14', 'Net 14'], ['21', 'Net 21'], ['30', 'Net 30'], ['45', 'Net 45'], ['60', 'Net 60'], ['90', 'Net 90'], ['eom', 'Due end of next month']],
+    help: 'Sets the due date on their invoices, in exports and in Zoho.' },
   { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 },
 ];
 
@@ -983,11 +995,11 @@ function importModal(kind) {
 
 /* ---------------------------------------------------------------- router */
 
-const NAV_OF = { roi: 'stock', plan: 'jobs', job: 'jobs', product: 'stock', contact: 'contacts', print: 'jobs', check: 'jobs', vendor: 'vendors' };
+const NAV_OF = { roi: 'stock', plan: 'jobs', patch: 'jobs', job: 'jobs', product: 'stock', contact: 'contacts', print: 'jobs', check: 'jobs', vendor: 'vendors' };
 
 // The app's pages, by the first part of the address.
 const APP_PAGES = new Set(['', 'dashboard', 'jobs', 'job', 'availability', 'stock', 'product', 'roi', 'contacts', 'contact', 'quarantine',
-  'activity', 'requests', 'changelog', 'scan', 'plan', 'check', 'vendors', 'vendor', 'settings', 'print']);
+  'activity', 'requests', 'changelog', 'scan', 'plan', 'patch', 'check', 'vendors', 'vendor', 'settings', 'print']);
 function isAppPath(href) {
   return typeof href === 'string' && href.startsWith('/') && !href.startsWith('//') && APP_PAGES.has(href.split(/[/?#]/)[1] || '');
 }
@@ -1025,6 +1037,7 @@ async function router() {
       case 'changelog': await renderChangelog(view); break;
       case 'scan': await renderScan(view); break;
       case 'plan': await renderPlan(view, Number(a)); break;
+      case 'patch': await renderPatch(view, Number(a)); break;
       case 'check': await renderCheck(view, Number(a), b === 'in' ? 'in' : 'out'); break;
       case 'contact': await renderContact(view, Number(a)); break;
       case 'vendors': await renderVendors(view); break;
@@ -1155,7 +1168,7 @@ async function renderJobs(view) {
           <td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong></td>
           <td>${esc(j.contact_company || j.contact_name || '—')}</td>
           <td>${esc(jobWhen(j))}</td>
-          <td>${esc(j.venue)}</td><td>${pill(j.status)}${overdueBadge(j)}${j.zoho_invoice_number ? `<br><span class="muted mono" title="Zoho Books invoice">${esc(j.zoho_invoice_number)}</span>` : ''}</td>
+          <td>${esc(j.venue)}</td><td>${pill(j.status)}${overdueBadge(j)}${(j.invoice_date || j.zoho_invoice_number) && !["invoiced", "cancelled", "lost"].includes(j.status) ? ` <span class="badge ok" title="Invoice sent before the hire is over: the job keeps its status and its kit">invoiced</span>` : ""}${j.zoho_invoice_number ? `<br><span class="muted mono" title="Zoho Books invoice">${esc(j.zoho_invoice_number)}</span>` : ''}</td>
           <td class="n">${money(j.totals.net)}</td></tr>`).join('')}
           <tr><td colspan="5" class="muted">${plural(jobs.length, 'job')}</td><td class="n"><strong>${money(total)}</strong></td></tr>
         </tbody></table></div>`
@@ -1228,12 +1241,31 @@ function powerText(pw, { short } = {}) {
   return bits.join(' · ');
 }
 
+/** On a lighting or wireless line: its DMX addresses or frequencies at a glance, opening the patch page. */
+function patchChip(job, it) {
+  if (it.kind !== 'rental' || !it.product_id) return '';
+  let p = {};
+  try { p = JSON.parse(it.patch || '{}') || {}; } catch { /* none yet */ }
+  const qty = Math.round(it.quantity || 0);
+  const out = [];
+  if (it.product_dmx_channels > 0) {
+    const set = (p.dmx || []).slice(0, qty).filter((u) => u && u.a);
+    const first = set[0];
+    out.push(`<a class="patch-chip ${set.length >= qty ? 'ok' : ''}" href="/patch/${job.id}" title="DMX addresses">DMX ${first ? `${first.u || 1}.${String(first.a).padStart(3, '0')}${set.length > 1 ? '…' : ''}` : '—'}${set.length < qty ? ` · ${num(qty - set.length)} to set` : ''}</a> `);
+  }
+  if (it.product_wireless) {
+    const set = (p.rf || []).slice(0, qty).filter((u) => u && u.f);
+    out.push(`<a class="patch-chip ${set.length >= qty ? 'ok' : ''}" href="/patch/${job.id}" title="Radio frequencies">RF ${set.length ? `${set[0].f}${set.length > 1 ? '…' : ''}` : '—'}${set.length < qty ? ` · ${num(qty - set.length)} to set` : ''}</a> `);
+  }
+  return out.join('');
+}
+
 function lineRow(job, it, rental) {
   if (isRun(it)) return runRow(it, rental);
   const cdays = job.totals.charge_days;
   return `<tr data-item="${it.id}" class="${it.parent_item_id ? 'acc' : ''}" style="--depth:${it._depth || 0}">
       <td class="desc">${it.parent_item_id ? '<span class="acc-mark" aria-hidden="true">↳</span>' : ''}<input data-f="description" value="${esc(it.description)}" aria-label="Description">
-        <small>${it.added_by && !it.parent_item_id ? `<span class="by-note" title="Added by ${esc(it.added_by)}">${esc(initials(it.added_by))}</span> ` : ''}${it.product_brand ? `<span class="line-brand">${esc(it.product_brand)}</span> · ` : ''}${it.product_id ? `<a href="/product/${it.product_id}">${esc(it.product_sku || 'View stock item')}</a>` : ''}${it.parent_item_id ? ` <span class="muted">· ${job.items.some((x) => x.id === it.parent_item_id && isRun(x)) ? `part of ${groupWord(job.items.find((x) => x.id === it.parent_item_id))}` : (metaOf(it).role === 'package' ? 'in package' : `linked accessory${isIncluded(it) ? ', included' : ''}`)}</span>` : ''}</small></td>
+        <small>${patchChip(job, it)}${it.added_by && !it.parent_item_id ? `<span class="by-note" title="Added by ${esc(it.added_by)}">${esc(initials(it.added_by))}</span> ` : ''}${it.product_brand ? `<span class="line-brand">${esc(it.product_brand)}</span> · ` : ''}${it.product_id ? `<a href="/product/${it.product_id}">${esc(it.product_sku || 'View stock item')}</a>` : ''}${it.parent_item_id ? ` <span class="muted">· ${job.items.some((x) => x.id === it.parent_item_id && isRun(x)) ? `part of ${groupWord(job.items.find((x) => x.id === it.parent_item_id))}` : (metaOf(it).role === 'package' ? 'in package' : `linked accessory${isIncluded(it) ? ', included' : ''}`)}</span>` : ''}</small></td>
       <td class="n"><input data-f="quantity" type="number" step="any" min="0" value="${num(it.quantity)}" aria-label="Quantity"></td>
       <td class="n"><input data-f="unit_price" type="number" step="0.01" min="0" value="${num(it.unit_price)}" aria-label="Price"></td>
       ${rental ? `<td class="n"><input data-f="days" type="number" step="any" min="0" placeholder="${num(cdays)}" value="${it.days ?? ''}" aria-label="Days" title="Blank = job's chargeable days"></td>` : ''}
@@ -1453,6 +1485,8 @@ function drawJob(view) {
           <a class="btn" href="/print/${j.id}/quote">Quotation</a>
           <a class="btn" href="/print/${j.id}/picklist">Prep list</a>
           <a class="btn" href="/print/${j.id}/invoice">Invoice</a>
+          <a class="btn" href="/print/${j.id}/terms">Terms of hire</a>
+          <a class="btn" href="/patch/${j.id}">Patch</a>
           <a class="btn" href="/plan/${j.id}">Room plan</a>
         </div>
         <div class="check-box">
@@ -1517,53 +1551,62 @@ function drawJob(view) {
 
 function zohoJobBox(j) {
   if (!S.settings.zoho_connected) {
-    return `<div class="zoho-box muted"><a href="/settings/zoho">Connect Zoho Books</a> to send this job as an invoice in one click.</div>`;
+    return `<div class="zoho-box muted"><a href="/settings/zoho">Connect Zoho Books</a> to send this job as a quote or an invoice in one click.</div>`;
   }
-  if (j.zoho_invoice_id) {
-    const when = j.zoho_synced_at ? new Date(j.zoho_synced_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
-    return `<div class="zoho-box">
-      <div><span class="zoho-tag">Zoho Books</span> Invoice <strong>${esc(j.zoho_invoice_number || '')}</strong>${when ? ` <span class="muted">· sent ${esc(when)}</span>` : ''}</div>
-      <div class="actions">
-        ${j.zoho_invoice_url ? `<a class="btn small" href="${esc(j.zoho_invoice_url)}" target="_blank" rel="noopener">Open in Zoho ↗</a>` : ''}
-        <button class="btn small" data-zoho>Update in Zoho</button>
-        <button class="btn small danger" data-zoho-unlink title="Forget the link to this Zoho invoice (it isn't deleted in Zoho)">Unlink</button>
-      </div></div>`;
-  }
-  return `<div class="zoho-box"><button class="btn primary" data-zoho>
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6M9 13h6M9 17h6"/></svg>
-    Create invoice in Zoho Books</button></div>`;
+  const when = j.zoho_synced_at ? new Date(j.zoho_synced_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+  const quote = j.zoho_estimate_id
+    ? `<div class="zoho-row"><div><span class="zoho-tag">Zoho Books</span> Quote <strong>${esc(j.zoho_estimate_number || '')}</strong></div>
+        <div class="actions">${j.zoho_estimate_url ? `<a class="btn small" href="${esc(j.zoho_estimate_url)}" target="_blank" rel="noopener">Open ↗</a>` : ''}
+          <button class="btn small" data-zoho="estimate">Update quote</button>
+          <button class="btn small danger" data-zoho-unlink="estimate" title="Forget the link to this Zoho quote (it isn't deleted in Zoho)">Unlink</button></div></div>`
+    : '';
+  const invoice = j.zoho_invoice_id
+    ? `<div class="zoho-row"><div><span class="zoho-tag">Zoho Books</span> Invoice <strong>${esc(j.zoho_invoice_number || '')}</strong>${when ? ` <span class="muted">· sent ${esc(when)}</span>` : ''}</div>
+        <div class="actions">${j.zoho_invoice_url ? `<a class="btn small" href="${esc(j.zoho_invoice_url)}" target="_blank" rel="noopener">Open ↗</a>` : ''}
+          <button class="btn small" data-zoho="invoice">Update invoice</button>
+          <button class="btn small danger" data-zoho-unlink="invoice" title="Forget the link to this Zoho invoice (it isn't deleted in Zoho)">Unlink</button></div></div>`
+    : '';
+  const icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6M9 13h6M9 17h6"/></svg>';
+  const make = [!j.zoho_estimate_id ? `<button class="btn" data-zoho="estimate">${icon} Quote in Zoho</button>` : '',
+    !j.zoho_invoice_id ? `<button class="btn primary" data-zoho="invoice">${icon} Invoice in Zoho</button>` : ''].filter(Boolean).join('');
+  return `<div class="zoho-box">${quote}${invoice}${make ? `<div class="actions">${make}</div>` : ''}</div>`;
 }
 
-async function sendToZoho(view) {
+/** Send the job to Zoho Books as a quote (an "estimate" there) or an invoice — or update the one sent before. */
+async function sendToZoho(view, kind = 'invoice') {
   const j = S.job;
-  const updating = !!j.zoho_invoice_id;
-  if (!j.contact) { toast('Add a client to this job first — Zoho needs a customer for the invoice.', 'error'); return; }
+  const est = kind === 'estimate';
+  const word = est ? 'quote' : 'invoice';
+  const updating = est ? !!j.zoho_estimate_id : !!j.zoho_invoice_id;
+  if (!j.contact) { toast(`Add a client to this job first — Zoho needs a customer for the ${word}.`, 'error'); return; }
   const who = j.contact.company || j.contact.name;
-  const ok = await confirmModal(updating
-    ? `Update Zoho invoice ${j.zoho_invoice_number} with this job's current lines and totals (${money(j.totals.total)}${j.totals.vat_registered === false ? '' : ' inc. VAT'})?`
-    : `Create a draft invoice in Zoho Books for ${who} — ${money(j.totals.total)}${j.totals.vat_registered === false ? '' : ' inc. VAT'}? ${who} must already be a customer in Zoho Books; nothing is created on the customer side.`,
-  { title: updating ? 'Update Zoho invoice?' : 'Create Zoho invoice?', okLabel: updating ? 'Update invoice' : 'Create invoice', danger: false });
-  if (!ok) return;
-  const btn = $('[data-zoho]', view);
-  if (btn) { btn.disabled = true; btn.textContent = 'Sending to Zoho…'; }
-  try {
-    S.job = await post(`/jobs/${j.id}/zoho`, {});
-    drawJob(view);
-    const r = S.job.zoho_result;
-    const mismatch = r.total != null && Math.abs(Number(r.total) - S.job.totals.total) > 0.01;
-    const m = openModal(`<header><h2>Invoice ${esc(r.invoice_number)} ${esc(r.action)}</h2></header>
-      <div class="modal-body">
-        <p>It's in Zoho Books as a ${r.action === 'created' ? 'draft' : 'updated invoice'}. Review it there, then send it to the customer from Zoho.</p>
-        ${mismatch ? `<p class="banner warn">Zoho's total is ${money(r.total)} but this job's total is ${money(S.job.totals.total)}. Check the VAT/tax choice in Settings → External software → Zoho Books.</p>` : ''}
-      </div>
-      <footer><button class="btn" data-close>Close</button>
-        <a class="btn primary" href="${esc(r.url)}" target="_blank" rel="noopener" data-close>Open in Zoho Books ↗</a></footer>`);
-    m.wrap.addEventListener('cancel', m.close);
-    $$('[data-close]', m.el).forEach((b) => b.addEventListener('click', () => setTimeout(m.close, 50)));
-  } catch (ex) {
-    toast(ex.message, 'error');
-    if (btn) drawJob(view);
-  }
+  const total = `${money(j.totals.total)}${j.totals.vat_registered === false ? '' : ' inc. VAT'}`;
+  const over = j.status === 'returned' || (j.status === 'confirmed' && j.end_date < todayISO());
+  const res = await formModal({
+    title: updating ? `Update Zoho ${word}?` : `Create Zoho ${word}?`,
+    intro: updating
+      ? `Update Zoho ${word} ${est ? j.zoho_estimate_number : j.zoho_invoice_number} with this job’s current lines and totals (${total}).`
+      : `Create a draft ${word} in Zoho Books for ${who} — ${total}. ${who} must already be a customer in Zoho Books; nothing is created on the customer side.`,
+    fields: est ? [] : [{ name: 'mark', type: 'checkbox', label: 'Mark this job as Invoiced (completed)',
+      help: over ? 'It moves to Completed jobs.' : 'This job’s hire isn’t over yet. Invoiced jobs move to Completed and stop reserving their kit — leave this unticked if it’s still to happen.' }],
+    values: { mark: 0 },
+    submitLabel: updating ? `Update ${word}` : `Create ${word}`,
+    onSubmit: async (v) => post(`/jobs/${j.id}/zoho${est ? '/estimate' : ''}`, est ? {} : { mark_invoiced: !!v.mark }),
+  });
+  if (!res) return;
+  S.job = res;
+  drawJob(view);
+  const r = S.job.zoho_result;
+  const mismatch = r.total != null && Math.abs(Number(r.total) - S.job.totals.total) > 0.01;
+  const m = openModal(`<header><h2>${est ? 'Quote' : 'Invoice'} ${esc(r.number || r.invoice_number || '')} ${esc(r.action)}</h2></header>
+    <div class="modal-body">
+      <p>It's in Zoho Books as ${r.action === 'created' ? 'a draft' : `an updated ${word}`}. Review it there, then send it to the customer from Zoho.</p>
+      ${mismatch ? `<p class="banner warn">Zoho's total is ${money(r.total)} but this job's total is ${money(S.job.totals.total)}. Check the VAT/tax choice in Settings → External software → Zoho Books.</p>` : ''}
+    </div>
+    <footer><button class="btn" data-close>Close</button>
+      <a class="btn primary" href="${esc(r.url)}" target="_blank" rel="noopener" data-close>Open in Zoho Books ↗</a></footer>`);
+  m.wrap.addEventListener('cancel', m.close);
+  $$('[data-close]', m.el).forEach((b) => b.addEventListener('click', () => setTimeout(m.close, 50)));
 }
 
 async function cableRunModal(view, prefill = {}) {
@@ -1695,6 +1738,12 @@ async function stageEditor(view, itemId) {
   let meta = metaOf(item());
   let clampId = (meta.clamps && meta.clamps.product_id) || (extras.clamps[0] && extras.clamps[0].id) || null;
   let points = ((meta.clamps && meta.clamps.points) || []).map((p) => [p[0], p[1]]);
+  // decks that bolt together: bolts (and nuts) at each joint instead of a clamp
+  const mc = meta.clamps || {};
+  const pick = (re) => (extras.fixings.find((x) => re.test(x.name)) || {}).id || null;
+  let join = mc.join === 'bolts' ? 'bolts' : (!extras.clamps.length && extras.fixings.length ? 'bolts' : 'clamps');
+  let boltId = mc.bolt_id || pick(/bolt/i), nutId = mc.join === 'bolts' ? (mc.nut_id || null) : pick(/\bnut/i), perJoint = mc.per || 2;
+  const fixingId = () => (join === 'bolts' ? boltId : clampId);
   let sides = new Set((meta.skirts && meta.skirts.sides) || []);
   const savedIds = (meta.skirts && meta.skirts.skirt_ids) || [];
   let choice = skirtChoice(extras.skirts, (meta.skirts && meta.skirts.filter) || { height: heightCm(meta.height) });
@@ -1715,13 +1764,21 @@ async function stageEditor(view, itemId) {
     el('svg').innerHTML = stageSVG(live, { px: 700, edit: true });
     const sk = meta.skirts;
     const qty = item().quantity || 1;
+    const fixOpts = (sel, none) => (none ? `<option value="">${none}</option>` : '') + extras.fixings.map((c) => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
     el('side').innerHTML = `
-      <h3>Clamps <span class="muted">${num(points.length)} of ${num(joints.length)} joints</span></h3>
-      ${extras.clamps.length ? `<label class="field"><span>Clamp item</span><select data-e="clamp">${extras.clamps.map((c) => `<option value="${c.id}" ${c.id === clampId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
-        <p class="muted small">Click a joint on the plan to add or remove a clamp.</p>
-        <div class="btn-row"><button class="btn small" data-e="all" ${points.length === joints.length ? 'disabled' : ''}>Clamp every joint</button>
-        <button class="btn small" data-e="none" ${points.length ? '' : 'disabled'}>Clear clamps</button></div>`
-        : '<p class="banner warn">No clamp items in Stock yet. Add one (with “clamp” in its name, e.g. “Stage Deck Clamp”) to place clamps.</p>'}
+      <h3>Joining decks <span class="muted">${num(points.length)} of ${num(joints.length)} joints</span></h3>
+      <label class="field"><span>Joined with</span><select data-e="join"><option value="clamps" ${join === 'clamps' ? 'selected' : ''}>Clamps</option>
+        <option value="bolts" ${join === 'bolts' ? 'selected' : ''}>Bolts and nuts</option></select></label>
+      ${join === 'clamps' ? (extras.clamps.length ? `<label class="field"><span>Clamp item</span><select data-e="clamp">${extras.clamps.map((c) => `<option value="${c.id}" ${c.id === clampId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+        <p class="muted small">Click a joint on the plan to add or remove a clamp.</p>`
+        : '<p class="banner warn">No clamp items in Stock yet. Add one (with “clamp” in its name, e.g. “Stage Deck Clamp”) to place clamps.</p>')
+      : (extras.fixings.length ? `<div class="form-grid tight"><label class="field half"><span>Bolt</span><select data-e="bolt">${fixOpts(boltId)}</select></label>
+          <label class="field half"><span>Nut</span><select data-e="nut">${fixOpts(nutId, 'No nut / captive')}</select></label>
+          <label class="field half"><span>Bolts per joint</span><input data-e="per" type="number" min="1" max="20" step="1" value="${perJoint}"></label></div>
+        <p class="muted small">Click a joint on the plan to bolt it. ${points.length ? `${num(points.length * perJoint)} bolts${nutId ? ` and ${num(points.length * perJoint)} nuts` : ''} per stage.` : ''}</p>`
+        : '<p class="banner warn">No bolts in Stock yet. Add them as items with “bolt” and “nut” in their names (e.g. “M10 Deck Bolt”, “M10 Nut”).</p>')}
+      ${fixingId() ? `<div class="btn-row"><button class="btn small" data-e="all" ${points.length === joints.length ? 'disabled' : ''}>${join === 'bolts' ? 'Bolt' : 'Clamp'} every joint</button>
+        <button class="btn small" data-e="none" ${points.length ? '' : 'disabled'}>Clear</button></div>` : ''}
       <h3>Skirts ${sk && sk.perimeter ? `<span class="muted">${num(sk.perimeter)} m of ${num(2 * (meta.width + meta.depth))} m perimeter</span>` : ''}</h3>
       ${extras.skirts.length ? `<div class="side-checks">${SIDES.map((sd) => `<label class="check"><input type="checkbox" data-e-side="${sd}" ${sides.has(sd) ? 'checked' : ''}> ${SIDE_LABEL[sd]} <span class="muted">${num(sd === 'front' || sd === 'back' ? meta.width : meta.depth)}m</span></label>`).join('')}</div>
         ${skirtSelects(choice, 'data-e-sk')}
@@ -1739,7 +1796,8 @@ async function stageEditor(view, itemId) {
       busy = busy.then(async () => {
         try {
           S.job = await put(`/stages/${itemId}`, {
-            clamp_product_id: points.length ? clampId : null, clamp_points: points,
+            clamp_product_id: points.length && join === 'clamps' ? clampId : null, clamp_points: points,
+            join, bolt_product_id: boltId, nut_product_id: nutId, bolts_per_joint: perJoint,
             skirt_sides: [...sides], skirt_ids: skirtIds.size === choice.pool.length ? [] : [...skirtIds], ...skirtBody(choice.f),
           });
           meta = metaOf(item());
@@ -1751,7 +1809,7 @@ async function stageEditor(view, itemId) {
     }, 250);
   };
   const toggleJoint = (key) => {
-    if (!clampId) { toast('Add a clamp item to Stock first (e.g. “Stage Deck Clamp”).', 'error'); return; }
+    if (!fixingId()) { toast(join === 'bolts' ? 'Add a bolt item to Stock first (e.g. “M10 Deck Bolt”).' : 'Add a clamp item to Stock first (e.g. “Stage Deck Clamp”).', 'error'); return; }
     const i = points.findIndex((p) => ptKey(p) === key);
     if (i >= 0) points.splice(i, 1);
     else points.push(joints.find((p) => ptKey(p) === key));
@@ -1777,6 +1835,10 @@ async function stageEditor(view, itemId) {
   m.el.addEventListener('change', (e) => {
     const t = e.target;
     if (t.matches('[data-e="clamp"]')) { clampId = Number(t.value); if (points.length) save(); return; }
+    if (t.matches('[data-e="join"]')) { join = t.value; draw(); if (points.length) save(); return; }
+    if (t.matches('[data-e="bolt"]')) { boltId = Number(t.value) || null; if (points.length) save(); return; }
+    if (t.matches('[data-e="nut"]')) { nutId = Number(t.value) || null; draw(); if (points.length) save(); return; }
+    if (t.matches('[data-e="per"]')) { perJoint = Math.min(20, Math.max(1, Math.round(Number(t.value) || 1))); draw(); if (points.length) save(); return; }
     if (t.matches('[data-e-side]')) { t.checked ? sides.add(t.dataset.eSide) : sides.delete(t.dataset.eSide); draw(); save(); return; }
     if (t.matches('[data-e-sk]')) {
       const k = t.dataset.eSk;
@@ -1816,11 +1878,18 @@ async function stageModal(view, prefill = {}) {
         ? `<div class="side-checks">${SIDES.map((sd) => `<label class="check"><input type="checkbox" data-s-side="${sd}" ${sd === 'back' ? '' : 'checked'}> ${SIDE_LABEL[sd]}</label>`).join('')}</div>
            <div data-s="skirtsel"></div>`
         : '<small class="muted">Give a skirt item a “Skirt length” in Stock to work out skirts here.</small>'}</div>
-      <div class="field half"><span>Clamps</span>${extras.clamps.length
-        ? `<select data-s="clamp">${extras.clamps.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
-           <label class="check"><input type="checkbox" data-s="clamp_all"> Clamp every joint now</label>
-           <small class="muted">Or pick joints by clicking them on the plan after adding.</small>`
-        : '<small class="muted">Add a clamp item to Stock (with “clamp” in its name) to place clamps.</small>'}</div>
+      <div class="field half"><span>Joined with</span>
+        <select data-s="join"><option value="clamps">Clamps</option><option value="bolts" ${!extras.clamps.length && extras.fixings.length ? 'selected' : ''}>Bolts and nuts</option></select>
+        <div data-s="join-clamps">${extras.clamps.length
+          ? `<select data-s="clamp">${extras.clamps.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>`
+          : '<small class="muted">Add a clamp item to Stock (with “clamp” in its name) to place clamps.</small>'}</div>
+        <div data-s="join-bolts" hidden>${extras.fixings.length
+          ? `<select data-s="bolt" aria-label="Bolt">${extras.fixings.map((c) => `<option value="${c.id}" ${/bolt/i.test(c.name) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+             <select data-s="nut" aria-label="Nut"><option value="">No nut / captive</option>${extras.fixings.map((c) => `<option value="${c.id}" ${/\bnut/i.test(c.name) && !/bolt/i.test(c.name) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+             <label class="check">Bolts per joint <input data-s="perjoint" type="number" min="1" max="20" step="1" value="2" style="width:64px"></label>`
+          : '<small class="muted">Add bolts and nuts to Stock (with “bolt” and “nut” in their names) to use them.</small>'}</div>
+        <label class="check"><input type="checkbox" data-s="clamp_all"> Fix every joint now</label>
+        <small class="muted">Or pick joints by clicking them on the plan after adding.</small></div>
     </div>
     <div class="modal-body"><div data-s="preview" class="muted">Enter the stage size to see the deck layout.</div></div>
     <footer><button class="btn" data-x>Cancel</button><button class="btn primary" data-s="add" disabled>Add to job</button></footer>`, { wide: true });
@@ -1839,6 +1908,10 @@ async function stageModal(view, prefill = {}) {
     ...skirtBody(sChoice.f),
     clamp_product_id: el('clamp') ? Number(el('clamp').value) : null,
     clamp_all: !!(el('clamp_all') && el('clamp_all').checked),
+    join: el('join').value,
+    bolt_product_id: el('bolt') ? Number(el('bolt').value) || null : null,
+    nut_product_id: el('nut') ? Number(el('nut').value) || null : null,
+    bolts_per_joint: el('perjoint') ? Number(el('perjoint').value) || 1 : 1,
   });
   let sChoice = skirtChoice(extras.skirts, {});
   let heightPicked = false;  // once you pick a skirt height yourself, the stage height stops changing it
@@ -1865,8 +1938,11 @@ async function stageModal(view, prefill = {}) {
       const plan = await post(`/jobs/${S.job.id}/stage`, { ...b, dry_run: true });
       const meta = { width: plan.width, depth: plan.depth, layout: plan.layout,
         deck_names: Object.fromEntries(plan.items.map((i) => [i.product_id, i.size])),
-        skirts: plan.skirts, clamps: { points: b.clamp_all && b.clamp_product_id ? clampPoints(plan.layout) : [] } };
-      const clampName = b.clamp_product_id && (extras.clamps.find((c) => c.id === b.clamp_product_id) || {}).name;
+        skirts: plan.skirts, clamps: { points: b.clamp_all && (b.join === 'bolts' ? b.bolt_product_id : b.clamp_product_id) ? clampPoints(plan.layout) : [] } };
+      const bolts = b.join === 'bolts';
+      const nameOf = (list, id) => id && (list.find((c) => c.id === id) || {}).name;
+      const clampName = bolts ? nameOf(extras.fixings, b.bolt_product_id) : nameOf(extras.clamps, b.clamp_product_id);
+      const perJ = bolts ? b.bolts_per_joint : 1, nutName = bolts && nameOf(extras.fixings, b.nut_product_id);
       el('preview').innerHTML = `<div class="stage-preview">
         <div class="stage-plan">${stageSVG(meta)}</div>
         <div>
@@ -1875,10 +1951,11 @@ async function stageModal(view, prefill = {}) {
           ${plan.items.map((i) => `<tr><td>${esc(i.name)}</td><td class="n"><strong>${num(i.per_stage * plan.count)}</strong></td>
             <td class="n">${num(i.free)}${i.short ? ` <span class="badge bad">${num(i.short)} short</span>` : ''}</td></tr>`).join('')}
           ${plan.legs ? `<tr><td>${esc(plan.legs.name)}</td><td class="n"><strong>${num(plan.legs.per_stage * plan.count)}</strong></td><td></td></tr>` : ''}
-          ${b.clamp_all && clampName ? `<tr><td>${esc(clampName)}</td><td class="n"><strong>${num(plan.joints * plan.count)}</strong></td><td></td></tr>` : ''}
+          ${b.clamp_all && clampName ? `<tr><td>${esc(clampName)}</td><td class="n"><strong>${num(plan.joints * perJ * plan.count)}</strong></td><td></td></tr>` : ''}
+          ${b.clamp_all && clampName && nutName ? `<tr><td>${esc(nutName)}</td><td class="n"><strong>${num(plan.joints * perJ * plan.count)}</strong></td><td></td></tr>` : ''}
           ${plan.skirts ? plan.skirts.items.map((i) => `<tr><td>${esc(i.name)}</td><td class="n"><strong>${num(i.per_stage * plan.count)}</strong></td><td class="n">${i.per_stage * plan.count > i.owned ? `<span class="badge bad">own ${num(i.owned)}</span>` : ''}</td></tr>`).join('') : ''}
           </tbody></table>
-          <p class="muted small">${num(plan.joints)} joints between decks${b.clamp_all ? '' : ' — click them on the plan after adding to place clamps'}.</p>
+          <p class="muted small">${num(plan.joints)} joints between decks${bolts ? `, ${num(perJ)} bolt${perJ === 1 ? '' : 's'} each` : ''}${b.clamp_all ? '' : ` — click them on the plan after adding to ${bolts ? 'bolt them' : 'place clamps'}`}.</p>
           ${plan.skirts ? `<p class="small">Skirt ${num(plan.skirts.perimeter)} m (${esc(skirtDesc(plan.skirts.filter))}): ${esc(skirtBreakdown(plan.skirts))}</p>` : ''}
           ${plan.short ? '<p class="banner warn">Not enough decks are free on these dates. It will still be added and shown as short.</p>' : ''}
         </div></div>`;
@@ -1888,6 +1965,8 @@ async function stageModal(view, prefill = {}) {
       el('add').disabled = true;
     }
   }, 300);
+  const showJoin = () => { const b = el('join').value === 'bolts'; el('join-clamps').hidden = b; el('join-bolts').hidden = !b; };
+  el('join').addEventListener('change', showJoin); showJoin();
   m.el.addEventListener('input', preview);
   m.el.addEventListener('change', preview);
   el('add').onclick = async () => {
@@ -2072,7 +2151,8 @@ function bindJob(view) {
         if (res) { toast(`${res.number} created`, 'ok'); go(`/job/${res.id}`); }
         return;
       }
-      if (t.closest('[data-zoho]')) { await sendToZoho(view); return; }
+      const zb = t.closest('[data-zoho]');
+      if (zb) { await sendToZoho(view, zb.dataset.zoho || 'invoice'); return; }
       if (t.closest('[data-cable-run]')) { await cableRunModal(view); return; }
       if (t.closest('[data-stage]')) { await stageModal(view); return; }
       const sp = t.closest('[data-stage-plan]');
@@ -2092,9 +2172,11 @@ function bindJob(view) {
         S.job = await post(`/jobs/${S.job.id}/items`, { product_id: pid, quantity: qty, section_id: S.addSection || null });
         drawJob(view); toast('Added', 'ok'); return;
       }
-      if (t.closest('[data-zoho-unlink]')) {
-        if (await confirmModal(`Forget the link to Zoho invoice ${S.job.zoho_invoice_number}? The invoice stays in Zoho Books. Use this if it was deleted there or you want to create a fresh one.`, { okLabel: 'Unlink', title: 'Unlink Zoho invoice?' })) {
-          S.job = await post(`/jobs/${S.job.id}/zoho/unlink`, {});
+      const zu = t.closest('[data-zoho-unlink]');
+      if (zu) {
+        const est = zu.dataset.zohoUnlink === 'estimate', w = est ? 'quote' : 'invoice';
+        if (await confirmModal(`Forget the link to Zoho ${w} ${est ? S.job.zoho_estimate_number : S.job.zoho_invoice_number}? The ${w} stays in Zoho Books. Use this if it was deleted there or you want to create a fresh one.`, { okLabel: 'Unlink', title: `Unlink Zoho ${w}?` })) {
+          S.job = await post(`/jobs/${S.job.id}/zoho${est ? '/estimate' : ''}/unlink`, {});
           drawJob(view);
         }
         return;
@@ -4237,6 +4319,8 @@ async function renderContact(view, id) {
         ${c.phone ? `<dt>Phone</dt><dd>${esc(c.phone)}</dd>` : ''}
         ${c.address ? `<dt>Address</dt><dd class="notes-text">${esc(c.address)}</dd>` : ''}
         ${c.job_prefix ? `<dt>Job numbers</dt><dd><span class="mono">${esc(c.job_prefix)}${num(c.next_job_number || 1)}</span> <span class="muted small">next</span></dd>` : ''}
+        ${c.invoice_prefix ? `<dt>Invoice prefix</dt><dd><span class="mono">${esc(c.invoice_prefix)}</span></dd>` : ''}
+        ${c.payment_terms ? `<dt>Payment terms</dt><dd>${esc(({ 0: 'Due on receipt', eom: 'Due end of next month' })[c.payment_terms] || `Net ${c.payment_terms}`)}</dd>` : ''}
         ${c.notes ? `<dt>Notes</dt><dd class="notes-text">${esc(c.notes)}</dd>` : ''}
       </dl>${!c.email && !c.phone && !c.address ? '<p class="muted">No contact details yet.</p>' : ''}</div></div>
     </div></div>`;
@@ -4500,7 +4584,7 @@ async function invoicesModal(preselect = null) {
         <div class="form-grid" style="padding:12px 0 0">
           <label class="field half"><span>Accounting software</span><select data-fmt>
             <option value="">Choose…</option>${Object.entries(ACCOUNTING).map(([k, a]) => `<option value="${k}" ${k === sw ? 'selected' : ''}>${esc(a.label)}</option>`).join('')}</select></label>
-          <label class="check half" style="align-self:end"><input type="checkbox" data-mark> Mark them as Invoiced</label>
+          <label class="check half" style="align-self:end" title="Only jobs that are over (returned, or confirmed with their dates past). Jobs still to come keep their status and their kit."><input type="checkbox" data-mark> Mark finished jobs as Invoiced</label>
         </div>
         <p class="muted small" data-how style="margin:6px 0 0">${accHow(sw)}</p>
       </div>
@@ -4775,8 +4859,8 @@ const SETTINGS_TABS = [
   { key: 'company', label: 'Company information', cards: ['company', 'invoicing', 'money', 'jobs-settings', 'documents'], admin: true,
     sub: 'Your details, invoices, VAT and numbering, jobs and documents.' },
   { key: 'electrical', label: 'Electrical', cards: ['power'], admin: true, sub: 'Venue supplies, voltage, safe load and cable runs.' },
-  { key: 'external', label: 'External software', cards: ['zoho', 'accounting'], admin: true,
-    sub: 'Zoho Books, and invoice exports for QuickBooks, Xero, Sage and other accounting / MTD software.' },
+  { key: 'external', label: 'External software', cards: ['zoho', 'accounting', 'calendar'], admin: true,
+    sub: 'Zoho Books, invoice exports for QuickBooks, Xero, Sage and other accounting / MTD software, and a calendar feed.' },
   { key: 'updates', label: 'Updates', cards: ['me', 'update', 'changelog', 'data'], adminCards: ['update', 'data'],
     sub: 'Your details, software updates, the change log and your data.' },
 ];
@@ -4902,6 +4986,7 @@ async function renderSettings(view, tab = location.pathname.split('/')[2] || '')
         </div></div>
         <div class="card settings-section" id="documents"><header><h2>Documents</h2></header><div class="form-grid">
           ${F('quote_terms', 'Quotation terms', { type: 'textarea', rows: 4 })}
+          ${F('hire_terms', 'Terms of hire sheet', { type: 'textarea', rows: 10, help: 'Printed from a job’s Documents → Terms of hire, with lines for the client to sign. These are filled in for each job: {client} {company} {contact} {job_name} {job_number} {dates} {start} {end} {venue} {reference} {your_company} {today}. Have your own terms checked by an adviser.' })}
           <label class="check"><input type="checkbox" name="show_included_accessories" ${s.show_included_accessories === '1' ? 'checked' : ''}>
             List free (included) linked accessories on quotations. They always appear on the prep list.</label>
         </div></div>
@@ -4970,6 +5055,7 @@ async function renderSettings(view, tab = location.pathname.split('/')[2] || '')
             ${backups.length ? `<p class="muted" style="margin-bottom:0;font-size:12px">Previous version available: ${esc(backupLabel(backups[0]))}</p>` : ''}
           </div>`}</div>
         <div class="card settings-section" id="zoho" data-zoho-card><header><h2>Zoho Books</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
+        <div class="card settings-section" id="calendar" data-cal-card><header><h2>Calendar feed</h2></header><div class="body"><p class="muted">Loading…</p></div></div>
         <div class="card settings-section" id="money"><header><h2>Money &amp; numbering</h2></header><div class="form-grid">
           <label class="check" style="flex-basis:100%"><input type="checkbox" name="vat_registered" data-vat-reg ${s.vat_registered !== '0' ? 'checked' : ''}>
             <span><strong>VAT registered</strong> — add VAT to quotes and invoices. Untick it if your business isn’t registered for VAT: no VAT is added or shown, and your VAT number is left off documents.</span></label>
@@ -4991,6 +5077,7 @@ async function renderSettings(view, tab = location.pathname.split('/')[2] || '')
 
   arrangeSettingsTabs(view, meta, tab);
   drawZohoCard(view);
+  drawCalendarCard(view);
   drawIconsCard(view);
   drawSoundsCard(view);
   drawLayoutCard(view, s);
@@ -5025,7 +5112,7 @@ async function renderSettings(view, tab = location.pathname.split('/')[2] || '')
     const form = $('[data-form]', view);
     const data = {};
     for (const el of form.elements) {
-      if (!el.name || el.closest('[data-zoho-card]')) continue;
+      if (!el.name || el.closest('[data-zoho-card], [data-cal-card]')) continue;
       data[el.name] = el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value;
     }
     try {
@@ -5400,19 +5487,31 @@ async function drawTailscaleCard(view, fresh = true) {
 /** The HTTPS part of the Network access card. */
 function httpsHTML(n) {
   const h = n.https || {};
-  const trust = h.active && h.has_ca ? `<details class="net-help" ${n.is_local ? '' : 'open'}><summary>Stop the “not secure” warning on a device</summary>
+  // other devices set themselves up at http://<address>/trust: plain http, so no certificate warning gets in the way
+  const trustUrls = (n.urls || []).map((u) => u.replace(/^https:/, 'http:').replace(/\/$/, '') + '/trust');
+  const notCovered = h.active && h.has_ca && h.host_covered === false
+    ? `<p class="banner warn">You opened the app as <strong>${esc(h.this_host)}</strong>, which the certificate doesn’t cover, so browsers warn even after trusting it.
+        Use one of these addresses instead: ${esc((h.names || []).join(', '))}.</p>` : '';
+  const trust = h.active && h.has_ca ? `${notCovered}<details class="net-help" ${n.is_local ? '' : 'open'}><summary>Stop the “not secure” warning on a device</summary>
       <p class="small" style="margin:8px 0">The warning appears because the certificate was made by this app, not bought from a certificate company. The connection is still encrypted.
-        To remove the warning, tell each device to trust the app’s certificate — once per device:</p>
-      <div class="actions"><a class="btn small primary" href="/ca.crt" download>Download the certificate</a></div>
+        To remove the warning, tell each device to trust the app’s certificate — once per device.</p>
+      ${trustUrls.length ? `<p class="small" style="margin:8px 0"><strong>Easiest:</strong> on the device, open
+        ${trustUrls.map((u) => `<a class="mono" href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join(' or ')} — a page with the download and the steps for that device, which works before signing in.</p>` : ''}
+      <div class="actions"><a class="btn small primary" href="/ca.crt" download>Download (.crt)</a>
+        <a class="btn small" href="/ca.cer" download>Download (.cer)</a>
+        <a class="btn small" href="/ca.crt?install=1">Install in Firefox</a></div>
       <ul class="small">
-        <li><strong>iPhone / iPad:</strong> open this page in Safari, download it, then Settings → General → VPN &amp; Device Management → install the profile. Then Settings → General → About → Certificate Trust Settings → switch it on.</li>
-        <li><strong>Android:</strong> Settings → Security → Encryption &amp; credentials → Install a certificate → CA certificate, and choose the file.</li>
-        <li><strong>Windows:</strong> open the file → Install Certificate → Local Machine → “Trusted Root Certification Authorities”.</li>
+        <li><strong>iPhone / iPad:</strong> open the page in Safari, download it, then Settings → General → VPN &amp; Device Management → install the profile. Then Settings → General → About → Certificate Trust Settings → switch it on.</li>
+        <li><strong>Android:</strong> Settings → Security → Encryption &amp; credentials → Install a certificate → <strong>CA certificate</strong>, and choose the file.</li>
+        <li><strong>Windows:</strong> open the file → Install Certificate → Local Machine → “Trusted Root Certification Authorities”. Restart the browser.</li>
         <li><strong>Mac:</strong> open the file (it goes into Keychain Access), then double-click it there → Trust → “Always Trust”.</li>
-        <li><strong>Linux / Bazzite:</strong> Firefox: Settings → Privacy &amp; Security → View Certificates → Authorities → Import. Chrome: Settings → Privacy and security → Security → Manage certificates → Authorities → Import.</li>
+        <li><strong>Firefox (any computer):</strong> click <strong>Install in Firefox</strong> and tick <strong>Trust this CA to identify websites</strong>. Firefox keeps its own list, so it needs this even when the computer already trusts it.</li>
+        <li><strong>Chrome on Linux / Bazzite:</strong> Settings → Privacy and security → Security → Manage certificates → Authorities (or Local certificates → Installed by you) → Import, and tick “Trust this certificate for identifying websites”.</li>
+        <li><strong>Chrome won’t download it?</strong> Open the <em>/trust</em> address above on that device instead.</li>
       </ul>
       <p class="small" style="margin:6px 0 0">Before trusting it, check the fingerprint the device shows matches this one:<br><span class="mono fp">${esc(h.fingerprint)}</span></p>
-      <p class="muted small" style="margin:6px 0 0">It only works for this app on your own network — it can’t be used for any website on the internet. Valid until ${esc(h.ca_expires ? fmtDate(h.ca_expires) : '—')}.</p></details>` : '';
+      <p class="muted small" style="margin:6px 0 0">It covers ${esc((h.names || []).join(', '))}. Open the app with one of these, or browsers warn even after trusting it.
+        It only works for this app on your own network — it can’t be used for any website on the internet. Valid until ${esc(h.ca_expires ? fmtDate(h.ca_expires) : '—')}.</p></details>` : '';
   const failed = h.enabled && !h.active && h.error
     ? `<p class="banner warn">HTTPS is switched on but couldn’t start, so the app is still using plain http: ${esc(h.error)}</p>` : '';
   if (!n.is_local && !S.meta.is_admin) {
@@ -5519,6 +5618,60 @@ async function drawNetworkCard(view) {
   };
 }
 
+/** A live calendar of your jobs (an .ics link) for Google Calendar, Teamup, Apple Calendar, Outlook… */
+async function drawCalendarCard(view) {
+  const card = $('[data-cal-card]', view);
+  if (!card) return;
+  const body = $('.body', card);
+  let c;
+  try { c = await get('/calendar'); } catch (ex) { body.innerHTML = `<p class="form-error">${esc(ex.message)}</p>`; return; }
+  const LABEL = { enquiry: 'Enquiries', quote: 'Quotations', provisional: 'Provisional', confirmed: 'Confirmed', out: 'On hire', returned: 'Returned', invoiced: 'Invoiced' };
+  const linkRow = (u) => `<div class="net-url"><span class="mono small">${esc(u)}</span><button type="button" class="btn small" data-copy="${esc(u)}">Copy</button></div>`;
+  body.innerHTML = !c.on
+    ? `<p style="margin-top:0">A link your calendar app subscribes to, so your jobs appear there and stay up to date by themselves (calendar apps check it every hour or so).</p>
+       <button type="button" class="btn primary" data-cal="on">Make a calendar link</button>`
+    : `<p style="margin-top:0">Each job is an event over its dates (and times, if it has them). Anyone with the link can see your jobs’ names, dates, venues and clients — share it only with your team.</p>
+      <h3 class="net-h">On your network</h3>
+      <p class="muted small" style="margin:0 0 6px">For Apple Calendar, Outlook or Thunderbird on this network: add a calendar “from the internet” / “subscribe” with this link.</p>
+      <div class="net-urls">${c.urls.map(linkRow).join('')}</div>
+      <h3 class="net-h">Google Calendar, Teamup and phones away from the network</h3>
+      ${c.tailscale ? (c.public_on && c.public_url
+        ? `<p class="net-status on"><span class="dot"></span>Published — this link works from anywhere. Only the calendar is public; the rest of the app isn’t.</p>
+           <div class="net-urls">${linkRow(c.public_url)}</div>
+           <p class="muted small">Google Calendar: Other calendars → + → From URL, and paste it. Teamup: Settings → Calendars → Add calendar → iCalendar feed.</p>
+           <button type="button" class="btn small" data-cal-public="0">Stop publishing</button>`
+        : `<p class="muted small" style="margin:0 0 6px">These fetch the calendar from the internet, so it has to be published. Tailscale Funnel publishes <strong>only this calendar link</strong> — not the rest of the app.</p>
+           <button type="button" class="btn" data-cal-public="1">Publish it with Tailscale</button>
+           <p class="muted small">Or on this computer: <code>${esc(c.funnel_command.join(' '))}</code> (Funnel needs allowing for this computer in Tailscale the first time).</p>`)
+        : '<p class="muted small" style="margin:0">They fetch the calendar from the internet, so they can’t reach this computer directly. Set up Tailscale (Settings → Users → Remote access), then come back here to publish just the calendar link.</p>'}
+      <h3 class="net-h">Which jobs</h3>
+      <div class="side-checks">${c.all_statuses.map((k) => `<label class="check"><input type="checkbox" data-cal-st="${k}" ${c.statuses.includes(k) ? 'checked' : ''}> ${LABEL[k]}</label>`).join('')}</div>
+      <p class="muted small">Jobs from the last six months onwards. Enquiries, quotations and provisional jobs show as “tentative”.</p>
+      <div class="actions"><button type="button" class="btn small" data-cal="reset">New link</button>
+        <button type="button" class="btn small danger" data-cal="off">Turn off</button></div>`;
+  body.onclick = async (e) => {
+    try {
+      const cp = e.target.closest('[data-copy]');
+      if (cp) { await navigator.clipboard.writeText(cp.dataset.copy); toast('Copied', 'ok'); return; }
+      const b = e.target.closest('[data-cal]');
+      if (b) {
+        const k = b.dataset.cal;
+        if (k === 'reset' && !await confirmModal('Make a new link? The old one stops working, so calendars using it need the new one.', { title: 'New calendar link?', okLabel: 'New link' })) return;
+        if (k === 'off' && !await confirmModal('Turn off the calendar feed? Calendars using it stop updating.', { title: 'Turn off the calendar?', okLabel: 'Turn off' })) return;
+        await put('/calendar', k === 'off' ? { on: false } : k === 'reset' ? { reset: true } : { on: true });
+        drawCalendarCard(view); return;
+      }
+      const pb = e.target.closest('[data-cal-public]');
+      if (pb) { pb.disabled = true; pb.textContent = 'Working…'; await post('/calendar/public', { on: pb.dataset.calPublic === '1' }); drawCalendarCard(view); }
+    } catch (ex) { toast(ex.message, 'error'); drawCalendarCard(view); }
+  };
+  body.onchange = async (e) => {
+    if (!e.target.matches('[data-cal-st]')) return;
+    const st = $$('[data-cal-st]', body).filter((x) => x.checked).map((x) => x.dataset.calSt);
+    try { await put('/calendar', { statuses: st }); toast('Calendar updated', 'ok'); } catch (ex) { toast(ex.message, 'error'); drawCalendarCard(view); }
+  };
+}
+
 async function drawZohoCard(view) {
   const card = $('[data-zoho-card]', view);
   if (!card) return;
@@ -5556,7 +5709,9 @@ async function drawZohoCard(view) {
       <label class="field"><span>Organisation</span><select data-z="org"><option>${esc(z.org_name || 'Loading…')}</option></select></label>
       <label class="field"><span>Tax on invoice lines</span><select data-z="tax"><option>${esc(z.tax_name || 'Loading…')}</option></select>
         <small>Pick your standard VAT rate (e.g. Standard Rate 20%) so Zoho's totals match this app's.</small></label>
-      <label class="check"><input type="checkbox" data-z="mark" ${z.mark_invoiced ? 'checked' : ''}> Mark the job as <b>Invoiced</b> when its Zoho invoice is created</label>
+      <p class="muted small" style="margin:0">When you send an invoice you choose whether to mark the job <b>Invoiced</b> (completed). It isn’t done unless you tick it.</p>
+      <label class="check"><input type="checkbox" data-z="ownnum" ${z.numbering !== 'zoho' ? 'checked' : ''}> Give Zoho invoices <b>this app’s invoice number</b> (e.g. the job number, with any invoice prefix), so both show the same number. Untick to let Zoho number them.</label>
+      <p class="muted small" style="margin:4px 0 0">Zoho’s <b>Order Number</b> is the client’s reference / PO from the job, if it has one.</p>
     </div>
     <p class="form-error" data-z-error hidden></p>
     <div class="actions" style="margin-top:12px">
@@ -5612,7 +5767,7 @@ async function zohoSave(view, orgChanged) {
   try {
     const body = {
       org_id: org.value, org_name: org.selectedOptions[0]?.textContent || '',
-      mark_invoiced: $('[data-z="mark"]', card).checked,
+      numbering: $('[data-z="ownnum"]', card).checked ? 'app' : 'zoho',
     };
     if (!orgChanged) { body.tax_id = tax.value; body.tax_name = tax.value ? tax.selectedOptions[0]?.textContent || '' : ''; }
     await put('/zoho', body);
@@ -6316,7 +6471,7 @@ function optionsDocHTML(job, s, doc, L) {
       <div class="doc-company">${L.logo_position === 'center' && !s.has_logo ? esc(details) : `<strong>${esc(s.company_name)}</strong>${details ? `\n${esc(details)}` : ''}`}</div>
     </div>
     <div class="doc-title"><h1>${esc(title)}</h1>
-      <div class="meta">${inv && job.invoice ? `<b>${esc(job.invoice.number)}</b><br>Date: ${esc(fmtDate(job.invoice.date))}<br>Due: ${esc(fmtDate(job.invoice.due))}<br>Job: ${esc(job.number)}${job.invoice.issued ? '' : '<br><span class="no-print muted small">Not issued yet — the date is fixed when it’s downloaded, printed or exported</span>'}`
+      <div class="meta">${inv && job.invoice ? `<b>${esc(job.invoice.number)}</b><br>Date: ${esc(fmtDate(job.invoice.date))}<br>Due: ${esc(fmtDate(job.invoice.due))}${job.invoice.terms ? ` (${esc(job.invoice.terms)})` : ''}<br>Job: ${esc(job.number)}${job.invoice.issued ? '' : '<br><span class="no-print muted small">Not issued yet — the date is fixed when it’s downloaded, printed or exported</span>'}`
         : `<b>${esc(job.number)}</b><br>Date: ${esc(fmtDate(todayISO()))}<br>Status: ${esc(STATUS[job.status])}`}${job.reference ? `<br>Your ref: ${esc(job.reference)}` : ''}</div></div>
     ${(L.header_text || '').trim() ? `<div class="doc-block doc-header-text"><p>${esc(L.header_text)}</p></div>` : ''}
     <div class="doc-parties ${L.show_job ? '' : 'one'}">
@@ -6438,7 +6593,7 @@ function templateData(job, s, doc) {
   return {
     doc: { title: inv ? 'Invoice' : 'Quotation', is_invoice: inv, is_quote: !inv,
       number: inv && job.invoice ? job.invoice.number : job.number, date: fmtDate(inv && job.invoice ? job.invoice.date : todayISO()),
-      due: inv && job.invoice ? fmtDate(job.invoice.due) : '' },
+      due: inv && job.invoice ? fmtDate(job.invoice.due) : '', terms: inv && job.invoice ? (job.invoice.terms || '') : '' },
     company: { name: s.company_name || '', address: s.company_address || '', email: s.company_email || '', phone: s.company_phone || '',
       website: s.company_website || '', number: s.company_number || '', vat_number: registered ? (s.vat_number || '') : '' },
     logo: s.has_logo ? '/logo?v=1' : '', colour: s.brand_primary || '#1f5c3d', accent: s.brand_accent || '#c9a227',
@@ -6515,7 +6670,7 @@ const DEFAULT_DOC_TEMPLATE = `<style>
 
 const TEMPLATE_HELP = `<details class="tpl-help"><summary>What you can use in a template</summary><div class="small">
   <p><code>{{name}}</code> puts in a value (made safe), <code>{{#name}}…{{/name}}</code> repeats for each item in a list or shows only if it has a value, <code>{{^name}}…{{/name}}</code> shows only when it’s empty. Scripts don’t run.</p>
-  <p><b>doc</b>: title, number, date, due, is_invoice, is_quote · <b>company</b>: name, address, email, phone, website, number, vat_number · <b>logo</b> (image address) · <b>colour</b>, <b>accent</b><br>
+  <p><b>doc</b>: title, number, date, due, terms (e.g. Net 30), is_invoice, is_quote · <b>company</b>: name, address, email, phone, website, number, vat_number · <b>logo</b> (image address) · <b>colour</b>, <b>accent</b><br>
   <b>client</b>: display, name, company, address, email, phone · <b>job</b>: number, name, venue, reference, status, dates, start, end, start_time, end_time, hire_days, notes<br>
   <b>groups</b> (Equipment hire / Sales / Labour): label, subtotal, <b>items</b>: description, brand, code, quantity, rate, days, discount, total, summary, is_accessory, is_included<br>
   <b>totals</b>: gross, discount, discount_label (e.g. 10%; empty for a fixed amount), discount_pct, net, vat, vat_rate, total, vat_registered · <b>payment_details</b> (invoices) · <b>terms</b></p></div></details>`;
@@ -6817,10 +6972,10 @@ async function renderPrint(id, doc) {
   S.settings = s;
   document.body.classList.add('printing');
   const root = $('#print-root');
-  const titles = { quote: 'Quotation', invoice: 'Invoice', picklist: 'Prep list', plan: 'Room plan' };
+  const titles = { quote: 'Quotation', invoice: 'Invoice', picklist: 'Prep list', terms: 'Terms of hire', patch: 'Patch sheet', plan: 'Room plan' };
   if (!titles[doc]) doc = 'quote';
   const sw = s.accounting_software;
-  const planData = doc === 'plan' ? await get(`/jobs/${id}/plan`) : null;
+  const planData = doc === 'plan' ? await get(`/jobs/${id}/plan`) : doc === 'patch' ? await get(`/jobs/${id}/patch`) : null;
   // A quote or invoice with an HTML template is shown in a sandboxed frame and printed from there.
   const tpl = (doc === 'quote' || doc === 'invoice') && docLayout(doc, s).method === 'html';
   root.innerHTML = `<div class="print-toolbar">
@@ -6863,6 +7018,221 @@ async function renderPrint(id, doc) {
   document.title = `${titles[doc]} ${job.number} - ${job.name}`;
 }
 
+/* ---------------------------------------------------------------- patch: DMX, radio frequencies, audio lines */
+
+const DMX_SLOTS = 512;
+const AUDIO_IN = [['ch', 'Ch', 'w-xs'], ['source', 'Source / name', ''], ['mic', 'Mic / DI', ''], ['stand', 'Stand', 'w-s'],
+  ['box', 'Stagebox / input', 'w-s'], ['phantom', '48V', 'w-xs'], ['notes', 'Notes', '']];
+const AUDIO_OUT = [['out', 'Out', 'w-xs'], ['dest', 'Destination / mix', ''], ['notes', 'Notes', '']];
+
+/** Overlapping DMX addresses in a universe, and units that run past 512. Returns a set of "item:unit" keys. */
+function dmxClashes(dmx) {
+  const bad = new Map();
+  const used = {};
+  for (const line of dmx) {
+    line.units.forEach((u, i) => {
+      if (!u.a) return;
+      const uni = u.u || 1, from = Number(u.a), to = from + (line.footprint || 1) - 1, key = `${line.item_id}:${i}`;
+      if (to > DMX_SLOTS) bad.set(key, `runs past ${DMX_SLOTS} (to ${to})`);
+      for (const o of (used[uni] ||= [])) {
+        if (from <= o.to && o.from <= to) {
+          bad.set(key, `overlaps ${o.name} at ${uni}.${String(o.from).padStart(3, '0')}`);
+          if (!bad.has(o.key)) bad.set(o.key, `overlaps ${line.name} #${i + 1}`);
+        }
+      }
+      used[uni].push({ from, to, key, name: `${line.name} #${i + 1}` });
+    });
+  }
+  return bad;
+}
+
+/** Duplicate frequencies, ones too close together (under 0.3 MHz apart) and ones outside the band. */
+function rfClashes(rf, spacing = 0.3) {
+  const bad = new Map();
+  const all = [];
+  for (const line of rf) {
+    line.units.forEach((u, i) => {
+      if (!u.f) return;
+      const f = Number(u.f), key = `${line.item_id}:${i}`;
+      if (line.range && (f < line.range[0] || f > line.range[1])) bad.set(key, `outside ${line.band}`);
+      for (const o of all) {
+        if (Math.abs(o.f - f) < 0.0005) { bad.set(key, `same as ${o.name}`); if (!bad.has(o.key)) bad.set(o.key, `same as ${line.name} #${i + 1}`); }
+        else if (Math.abs(o.f - f) < spacing) { bad.set(key, `only ${(Math.abs(o.f - f) * 1000).toFixed(0)} kHz from ${o.name}`); }
+      }
+      all.push({ f, key, name: `${line.name} #${i + 1}` });
+    });
+  }
+  return bad;
+}
+
+async function renderPatch(view, jid) {
+  let P = await get(`/jobs/${jid}/patch`);
+  const job = P.job;
+  let dirty = false;
+  const markDirty = () => { dirty = true; const b = $('[data-save]', view); if (b) { b.disabled = false; b.textContent = 'Save changes'; } };
+  const draw = () => {
+    const dc = dmxClashes(P.dmx), rc = rfClashes(P.rf);
+    const dmxRows = P.dmx.map((line) => line.units.map((u, i) => {
+      const key = `${line.item_id}:${i}`, end = u.a ? Number(u.a) + (line.footprint || 1) - 1 : null;
+      return `<tr class="${dc.has(key) ? 'clash' : ''}"><td>${i === 0 ? `<strong>${esc(line.name)}</strong>` : ''}</td><td class="n muted">#${i + 1}</td>
+        <td><input data-dmx="${key}" data-k="n" value="${esc(u.n || '')}" placeholder="e.g. FOH wash ${i + 1}" aria-label="Label"></td>
+        <td class="n"><input data-dmx="${key}" data-k="u" type="number" min="1" step="1" value="${u.u ?? ''}" placeholder="1" aria-label="Universe"></td>
+        <td class="n"><input data-dmx="${key}" data-k="a" type="number" min="1" max="512" step="1" value="${u.a ?? ''}" aria-label="Start address"></td>
+        <td class="n muted">${end ? `–${end}` : ''}</td>
+        <td class="small">${dc.has(key) ? `<span class="badge warn">${esc(dc.get(key))}</span>` : ''}</td></tr>`;
+    }).join('') + `<tr class="fp-row"><td colspan="7" class="small muted">${esc(line.name)}: <label>footprint <input data-fp="${line.item_id}" type="number" min="1" max="512" step="1" value="${line.footprint}" aria-label="Footprint"> channels</label>
+        ${line.footprint !== line.product_footprint ? ` <span class="muted">(stock item: ${num(line.product_footprint)})</span>` : ''}</td></tr>`).join('');
+    const rfRows = P.rf.map((line) => line.units.map((u, i) => {
+      const key = `${line.item_id}:${i}`;
+      return `<tr class="${rc.has(key) ? 'clash' : ''}"><td>${i === 0 ? `<strong>${esc(line.name)}</strong>${line.band ? `<br><span class="muted small">${esc(line.band)}</span>` : ''}` : ''}</td><td class="n muted">#${i + 1}</td>
+        <td><input data-rf="${key}" data-k="n" value="${esc(u.n || '')}" placeholder="e.g. Presenter ${i + 1}" aria-label="Label"></td>
+        <td class="n"><input data-rf="${key}" data-k="f" inputmode="decimal" value="${esc(u.f || '')}" placeholder="606.500" aria-label="Frequency (MHz)"></td>
+        <td class="small">${rc.has(key) ? `<span class="badge warn">${esc(rc.get(key))}</span>` : ''}</td></tr>`;
+    }).join('')).join('');
+    const audioTable = (kind, cols) => {
+      const list = P.audio[kind];
+      return `<div class="table-wrap"><table class="table patch-table"><thead><tr>${cols.map(([, l, c]) => `<th class="${c}">${l}</th>`).join('')}<th></th></tr></thead><tbody>
+        ${list.map((r, i) => `<tr>${cols.map(([k, , c]) => `<td class="${c}"><input data-au="${kind}:${i}" data-k="${k}" value="${esc(r[k] || '')}" ${k === 'mic' || k === 'source' ? 'list="patch-sources"' : ''} aria-label="${esc(k)}"></td>`).join('')}
+          <td class="nowrap"><button class="icon-btn" data-au-up="${kind}:${i}" title="Move up" aria-label="Move up">↑</button><button class="icon-btn" data-au-del="${kind}:${i}" title="Remove" aria-label="Remove">×</button></td></tr>`).join('')
+          || `<tr><td colspan="${cols.length + 1}" class="empty">No ${kind} yet.</td></tr>`}</tbody></table></div>
+        <div class="actions" style="margin-top:8px"><button class="btn small" data-au-add="${kind}">+ Add ${kind === 'inputs' ? 'an input' : 'an output'}</button>
+          ${kind === 'inputs' ? '<button class="btn small" data-au-add5="inputs">+ Add 8</button>' : ''}</div>`;
+    };
+    view.innerHTML = `<div class="page">
+      <div class="page-head"><div><a class="crumb" href="/job/${job.id}">← ${esc(job.number)} ${esc(job.name)}</a><h1>Patch</h1>
+        <div class="sub">${esc(jobWhen(job))}${job.venue ? ' · ' + esc(job.venue) : ''}</div></div>
+        <div class="actions"><a class="btn" href="/print/${job.id}/patch">Print patch sheet</a>
+          <button class="btn primary" data-save ${dirty ? '' : 'disabled'}>${dirty ? 'Save changes' : 'Saved'}</button></div></div>
+      <datalist id="patch-sources">${P.audio_sources.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
+      <div class="card"><header><h2>Lighting — DMX addresses</h2>${P.dmx.length ? '<button class="btn small" data-auto-dmx>Auto-address</button>' : ''}</header><div class="body">
+        ${P.dmx.length ? `<p class="muted small" style="margin-top:0">Each unit’s universe and start address. Overlaps and units that run past 512 are flagged. <b>Auto-address</b> fills the empty ones in order, after any you’ve set.</p>
+          <div class="table-wrap"><table class="table patch-table"><thead><tr><th>Fixture</th><th class="n">Unit</th><th>Label</th><th class="n w-s">Universe</th><th class="n w-s">Address</th><th class="n w-xs">To</th><th></th></tr></thead>
+          <tbody>${dmxRows}</tbody></table></div>`
+          : '<p class="muted" style="margin:0">No DMX lighting on this job. Give a stock item a <b>DMX footprint</b> (on its page → Edit) and its lines appear here.</p>'}</div></div>
+      <div class="card"><header><h2>Radio frequencies</h2></header><div class="body">
+        ${P.rf.length ? `<p class="muted small" style="margin-top:0">A frequency in MHz for each wireless unit. The same frequency twice, two closer than 300 kHz, or one outside the item’s band is flagged — check intermodulation with your manufacturer’s tools.</p>
+          <div class="table-wrap"><table class="table patch-table"><thead><tr><th>Item</th><th class="n">Unit</th><th>Label</th><th class="n w-s">MHz</th><th></th></tr></thead><tbody>${rfRows}</tbody></table></div>`
+          : '<p class="muted" style="margin:0">No wireless kit on this job. Tick <b>Wireless</b> on a stock item (on its page → Edit) and its lines appear here.</p>'}</div></div>
+      <div class="card"><header><h2>Audio inputs</h2></header><div class="body">${audioTable('inputs', AUDIO_IN)}</div></div>
+      <div class="card"><header><h2>Audio outputs</h2></header><div class="body">${audioTable('outputs', AUDIO_OUT)}
+        ${P.audio_updated ? `<p class="muted small" style="margin:10px 0 0">Audio patch last changed ${esc(fmtDate(P.audio_updated.at.slice(0, 10)))} ${esc(P.audio_updated.at.slice(11, 16))}${P.audio_updated.by ? ` by ${esc(P.audio_updated.by)}` : ''}.</p>` : ''}</div></div>
+    </div>`;
+  };
+  const find = (list, key) => { const [id, i] = key.split(':'); return { line: list.find((l) => String(l.item_id) === id), i: Number(i) }; };
+  const save = async () => {
+    const b = $('[data-save]', view);
+    if (b) b.disabled = true;
+    try {
+      P = await put(`/jobs/${jid}/patch`, {
+        dmx: P.dmx.map((l) => ({ item_id: l.item_id, footprint: l.footprint, units: l.units })),
+        rf: P.rf.map((l) => ({ item_id: l.item_id, units: l.units })),
+        audio: P.audio,
+      });
+      dirty = false; draw(); toast('Patch saved', 'ok');
+    } catch (ex) { toast(ex.message, 'error'); if (b) b.disabled = false; }
+  };
+  view.oninput = (e) => {
+    const t = e.target;
+    if (t.dataset.dmx) { const { line, i } = find(P.dmx, t.dataset.dmx); const v = t.value.trim(); line.units[i][t.dataset.k] = t.dataset.k === 'n' ? v : (v === '' ? null : Number(v)); markDirty(); }
+    else if (t.dataset.rf) { const { line, i } = find(P.rf, t.dataset.rf); line.units[i][t.dataset.k] = t.value.trim(); markDirty(); }
+    else if (t.dataset.fp) { const line = P.dmx.find((l) => String(l.item_id) === t.dataset.fp); line.footprint = Math.max(1, Number(t.value) || 1); markDirty(); }
+    else if (t.dataset.au) { const [k, i] = t.dataset.au.split(':'); P.audio[k][Number(i)][t.dataset.k] = t.value; markDirty(); }
+  };
+  // redraw on change (not every key), so warnings update without losing your place
+  view.onchange = (e) => { if (e.target.dataset.dmx || e.target.dataset.rf || e.target.dataset.fp) { const f = e.target.dataset; const sel = Object.entries(f).map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase())}="${v}"]`).join(''); draw(); const el = $(sel, view); if (el) el.focus(); } };
+  view.onclick = async (e) => {
+    const t = e.target;
+    if (t.closest('[data-save]')) { await save(); return; }
+    if (t.closest('[data-auto-dmx]')) {
+      // fill empty units in order, after the highest address already used in universe 1 (or the next universe)
+      const taken = {};
+      for (const l of P.dmx) l.units.forEach((u) => { if (u.a) (taken[u.u || 1] ||= []).push([Number(u.a), Number(u.a) + l.footprint - 1]); });
+      let uni = 1, next = 1;
+      const free = (a, fp) => !(taken[uni] || []).some(([f, t2]) => a <= t2 && f <= a + fp - 1);
+      for (const l of P.dmx) {
+        for (const u of l.units) {
+          if (u.a) continue;
+          while (next + l.footprint - 1 > DMX_SLOTS || !free(next, l.footprint)) {
+            if (next + l.footprint - 1 > DMX_SLOTS) { uni += 1; next = 1; } else next += 1;
+          }
+          u.u = uni; u.a = next;
+          (taken[uni] ||= []).push([next, next + l.footprint - 1]);
+          next += l.footprint;
+        }
+      }
+      markDirty(); draw(); toast('Addresses filled in — check them, then Save', 'ok');
+      return;
+    }
+    const add = t.closest('[data-au-add], [data-au-add5]');
+    if (add) {
+      const kind = add.dataset.auAdd || add.dataset.auAdd5, n = add.dataset.auAdd5 ? 8 : 1;
+      for (let k = 0; k < n; k++) {
+        const list = P.audio[kind];
+        const last = list.length ? Number(list[list.length - 1][kind === 'inputs' ? 'ch' : 'out']) : 0;
+        list.push(kind === 'inputs' ? { ch: String((last || 0) + 1), source: '', mic: '', stand: '', box: '', phantom: '', notes: '' } : { out: String((last || 0) + 1), dest: '', notes: '' });
+      }
+      markDirty(); draw(); return;
+    }
+    const del = t.closest('[data-au-del]');
+    if (del) { const [k, i] = del.dataset.auDel.split(':'); P.audio[k].splice(Number(i), 1); markDirty(); draw(); return; }
+    const up = t.closest('[data-au-up]');
+    if (up) { const [k, i] = up.dataset.auUp.split(':'); const n = Number(i); if (n > 0) { const l = P.audio[k]; [l[n - 1], l[n]] = [l[n], l[n - 1]]; markDirty(); draw(); } }
+  };
+  view.onkeydown = (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } };
+  // don't lose changes by going somewhere else
+  const leave = (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } };
+  window.addEventListener('beforeunload', leave);
+  const stop = () => { window.removeEventListener('beforeunload', leave); window.removeEventListener('het:navigate', stop); };
+  window.addEventListener('het:navigate', stop);
+  draw();
+  document.title = `Patch ${job.number} - ${job.name}`;
+}
+
+function patchDocBody(P) {
+  if (!P) return '';
+  const dmx = P.dmx.filter((l) => l.units.some((u) => u.a));
+  const rf = P.rf.filter((l) => l.units.some((u) => u.f));
+  const ins = P.audio.inputs || [], outs = P.audio.outputs || [];
+  if (!dmx.length && !rf.length && !ins.length && !outs.length) {
+    return '<div class="doc-block"><p>Nothing patched yet. Open the job and choose <strong>Patch</strong> to add DMX addresses, frequencies and audio lines.</p></div>';
+  }
+  const rowsDmx = dmx.flatMap((l) => l.units.map((u, i) => (u.a ? { l, u, i } : null)).filter(Boolean))
+    .sort((a, b) => (a.u.u || 1) - (b.u.u || 1) || a.u.a - b.u.a);
+  const rowsRf = rf.flatMap((l) => l.units.map((u, i) => (u.f ? { l, u, i } : null)).filter(Boolean)).sort((a, b) => Number(a.u.f) - Number(b.u.f));
+  const tbl = (head, body) => `<table class="doc-table"><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
+  return `${rowsDmx.length ? `<div class="doc-block"><h3>DMX</h3>${tbl(['Universe', 'Address', 'Fixture', 'Unit', 'Label', 'Channels'],
+      rowsDmx.map(({ l, u, i }) => `<tr><td>${num(u.u || 1)}</td><td><strong>${String(u.a).padStart(3, '0')}</strong>–${String(Number(u.a) + l.footprint - 1).padStart(3, '0')}</td><td>${esc(l.name)}</td><td>#${i + 1}</td><td>${esc(u.n || '')}</td><td>${num(l.footprint)}</td></tr>`).join(''))}</div>` : ''}
+    ${rowsRf.length ? `<div class="doc-block"><h3>Radio frequencies</h3>${tbl(['MHz', 'Item', 'Unit', 'Label', 'Band'],
+      rowsRf.map(({ l, u, i }) => `<tr><td><strong>${esc(u.f)}</strong></td><td>${esc(l.name)}</td><td>#${i + 1}</td><td>${esc(u.n || '')}</td><td>${esc(l.band || '')}</td></tr>`).join(''))}</div>` : ''}
+    ${ins.length ? `<div class="doc-block"><h3>Audio inputs</h3>${tbl(AUDIO_IN.map((c) => c[1]), ins.map((r) => `<tr>${AUDIO_IN.map(([k]) => `<td>${esc(r[k] || '')}</td>`).join('')}</tr>`).join(''))}</div>` : ''}
+    ${outs.length ? `<div class="doc-block"><h3>Audio outputs</h3>${tbl(AUDIO_OUT.map((c) => c[1]), outs.map((r) => `<tr>${AUDIO_OUT.map(([k]) => `<td>${esc(r[k] || '')}</td>`).join('')}</tr>`).join(''))}</div>` : ''}`;
+}
+
+/** The terms of hire sheet: your terms from Settings, filled in for this job, with lines to sign. */
+function hireTermsText(job, s) {
+  const c = job.contact || {};
+  const who = c.company || c.name || 'the hirer';
+  const vals = {
+    client: who, company: c.company || '', contact: c.name || '', job_name: job.name, job_number: job.number,
+    dates: jobWhen(job), start: dateTime(job.start_date, job.start_time), end: dateTime(job.end_date, job.end_time),
+    venue: job.venue || 'the venue', reference: job.reference || '', your_company: s.company_name || 'us', today: fmtDate(todayISO()),
+  };
+  return (s.hire_terms || '').replace(/\{(\w+)\}/g, (m, k) => (k in vals ? vals[k] : m));
+}
+function termsDocBody(job, s) {
+  const c = job.contact || {};
+  const text = hireTermsText(job, s).trim();
+  const paras = text ? text.split(/\n\s*\n/).map((p) => `<p>${esc(p.trim())}</p>`).join('')
+    : '<p class="no-print muted">No terms yet — write them in Settings → Company information → Documents.</p>';
+  const sign = (label, name) => `<div class="doc-sign"><h3>${esc(label)}</h3>
+      <div class="sig-line"><span>Signature</span></div>
+      <div class="sig-line"><span>Name</span>${name ? `<em>${esc(name)}</em>` : ''}</div>
+      <div class="sig-line"><span>Date</span></div></div>`;
+  return `<div class="doc-block doc-terms">${paras}</div>
+    <div class="doc-signs">${sign(`For the hirer: ${c.company || c.name || ''}`.replace(/: $/, ''), c.company ? c.name : (c.name || ''))}
+      ${sign(`For ${s.company_name || 'the supplier'}`, '')}</div>`;
+}
+
 function planDocBody(data) {
   if (!data || !data.plan || !data.plan.rooms.length) return '<div class="doc-block"><p>No room plan yet. Open the job and choose <strong>Room plan</strong> to draw one.</p></div>';
   return data.plan.rooms.map((r) => {
@@ -6892,10 +7262,10 @@ function docHTML(job, s, doc, title, planData) {
       <div class="doc-company"><strong>${esc(s.company_name)}</strong>\n${esc(company)}</div>
     </div>
     <div class="doc-title"><h1>${esc(title)}</h1>
-      <div class="meta">${doc === 'invoice' && job.invoice ? `<b>${esc(job.invoice.number)}</b><br>Date: ${esc(fmtDate(job.invoice.date))}<br>Due: ${esc(fmtDate(job.invoice.due))}<br>Job: ${esc(job.number)}${job.invoice.issued ? '' : '<br><span class="no-print muted small">Not issued yet — the date is fixed when it’s downloaded or exported</span>'}`
+      <div class="meta">${doc === 'invoice' && job.invoice ? `<b>${esc(job.invoice.number)}</b><br>Date: ${esc(fmtDate(job.invoice.date))}<br>Due: ${esc(fmtDate(job.invoice.due))}${job.invoice.terms ? ` (${esc(job.invoice.terms)})` : ''}<br>Job: ${esc(job.number)}${job.invoice.issued ? '' : '<br><span class="no-print muted small">Not issued yet — the date is fixed when it’s downloaded or exported</span>'}`
         : `<b>${esc(job.number)}</b><br>${doc === 'picklist' ? 'Printed' : 'Date'}: ${esc(fmtDate(todayISO()))}${doc === 'quote' ? `<br>Status: ${esc(STATUS[job.status])}` : ''}`}</div></div>
     <div class="doc-parties">
-      <div><h3>${doc === 'invoice' ? 'Invoice to' : doc === 'picklist' ? 'Client' : 'Prepared for'}</h3>
+      <div><h3>${doc === 'invoice' ? 'Invoice to' : doc === 'picklist' ? 'Client' : doc === 'terms' ? 'Hirer' : 'Prepared for'}</h3>
         <p>${c ? `<strong>${esc(c.company || c.name)}</strong>${c.company ? `\n${esc(c.name)}` : ''}${c.address ? `\n${esc(c.address)}` : ''}${c.email ? `\n${esc(c.email)}` : ''}${doc === 'picklist' && c.phone ? `\n${esc(c.phone)}` : ''}` : '—'}</p></div>
       <div><h3>Job</h3><p><strong>${esc(job.name)}</strong>${job.venue ? `\n${esc(job.venue)}` : ''}
 ${esc(jobWhen(job))}
@@ -6903,6 +7273,8 @@ Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date)
     </div>${doc === 'picklist' && job.overdue ? `<div class="doc-overdue">OVERDUE — due back ${esc(fmtDate(job.due_back))}, ${plural(job.days_late, 'day')} late</div>` : ''}`;
 
   if (doc === 'plan') return head + planDocBody(planData);
+  if (doc === 'terms') return head + termsDocBody(job, s);
+  if (doc === 'patch') return head + patchDocBody(planData);
   if (doc === 'picklist') {
     const items = job.items.filter((i) => i.kind !== 'service');
     const ids = new Set(items.map((i) => i.id));
@@ -6963,7 +7335,9 @@ Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date)
               <table class="doc-table"><thead><tr><th class="n">Qty</th><th>For this stage${st.quantity > 1 ? `s (${num(st.quantity)})` : ''}</th><th class="box">Out</th></tr></thead><tbody>
                 ${pulls.map((k) => `<tr><td class="n"><strong>${num(k.quantity)}</strong></td><td>${esc(k.product_name || k.description)}</td><td class="box"><span></span></td></tr>`).join('')}
               </tbody></table>
-              <p>${nClamp ? `<strong>${num(nClamp)}</strong> clamp${nClamp === 1 ? '' : 's'} per stage — fit one at each numbered red dot (1–${num(nClamp)}).` : 'No clamps placed.'}</p>
+              <p>${nClamp ? (sm.clamps.join === 'bolts'
+                ? `<strong>${num(nClamp)}</strong> bolted joint${nClamp === 1 ? '' : 's'} per stage — ${num(sm.clamps.per || 1)} bolt${(sm.clamps.per || 1) === 1 ? '' : 's'}${sm.clamps.nut_id ? ' and nut' + ((sm.clamps.per || 1) === 1 ? '' : 's') : ''} at each numbered red dot (1–${num(nClamp)}).`
+                : `<strong>${num(nClamp)}</strong> clamp${nClamp === 1 ? '' : 's'} per stage — fit one at each numbered red dot (1–${num(nClamp)}).`) : 'No clamps or bolts placed.'}</p>
               ${sm.skirts && sm.skirts.per_side ? `<p><strong>Skirt ${num(sm.skirts.perimeter)} m</strong> (gold sides)${skirtDesc(sm.skirts.filter) ? `<br>${esc(skirtDesc(sm.skirts.filter))}` : ''}<br>${sm.skirts.per_side.map((x) => `${SIDE_LABEL[x.side]} ${num(x.length)}m: ${x.pieces.map((pc) => `${pc.count > 1 ? `${num(pc.count)} × ` : ''}${num(pc.length)}m`).join(' + ')}`).join('<br>')}</p>` : '<p>No skirts.</p>'}
             </div></div></figure>`;
       }).join('')}` : '';

@@ -7,6 +7,8 @@ Horan Event Tracking is built to run on your own computer or a server on a netwo
 - **Encryption is optional, and off by default.** Other devices connect over plain `http` unless you turn on **HTTPS** (Settings → Users → Network access, or `horan-rms https on`).
   - With HTTPS off, don't turn on network access on public or venue Wi-Fi.
   - With HTTPS on, the app makes its own certificate authority and certificate. Connections from other devices are encrypted (TLS 1.2 or newer), and plain `http` from another device is redirected and never accepts a sign-in.
+  - Over plain `http`, other devices can still fetch only things that hold no secret: the `/trust` setup page, the certificate (`/ca.crt`, `/ca.cer`) and the app's static files.
+- **Calendar feed (off until you turn it on):** `/cal/<secret>.ics` lists jobs' names, dates, venues and clients to anyone with the link, with no sign-in, so calendar apps can read it. The secret is 32 random characters, compared in constant time; **New link** replaces it and **Turn off** removes it. It's served over plain `http` too (calendar apps don't trust the app's own certificate). If you publish it with Tailscale Funnel, only the `/cal` path is reachable from the internet, not the rest of the app.
   - Devices show a warning until you install the app's certificate on them. Check the fingerprint shown in Settings when you do.
   - The authority is limited to local names (`.local`, `.lan`, `.home`, `.internal`) and private addresses, so even if its key were stolen it could not be used to impersonate a website on the internet.
   - Its keys stay in the data folder (`tls/`), readable only by the account running the app. They aren't in database backups or exports.
