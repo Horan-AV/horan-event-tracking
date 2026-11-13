@@ -1000,3 +1000,23 @@ tr.foldable:hover td { background: color-mix(in srgb, var(--brand) 6%, var(--sur
 .more-panel > button, .more-panel > a { all: unset; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--text); }
 .more-panel > button:hover, .more-panel > a:hover, .more-panel > button:focus-visible, .more-panel > a:focus-visible { background: var(--surface-2); }
 .more-panel > button:disabled { opacity: .5; cursor: default; }
+
+/* terms of hire sheet */
+.doc-terms p { white-space: pre-line; margin: 0 0 10px; line-height: 1.5; }
+.doc-signs { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 26px; break-inside: avoid; }
+.doc-sign h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #555; }
+.sig-line { position: relative; border-bottom: 1px solid #333; height: 34px; margin-bottom: 6px; }
+.sig-line span { position: absolute; left: 0; bottom: 3px; font-size: 11px; color: #666; }
+.sig-line em { position: absolute; left: 60px; bottom: 3px; font-style: normal; }
+@media (max-width: 600px) { .doc-signs { grid-template-columns: 1fr; } }
+
+/* patch page */
+.patch-table input { width: 100%; min-width: 0; padding: 5px 7px; }
+.patch-table .w-xs { width: 64px; } .patch-table .w-s { width: 110px; }
+.patch-table tr.clash td { background: color-mix(in srgb, var(--warn, #f5a623) 12%, transparent); }
+.patch-table .fp-row td { border-top: 0; padding-top: 2px; }
+.patch-table .fp-row input { width: 70px; display: inline-block; padding: 3px 6px; }
+.patch-chip { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); text-decoration: none; color: var(--muted); }
+.patch-chip.ok { color: var(--ok, #1f7a4a); border-color: currentColor; }
+.zoho-row { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; border-bottom: 1px dashed var(--border); }
+.zoho-box .actions { flex-wrap: wrap; }

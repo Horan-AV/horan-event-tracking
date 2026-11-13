@@ -248,6 +248,7 @@ The prep list keeps its own layout.
 **Settings → Company information → Invoices** sets up how invoices are numbered:
 - **Invoice number prefix:** invoice numbers are the prefix plus the job number, e.g. `INV-HAV-1001`.
 - **Payment terms (days):** set each invoice's due date.
+- A client can have their own **Invoice number prefix** and **Payment terms** (Due on receipt, Net 7 to Net 90, or Due end of next month): edit the client. Theirs are used instead of these. The terms show next to the due date on the invoice, and go into exports and Zoho.
 - **Payment details** and **Invoice terms** are printed on every invoice.
 
 **Settings → External software → Accounting software** sets how invoices are exported. Choose QuickBooks Online, Xero, Zoho Books, Sage 50 Accounts, Sage Accounting, or **Other software (generic CSV)**.
@@ -261,7 +262,7 @@ The prep list keeps its own layout.
 **Several jobs.** Go to **Jobs → Invoices…**. It ticks jobs that are on hire or returned and not exported yet; change the ticks as you like. Then:
 - **Download PDF** gives one PDF with each invoice starting on a new page.
 - **Export for…** gives one import file for all of them.
-- Tick **Mark them as Invoiced** to update their status at the same time.
+- Tick **Mark finished jobs as Invoiced** to update their status at the same time. Only jobs that are over (returned, or confirmed with their dates past) are changed: a job invoiced before its hire keeps its status, so it stays in your open jobs and keeps its kit reserved (Invoiced jobs don't hold stock). The jobs list tags it **invoiced**.
 
 The invoice number and date are fixed the first time an invoice is downloaded or exported. Jobs → Invoices… shows which jobs were already exported, and to which software.
 
@@ -308,23 +309,27 @@ Then choose your organisation and VAT rate, for example *Standard Rate 20%*, and
 
 The connection is stored only on this computer. It is never included in exports. **Disconnect** removes it.
 
-### Invoice a job
+### Quote or invoice a job
 
-On the job, click **Create invoice in Zoho Books**. The app then:
+On the job, click **Quote in Zoho** or **Invoice in Zoho**. A quote becomes a draft **estimate** in Zoho, numbered with the job number and valid for 30 days, with your quotation terms; an enquiry moves to Quotation. (Connected before version 1.30? Disconnect and connect once more so Zoho lets the app make quotes.)
+
+For an invoice, the app:
 
 - Finds the client among your existing Zoho customers, by email or by company/contact name. **It never creates customers.** If there's no match, you're told to add them in Zoho first, and nothing is created.
 - Creates a **draft** invoice. It includes:
-  - your job number (and the client's PO) as the reference;
+  - **the same number as in the app** — the invoice number (the job number, with any invoice prefix). Untick “Give Zoho invoices this app’s invoice number” in Settings to let Zoho number them instead;
+  - the client's PO (the job's **Client reference / PO**) as Zoho's **Order Number** — never the job number;
+  - the due date and payment terms (the client's own, or your usual ones);
   - one line per item, with days, day rate and any discounts in the description;
   - the job discount, and VAT on every line;
   - the job name, venue and dates in the notes. Zoho applies your usual invoice terms.
 - Free included accessories are left off the invoice. Charged accessories are billed.
-- Marks the job **Invoiced** (you can turn this off in Settings).
+- Changes the job's status only if you tick **Mark this job as Invoiced (completed)** when sending it. It's unticked each time, because an Invoiced job moves to Completed and stops reserving its kit.
 
 Afterwards the job shows the Zoho invoice number with three buttons:
 
 - **Open in Zoho**: review the invoice and send it to the customer from Zoho.
-- **Update in Zoho**: if the job changes, this pushes the new lines and totals to the same invoice.
+- **Update invoice** / **Update quote**: if the job changes, this pushes the new lines and totals to the same one in Zoho.
 - **Unlink**: forgets the link, for example if you deleted the invoice in Zoho.
 
 If Zoho's total ever differs from the app's, you'll get a warning. That usually means the VAT setting needs checking.
@@ -530,6 +535,7 @@ It works out the layout using the **fewest decks**, only from decks free on the 
 
 ### Clamps and skirts
 
+- **Bolts and nuts instead of clamps:** if your decks bolt together, choose **Joined with: Bolts and nuts** when adding the stage or in its plan. Pick the bolt and nut items (anything in Stock with "bolt", "nut", "washer" or "fixing" in its name) and how many bolts go in each joint. Each joint you pick (the same dots as clamps) adds that many bolts and nuts to the job, and the prep list says so.
 - **Clamps:** add a clamp item to Stock with "clamp" in its name, e.g. "Stage Deck Clamp". After you add a stage, its plan opens. Every joint between two decks shows as a dot, with one per metre of shared edge. **Click a dot to add a clamp** and click it again to remove it. **Clamp every joint** and **Clear clamps** do them all at once. Each clamp is added to the job's list straight away. You can also tick **Clamp every joint now** when adding the stage.
 - **Skirts:** open each skirt item in Stock and fill in its **Skirt length** (e.g. 3, 2 and 1 for 3m, 2m and 1m skirts). Also fill in its **Skirt height** (cm), **Skirt style** (e.g. Box pleat, Ruched) and **Skirt colour**. If you leave the height blank, it's read from the name, e.g. "Stage Skirt 40cm × 3m".
 - When adding a stage or in its plan, choose the skirt's **Height, Style and Colour**. These boxes only offer combinations you actually have in stock. Typing a stage height such as "60cm" picks the matching skirt height for you.
@@ -623,6 +629,25 @@ On an item's page, **Save as the day rate** updates its rate for new quotes. Quo
 ## Client job numbers
 
 A client can have their own job number prefix and count. Edit the client and fill in **Job number prefix** (e.g. `ACME-`) and, if you like, **Their next job number**. Their new jobs are then numbered ACME-1, ACME-2… and everyone else's keep your usual numbering. A job keeps its number if you change its client later.
+
+## Terms of hire
+
+On a job, **Documents → Terms of hire** prints your terms for that job, with the client's name, the job's name, number, dates (and times) and venue filled in, and lines for both sides to sign. Write your terms once in **Settings → Company information → Documents → Terms of hire sheet**; these are filled in for each job: `{client}` `{company}` `{contact}` `{job_name}` `{job_number}` `{dates}` `{start}` `{end}` `{venue}` `{reference}` `{your_company}` `{today}`. The app comes with a short example — have your own terms checked by an adviser.
+
+## Patch: DMX addresses, radio frequencies and audio lines
+
+On a job, **Documents → Patch** (or the **DMX** / **RF** tag on a line) opens the job's patch:
+- **Lighting:** every unit of each DMX fixture gets a universe, a start address and a label. Give the stock item its **DMX footprint** (channels in its usual mode) first; you can change the footprint for one job if a fixture runs in another mode. **Auto-address** fills the empty ones in order, moving to the next universe when one is full. Overlaps, and units that would run past 512, are flagged.
+- **Radio frequencies:** tick **Wireless** on radio mics, in-ears and transmitters in Stock (and add their **Radio band**, e.g. `K51 606–670 MHz`). Each unit gets a frequency in MHz and a label. The same frequency twice, two closer than 300 kHz, or one outside the band is flagged. It doesn't work out intermodulation — use your manufacturer's tools for that.
+- **Audio inputs and outputs:** a list of channels with the source, mic/DI, stand, stagebox input, 48V and notes, and the outputs and where they go. **+ Add 8** adds eight channels at a time, numbered on from the last.
+- **Print patch sheet** prints it all, sorted by universe and address, and by frequency. The lines on the job show what's set, e.g. **DMX 1.001…** or **RF · 2 to set**.
+
+## Calendar feed
+
+**Settings → External software → Calendar feed → Make a calendar link** gives a link your calendar app subscribes to. Each job is an event over its dates (and times); enquiries, quotations and provisional jobs show as tentative. Choose which kinds of job appear. Calendar apps check it every hour or so, so changes appear by themselves.
+- **Apple Calendar, Outlook, Thunderbird** on your network: subscribe to the link shown ("From URL" / "Subscribe to calendar").
+- **Google Calendar and Teamup** fetch calendars from the internet, so they can't reach your computer directly. With Tailscale set up, press **Publish it with Tailscale**: Tailscale Funnel makes **only the calendar link** public (not the rest of the app). Tailscale may ask you to allow Funnel for this computer the first time. Then add the public link in Google Calendar (Other calendars → + → From URL) or Teamup (Settings → Calendars → Add calendar → iCalendar feed).
+- Anyone with the link can see your jobs' names, dates, venues and clients, so share it only with your team. **New link** stops the old one working; **Turn off** stops it altogether.
 
 ## Room planner
 
@@ -757,9 +782,10 @@ By default, other devices connect over plain `http`, which is fine on a network 
 - Passwords and data can no longer be read by anyone else on the network.
 
 **The warning.** The app makes its own certificate, so each device shows a "not secure" warning the first time. You can click through it (the connection is still encrypted), or remove it for good:
-1. On the device, open the app and go to **Settings → Users → Network access → Stop the "not secure" warning**, or open `https://<address>:8765/ca.crt`.
-2. Download the certificate and install it, following the steps shown for iPhone, Android, Windows, Mac or Linux.
-3. Check the fingerprint the device shows matches the one in Settings.
+1. On the device, open **`http://<address>:8765/trust`** — a page with the certificate and the steps for iPhone, Android, Windows, Mac, Firefox and Chrome. It works before signing in and over plain http, so the browser's warning can't block the download (Chrome sometimes won't download from a page it's warning about).
+2. Download the certificate and install it as shown. **Firefox** keeps its own list: use **Install in Firefox** and tick **Trust this CA to identify websites**.
+3. Check the fingerprint the device shows matches the one on the page.
+4. Open the app with an address the certificate covers (listed on the page and in Settings). The app warns you if the address you're using isn't one of them — for example a Tailscale `….ts.net` name, which it can't cover.
 
 You do this once per device. After that there are no warnings, even if the computer's address changes, because the app renews its own certificate by itself.
 
@@ -785,6 +811,7 @@ You do this once per device. After that there are no warnings, even if the compu
 - If HTTPS is on, the app's certificate covers the Tailscale address too.
 - The app never sees the computer's password; the computer's own prompt asks for it.
 - If no password prompt appears, the card shows the commands to run by hand.
+- Turning it on waits for Tailscale's background service to start (restarting it once if needed). If it never starts, the card shows the computer's own reason; `systemctl status tailscaled` on the computer gives more.
 
 **On a server with no screen**, an admin can do steps 1 and 2 from a browser on another device. The card asks for the server's admin password (the one you'd type after `sudo`), because the server can't show a prompt. This only works when:
 - the app is in server mode;
@@ -841,4 +868,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.29.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.30.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)

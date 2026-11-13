@@ -32,13 +32,14 @@ import sqlite3
 import sys
 import threading
 import zipfile
+from html import escape as html_escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import time
 import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.29.0"
+VERSION = "1.30.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -90,6 +91,19 @@ DEFAULT_SETTINGS = {
     "quote_terms": "This quotation is valid for 30 days. All equipment remains the property of "
                    "Horan AV. The hirer is responsible for loss of or damage to equipment from "
                    "delivery until collection.",
+    # The terms of hire sheet printed for a job. {client}, {job_name}, {dates} … are filled in for each job.
+    "hire_terms": "These terms apply to the hire of equipment by {client} from {your_company} for {job_name} ({job_number}), "
+                  "{dates}.\n\n"
+                  "1. The equipment remains the property of {your_company} at all times.\n"
+                  "2. The hire runs from {start} to {end}. Equipment returned late may be charged for the extra days.\n"
+                  "3. The hirer is responsible for the equipment from delivery or collection until it is returned, and for "
+                  "any loss of or damage to it in that time, other than fair wear and tear.\n"
+                  "4. The equipment must be used by competent people, only as intended and following the manufacturer's "
+                  "instructions.\n"
+                  "5. The equipment must not be lent, sub-hired or taken from the venue ({venue}) without our agreement.\n"
+                  "6. Report any fault straight away, and don't try to repair the equipment.\n"
+                  "7. Payment is due as stated on our invoice.\n\n"
+                  "Please sign below to confirm that you accept these terms.",
     "mains_voltage": "230",
     "default_supply": "uk13",
     "cable_run_preference": "excess",
@@ -211,6 +225,12 @@ CREATE TABLE IF NOT EXISTS package_excludes (
     package_item_id INTEGER NOT NULL REFERENCES package_items(id) ON DELETE CASCADE,
     product_id      INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     PRIMARY KEY (package_item_id, product_id)
+);
+CREATE TABLE IF NOT EXISTS job_audio_patch (
+    job_id     INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    data       TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS room_plans (
     job_id     INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
@@ -553,6 +573,7 @@ PRODUCT_SPEC = {
     "stand_h_max": float_or_none, "stand_h_steps": as_str, "stand_load_kg": float_or_none,
     "size_w": float_or_none, "size_d": float_or_none, "size_h": float_or_none, "plan_shape": as_str,
     "inner_w": float_or_none, "inner_d": float_or_none, "inner_h": float_or_none, "case_for_id": int_or_none,
+    "dmx_channels": as_int, "wireless": bool_int, "rf_band": as_str,
 }
 CASE_FIELDS = {"inner_w", "inner_d", "inner_h", "case_for_id"}
 SIZE_FIELDS = {"size_w", "size_d", "size_h", "plan_shape"}
@@ -671,7 +692,11 @@ CONTACT_SPEC = {
     "name": required(as_str), "company": as_str, "email": as_str, "phone": as_str,
     "address": as_str, "notes": as_str, "archived": bool_int, "account_ref": as_str,
     "job_prefix": as_str, "next_job_number": int_or_none,
+    "invoice_prefix": as_str, "payment_terms": as_str,
 }
+# Payment terms a client can have (blank = your usual terms from Settings). "eom" = due at the end of the next month.
+PAYMENT_TERMS = {"0": "Due on receipt", "7": "Net 7", "14": "Net 14", "21": "Net 21", "30": "Net 30", "45": "Net 45",
+                 "60": "Net 60", "90": "Net 90", "eom": "Due end of next month"}
 
 
 def check_contact_numbering(data):
@@ -682,6 +707,12 @@ def check_contact_numbering(data):
     n = data.get("next_job_number")
     if n is not None and not 1 <= n <= 10 ** 9:
         raise ApiError(400, "The client's next job number must be 1 or more")
+    if "invoice_prefix" in data:
+        data["invoice_prefix"] = data["invoice_prefix"].strip()
+        if len(data["invoice_prefix"]) > 20 or re.search(r"[\s/\\]", data["invoice_prefix"]):
+            raise ApiError(400, "An invoice number prefix is up to 20 characters, with no spaces or slashes — e.g. INV-")
+    if data.get("payment_terms") and data["payment_terms"] not in PAYMENT_TERMS:
+        raise ApiError(400, "Choose the client's payment terms from the list")
 JOB_SPEC = {
     "name": required(as_str), "contact_id": int_or_none, "venue": as_str,
     "reference": as_str, "start_date": date_field_req, "end_date": date_field_req,
@@ -813,6 +844,7 @@ def load_items(conn, job_ids):
                        p.quantity AS product_quantity, p.weight_kg AS product_weight, p.brand AS product_brand,
                        p.sku AS product_sku, p.sub_hire AS product_sub_hire, p.vendor_id AS product_vendor_id,
                        v.name AS vendor_name, p.sub_hire_cost AS product_sub_hire_cost,
+                       p.dmx_channels AS product_dmx_channels, p.wireless AS product_wireless, p.rf_band AS product_rf_band,
                        COALESCE(sv.name, CASE WHEN ji.sub_vendor_id IS NULL THEN v.name END) AS sub_vendor_name
                 FROM job_items ji LEFT JOIN products p ON p.id = ji.product_id
                 LEFT JOIN vendors v ON v.id = p.vendor_id
@@ -1387,7 +1419,7 @@ def network_info(conn, req):
                      "ip": x["ip"], "agent": x["agent"], "user_name": x["user_name"],
                      "current": x["token_hash"] == mine} for x in sess],
         "users": users_exist(conn),
-        "https": tls_info(conn),
+        "https": dict(tls_info(conn), this_host=request_host(req), host_covered=host_covered(request_host(req))),
     }
 
 
@@ -1606,7 +1638,8 @@ def job_of(conn, fn_name, groups):
     if not g:
         return None
     if fn_name in ("api_job_put", "api_job_delete", "api_section_post", "api_cable_run", "api_stage", "api_items_post",
-                   "api_job_zoho", "api_job_zoho_unlink", "api_plan_put"):
+                   "api_job_zoho", "api_job_zoho_unlink", "api_plan_put", "api_patch_put", "api_job_zoho_estimate",
+                   "api_job_zoho_estimate_unlink"):
         return int(g)
     if fn_name in ("api_item_put", "api_item_delete", "api_stage_put", "api_item_swap", "api_item_subhire"):
         r = conn.execute("SELECT job_id FROM job_items WHERE id = ?", (g,)).fetchone()
@@ -1890,7 +1923,8 @@ def describe(fn_name, conn, req, groups, body, result, pre):
         return ("item", f"Added stage {fmt_num(as_float(body.get('width'), 'width'))} × {fmt_num(as_float(body.get('depth'), 'depth'))}m", g[0], None)
     if fn_name == "api_stage_put" and pre:
         n = len(body.get("clamp_points") or [])
-        return ("item", f"Updated {pre['description']}: {n} clamp{'s' if n != 1 else ''}, skirts on {', '.join(body.get('skirt_sides') or []) or 'no sides'}",
+        word = "bolted joint" if body.get("join") == "bolts" else "clamp"
+        return ("item", f"Updated {pre['description']}: {n} {word}{'s' if n != 1 else ''}, skirts on {', '.join(body.get('skirt_sides') or []) or 'no sides'}",
                 pre["job_id"], None)
     if fn_name in ("api_section_post", "api_section_put", "api_section_move", "api_section_delete"):
         verb = {"api_section_post": "Added section", "api_section_put": "Renamed / edited section",
@@ -1961,6 +1995,8 @@ def describe(fn_name, conn, req, groups, body, result, pre):
         return ("scan", f"Undid check-{pre['direction']} of {pre['label']}", pre["job_id"], pre["product_id"])
     if fn_name == "api_job_zoho":
         return ("job", f"Sent to Zoho Books{(' as ' + r['zoho_invoice_number']) if r.get('zoho_invoice_number') else ''}", g[0], None)
+    if fn_name == "api_job_zoho_estimate":
+        return ("job", f"Sent to Zoho Books as quote {r.get('zoho_estimate_number') or ''}".strip(), g[0], None)
     # stock
     if fn_name == "api_products_post":
         return ("stock", f"Added stock item {r.get('name', '')}", None, r.get("id"))
@@ -2032,6 +2068,9 @@ def describe(fn_name, conn, req, groups, body, result, pre):
         return ("settings", simple[fn_name], None, None)
     if fn_name == "api_categories_put":
         return ("stock", r.get("summary") or "Changed a category", None, None)
+    if fn_name == "api_patch_put":
+        what = [w for w, k in (("DMX addresses", "dmx"), ("frequencies", "rf"), ("the audio patch", "audio")) if body.get(k)]
+        return ("job", "Changed " + (" and ".join(what) or "the patch"), g[0], None)
     if fn_name == "api_my_password":
         return ("user", "Changed their password", None, None)
     if fn_name == "api_users_post":
@@ -2896,6 +2935,7 @@ ZOHO_REGIONS = {
     "sa": ("Saudi Arabia (zoho.sa)", "https://accounts.zoho.sa"),
 }
 ZOHO_SCOPES = ("ZohoBooks.invoices.CREATE,ZohoBooks.invoices.UPDATE,ZohoBooks.invoices.READ,"
+               "ZohoBooks.estimates.CREATE,ZohoBooks.estimates.UPDATE,ZohoBooks.estimates.READ,"
                "ZohoBooks.contacts.READ,ZohoBooks.settings.READ")
 
 
@@ -2999,6 +3039,7 @@ def zoho_status(conn):
         "tax_id": get_secret(conn, "zoho_tax_id"),
         "tax_name": get_secret(conn, "zoho_tax_name"),
         "mark_invoiced": get_secret(conn, "zoho_mark_invoiced", "1") == "1",
+        "numbering": "zoho" if not zoho_uses_app_numbers(conn) else "app",
         "regions": [{"key": k, "label": v[0], "url": v[1]} for k, v in ZOHO_REGIONS.items()],
         "scopes": ZOHO_SCOPES,
     }
@@ -3076,6 +3117,8 @@ def api_zoho_put(req, conn):
         set_secret(conn, "zoho_tax_name", as_str(d.get("tax_name"), "tax_name"))
     if "mark_invoiced" in d:
         set_secret(conn, "zoho_mark_invoiced", "1" if d["mark_invoiced"] else "0")
+    if "numbering" in d:
+        set_secret(conn, "zoho_numbering", "zoho" if d["numbering"] == "zoho" else "app")
     conn.commit()
     return zoho_status(conn)
 
@@ -3137,6 +3180,11 @@ def fmt_num(n):
     return str(int(n)) if n == int(n) else f"{n:.2f}".rstrip("0").rstrip(".")
 
 
+def zoho_uses_app_numbers(conn):
+    """Zoho invoices take the app's invoice number (e.g. HAV-1005) unless you've chosen to let Zoho number them."""
+    return get_secret(conn, "zoho_numbering", "app") != "zoho"
+
+
 def zoho_invoice_body(conn, job, customer_id, tax_id):
     s = get_settings(conn)
     cur = s.get("currency", "£")
@@ -3182,12 +3230,16 @@ def zoho_invoice_body(conn, job, customer_id, tax_id):
         lines.append(line)
     if not lines:
         raise ApiError(400, "This job has nothing to invoice yet")
-    ref = job["number"] + (f" / {job['reference']}" if job.get("reference") else "")
     when = job_when(job)
     notes = "\n".join(x for x in (f"{job['name']}" + (f" — {job['venue']}" if job.get("venue") else ""),
                                    when, job.get("notes") or "") if x)
-    body = {"customer_id": customer_id, "reference_number": ref[:50], "date": dt.date.today().isoformat(),
-            "line_items": lines, "notes": notes[:5000]}
+    info = invoice_info(job, s)
+    # Zoho's "Order Number" is the client's purchase order (their reference on the job) - never the job number.
+    body = {"customer_id": customer_id, "reference_number": (job.get("reference") or "")[:50], "date": info["date"],
+            "line_items": lines, "notes": notes[:5000],
+            "payment_terms": info["terms_days"], "payment_terms_label": info["terms"][:100], "due_date": info["due"]}
+    if zoho_uses_app_numbers(conn):
+        body["invoice_number"] = info["number"][:100]   # the same number in both places
     t = job.get("totals") or {}
     if t.get("discount"):
         # a percentage stays a percentage on the invoice; a fixed amount is sent as an amount
@@ -3234,17 +3286,37 @@ ACCOUNTING = {
 KIND_ITEM = {"rental": "Equipment hire", "sale": "Sales", "service": "Services"}
 
 
+def invoice_prefix_for(job, s):
+    """The client's own invoice number prefix if they have one, else the usual one from Settings."""
+    c = job.get("contact") or {}
+    return (c.get("invoice_prefix") or "").strip() or s.get("invoice_prefix", "")
+
+
+def payment_terms_for(job, s, date):
+    """(days, label, due date): the client's payment terms if they have their own, else the usual ones."""
+    code = ((job.get("contact") or {}).get("payment_terms") or "").strip()
+    if code == "eom":
+        nxt = (date.replace(day=1) + dt.timedelta(days=32)).replace(day=1)
+        due = (nxt + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)
+        return (due - date).days, PAYMENT_TERMS["eom"], due
+    if code in PAYMENT_TERMS:
+        days = int(code)
+    else:
+        try:
+            days = max(0, int(s.get("payment_terms_days") or 0))
+        except ValueError:
+            days = 30
+    return days, ("Due on receipt" if days == 0 else f"Net {days}"), date + dt.timedelta(days=days)
+
+
 def invoice_info(job, s):
     """The job's invoice number, date and due date. Fixed once the invoice is issued (exported or downloaded)."""
-    number = job.get("invoice_number") or f"{s.get('invoice_prefix', '')}{job['number']}"
+    number = job.get("invoice_number") or f"{invoice_prefix_for(job, s)}{job['number']}"
     issued = bool(job.get("invoice_date"))
     date = dt.date.fromisoformat(job["invoice_date"]) if issued else dt.date.today()
-    try:
-        days = max(0, int(s.get("payment_terms_days") or 0))
-    except ValueError:
-        days = 30
-    return {"number": number, "date": date.isoformat(), "due": (date + dt.timedelta(days=days)).isoformat(),
-            "terms_days": days, "issued": issued, "exported_at": job.get("exported_at"), "exported_to": job.get("exported_to")}
+    days, label, due = payment_terms_for(job, s, date)
+    return {"number": number, "date": date.isoformat(), "due": due.isoformat(), "terms_days": days, "terms": label,
+            "issued": issued, "exported_at": job.get("exported_at"), "exported_to": job.get("exported_to")}
 
 
 def issue_invoice(conn, job):
@@ -3252,7 +3324,9 @@ def issue_invoice(conn, job):
     if job.get("invoice_date"):
         return
     s = get_settings(conn)
-    number = f"{s.get('invoice_prefix', '')}{job['number']}"
+    if "contact" not in job:
+        job["contact"] = one(conn.execute("SELECT * FROM contacts WHERE id = ?", (job.get("contact_id"),))) if job.get("contact_id") else None
+    number = f"{invoice_prefix_for(job, s)}{job['number']}"
     conn.execute("UPDATE jobs SET invoice_number = ?, invoice_date = ? WHERE id = ?",
                  (number, dt.date.today().isoformat(), job["id"]))
     job["invoice_number"], job["invoice_date"] = number, dt.date.today().isoformat()
@@ -3357,7 +3431,7 @@ def accounting_rows(fmt, jobs, s, vat_rate):
             if fmt == "quickbooks":
                 header = ["*InvoiceNo", "*Customer", "*InvoiceDate", "*DueDate", "Terms", "Memo", "Item(Product/Service)",
                           "ItemDescription", "ItemQuantity", "ItemRate", "*ItemAmount", "*ItemTaxCode", "ItemTaxAmount"]
-                out.append([info["number"], customer, _d(info["date"]), _d(info["due"]), f"Net {info['terms_days']}", memo,
+                out.append([info["number"], customer, _d(info["date"]), _d(info["due"]), info["terms"] if info["terms_days"] == 0 or info["terms"].startswith("Net") else f"Net {info['terms_days']}", memo,
                             item, desc, fmt_num(x["qty"]), f"{x['rate']:.2f}", f"{x['amount']:.2f}", tax, f"{x['tax']:.2f}"])
             elif fmt == "xero":
                 header = ["*ContactName", "EmailAddress", "POAddressLine1", "POAddressLine2", "POAddressLine3", "POAddressLine4",
@@ -3396,6 +3470,15 @@ def accounting_rows(fmt, jobs, s, vat_rate):
     return header, out
 
 
+def hire_is_over(job):
+    """Can invoicing move a job to Invoiced? Only once the hire is over - returned, or confirmed with its dates past.
+    An invoice sent before (or during) the hire leaves the job as it is, so it stays in the open jobs and keeps
+    its kit reserved: Invoiced jobs don't hold stock."""
+    if job["status"] == "returned":
+        return True
+    return job["status"] == "confirmed" and job["end_date"] < dt.date.today().isoformat()
+
+
 def jobs_for_invoicing(conn, ids):
     try:
         ids = [int(i) for i in ids]
@@ -3426,7 +3509,7 @@ def api_invoices_export(req, conn):
     now = now_iso()
     for j in jobs:
         conn.execute("UPDATE jobs SET exported_at = ?, exported_to = ? WHERE id = ?", (now, fmt, j["id"]))
-        if d.get("mark_invoiced") and j["status"] in ("confirmed", "out", "returned"):
+        if d.get("mark_invoiced") and hire_is_over(j):
             conn.execute("UPDATE jobs SET status = 'invoiced', updated_at = ? WHERE id = ?", (now, j["id"]))
     conn.commit()
     buf = io.StringIO()
@@ -3699,6 +3782,7 @@ def render_invoice_pdf(pdf, job, s, doc, logo, vat_rate, layout=None):
 
     pdf.text(L, y, title, 20 * sc, True, brand)
     meta = ([("Invoice no.", info["number"]), ("Date", fmt_date(info["date"])), ("Due", fmt_date(info["due"])),
+             ("Terms", info["terms"]),
              ("Job", job["number"])] if doc == "invoice" else
             [("Quote no.", job["number"]), ("Date", fmt_date(dt.date.today().isoformat())), ("Status", STATUS_NAMES.get(job["status"], job["status"]))])
     if job.get("reference"):
@@ -3875,7 +3959,7 @@ def api_invoices_issue(req, conn):
     jobs = jobs_for_invoicing(conn, d.get("ids") or [])
     for j in jobs:
         issue_invoice(conn, j)
-        if d.get("mark_invoiced") and j["status"] in ("confirmed", "out", "returned"):
+        if d.get("mark_invoiced") and hire_is_over(j):
             conn.execute("UPDATE jobs SET status = 'invoiced', updated_at = ? WHERE id = ?", (now_iso(), j["id"]))
     conn.commit()
     return {"ok": True}
@@ -3890,7 +3974,7 @@ def api_invoices_pdf(req, conn):
     if doc == "invoice" and not d.get("layout"):  # a layout preview doesn't issue anything
         for j in jobs:
             issue_invoice(conn, j)
-            if d.get("mark_invoiced") and j["status"] in ("confirmed", "out", "returned"):
+            if d.get("mark_invoiced") and hire_is_over(j):
                 conn.execute("UPDATE jobs SET status = 'invoiced', updated_at = ? WHERE id = ?", (now_iso(), j["id"]))
         conn.commit()
     logo = decode_logo(d.get("logo"))
@@ -3920,22 +4004,83 @@ def api_job_zoho(req, conn, jid):
     z = Zoho(conn)
     tax_id = get_secret(conn, "zoho_tax_id") if vat_registered(conn) else ""
     cust = zoho_customer_id(z, conn, job["contact"])
+    issue_invoice(conn, job)   # sending it fixes the invoice number and date, as downloading or exporting does
     body = zoho_invoice_body(conn, job, cust, tax_id)
+    own = {"ignore_auto_number_generation": "true"} if "invoice_number" in body else None
     if job.get("zoho_invoice_id"):
-        inv = z.call("PUT", f"/invoices/{job['zoho_invoice_id']}", body=body)["invoice"]
+        inv = z.call("PUT", f"/invoices/{job['zoho_invoice_id']}", params=own, body=body)["invoice"]
         action = "updated"
     else:
-        inv = z.call("POST", "/invoices", body=body)["invoice"]
+        inv = z.call("POST", "/invoices", params=own, body=body)["invoice"]
         action = "created"
     conn.execute("UPDATE jobs SET zoho_invoice_id = ?, zoho_invoice_number = ?, zoho_synced_at = ?, updated_at = ? "
                  "WHERE id = ?", (inv["invoice_id"], inv.get("invoice_number", ""), now_iso(), now_iso(), jid))
-    if action == "created" and get_secret(conn, "zoho_mark_invoiced", "1") == "1":
+    # Mark the job Invoiced only when asked to, when sending it (never by default).
+    if (req.json() or {}).get("mark_invoiced") and job["status"] not in ("cancelled", "lost"):
         conn.execute("UPDATE jobs SET status = 'invoiced' WHERE id = ?", (jid,))
     conn.commit()
     out = job_detail(conn, jid)
     out["zoho_result"] = {"action": action, "invoice_number": inv.get("invoice_number", ""),
                           "total": inv.get("total"), "url": z.books_url(f"invoices/{inv['invoice_id']}")}
     return out
+
+
+def zoho_estimate_body(conn, job, customer_id, tax_id):
+    """A Zoho Books estimate (quote) for the job: the same lines and totals as its invoice would have."""
+    s = get_settings(conn)
+    body = zoho_invoice_body(conn, job, customer_id, tax_id)
+    for k in ("payment_terms", "payment_terms_label", "due_date", "invoice_number"):
+        body.pop(k, None)
+    today = dt.date.today()
+    body["date"] = today.isoformat()
+    body["expiry_date"] = (today + dt.timedelta(days=30)).isoformat()
+    if s.get("quote_terms"):
+        body["terms"] = s["quote_terms"][:10000]
+    if zoho_uses_app_numbers(conn):
+        body["estimate_number"] = job["number"][:100]   # the quote has the job's number, as the printed quote does
+    return body
+
+
+@route("POST", r"/api/jobs/(\d+)/zoho/estimate")
+def api_job_zoho_estimate(req, conn, jid):
+    """Send the job to Zoho Books as a quote (an estimate there), or update the one already sent."""
+    jid = int(jid)
+    job = job_detail(conn, jid)
+    if not job["contact"]:
+        raise ApiError(400, "Add a client to this job first — Zoho needs a customer for the quote")
+    z = Zoho(conn)
+    tax_id = get_secret(conn, "zoho_tax_id") if vat_registered(conn) else ""
+    cust = zoho_customer_id(z, conn, job["contact"])
+    body = zoho_estimate_body(conn, job, cust, tax_id)
+    own = {"ignore_auto_number_generation": "true"} if "estimate_number" in body else None
+    try:
+        if job.get("zoho_estimate_id"):
+            est = z.call("PUT", f"/estimates/{job['zoho_estimate_id']}", params=own, body=body)["estimate"]
+            action = "updated"
+        else:
+            est = z.call("POST", "/estimates", params=own, body=body)["estimate"]
+            action = "created"
+    except ApiError as e:
+        if "authori" in e.message.lower() or "scope" in e.message.lower():
+            raise ApiError(400, "Zoho Books hasn't allowed this app to make quotes yet. In Settings → External software → "
+                                "Zoho Books, disconnect and connect again — then it can.") from e
+        raise
+    conn.execute("UPDATE jobs SET zoho_estimate_id = ?, zoho_estimate_number = ?, updated_at = ? WHERE id = ?",
+                 (est["estimate_id"], est.get("estimate_number", ""), now_iso(), jid))
+    if job["status"] == "enquiry":
+        conn.execute("UPDATE jobs SET status = 'quote' WHERE id = ?", (jid,))   # it's been quoted
+    conn.commit()
+    out = job_detail(conn, jid)
+    out["zoho_result"] = {"kind": "estimate", "action": action, "number": est.get("estimate_number", ""),
+                          "total": est.get("total"), "url": z.books_url(f"quotes/{est['estimate_id']}")}
+    return out
+
+
+@route("POST", r"/api/jobs/(\d+)/zoho/estimate/unlink")
+def api_job_zoho_estimate_unlink(req, conn, jid):
+    conn.execute("UPDATE jobs SET zoho_estimate_id = NULL, zoho_estimate_number = NULL WHERE id = ?", (jid,))
+    conn.commit()
+    return job_detail(conn, int(jid))
 
 
 @route("POST", r"/api/jobs/(\d+)/zoho/unlink")
@@ -4432,6 +4577,312 @@ def api_plan(req, conn, jid):
               for x in rows(conn.execute("SELECT id, description, quantity, meta FROM job_items WHERE job_id = ? AND meta LIKE '%\"type\": \"stage\"%'", (jid,)))]
     return {"plan": json.loads(r["data"]) if r else None, "updated_at": r and r["updated_at"], "updated_by": r and r["updated_by"],
             "items": items, "stages": [{k: st.get(k) for k in ("id", "description", "quantity", "width", "depth", "height")} for st in stages]}
+
+
+# ---------------------------------------------------------------- calendar feed (iCal)
+#
+# A secret link calendars subscribe to: Apple Calendar, Outlook, Thunderbird on your network straight away; Google
+# Calendar and Teamup fetch it from the internet, so for those it's published (only that path) with Tailscale Funnel.
+
+CAL_STATUSES = ("provisional", "confirmed", "out", "returned", "invoiced", "enquiry", "quote")
+CAL_DEFAULT = ("provisional", "confirmed", "out", "returned", "invoiced")
+CAL_PATH_RE = re.compile(r"^/cal/(?:[^/]*/)*([A-Za-z0-9_-]{24,64})(?:\.ics)?$")
+
+
+def cal_settings(conn):
+    try:
+        st = [x for x in json.loads(get_secret(conn, "calendar_statuses") or "[]") if x in CAL_STATUSES]
+    except ValueError:
+        st = []
+    return {"token": get_secret(conn, "calendar_token"), "statuses": st or list(CAL_DEFAULT)}
+
+
+def ics_text(v):
+    return str(v or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\r", "").replace("\n", "\\n")
+
+
+def ics_fold(line):
+    """Lines of an .ics file are at most 75 bytes; longer ones carry on after a newline and a space."""
+    b = line.encode("utf-8")
+    if len(b) <= 75:
+        return line
+    out, cur = [], b""
+    for ch in line:
+        e = ch.encode("utf-8")
+        if len(cur) + len(e) > (75 if not out else 74):
+            out.append(cur.decode("utf-8"))
+            cur = b""
+        cur += e
+    out.append(cur.decode("utf-8"))
+    return "\r\n ".join(out)
+
+
+def calendar_ics(conn):
+    cs = cal_settings(conn)
+    s = get_settings(conn)
+    since = (dt.date.today() - dt.timedelta(days=180)).isoformat()
+    marks = ",".join("?" * len(cs["statuses"]))
+    jobs = rows(conn.execute(JOB_LIST_SQL + f" WHERE j.status IN ({marks}) AND j.end_date >= ? ORDER BY j.start_date",
+                             list(cs["statuses"]) + [since]))
+    inst = get_secret(conn, "instance_id") or "horan-event-tracking"
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    names = {"enquiry": "Enquiry", "quote": "Quote", "provisional": "Provisional", "confirmed": "Confirmed",
+             "out": "On hire", "returned": "Returned", "invoiced": "Invoiced"}
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Horan AV//Horan Event Tracking//EN", "CALSCALE:GREGORIAN",
+             "METHOD:PUBLISH", f"X-WR-CALNAME:{ics_text((s.get('company_name') or app_name(conn)) + ' jobs')}",
+             "REFRESH-INTERVAL;VALUE=DURATION:PT1H", "X-PUBLISHED-TTL:PT1H"]
+    for j in jobs:
+        d0, d1 = j["start_date"].replace("-", ""), j["end_date"].replace("-", "")
+        if j.get("start_time") or j.get("end_time"):
+            # times are local to wherever you are ("floating"), as people type them
+            t0 = (j.get("start_time") or "00:00").replace(":", "") + "00"
+            t1 = (j.get("end_time") or "23:59").replace(":", "") + "00"
+            when = [f"DTSTART:{d0}T{t0}", f"DTEND:{d1}T{t1}"]
+        else:
+            nxt = (dt.date.fromisoformat(j["end_date"]) + dt.timedelta(days=1)).isoformat().replace("-", "")
+            when = [f"DTSTART;VALUE=DATE:{d0}", f"DTEND;VALUE=DATE:{nxt}"]
+        who = j.get("contact_company") or j.get("contact_name") or ""
+        desc = "\n".join(x for x in (f"{names.get(j['status'], j['status'])} · {j['number']}", who and f"Client: {who}",
+                                      j.get("reference") and f"Ref: {j['reference']}") if x)
+        try:
+            changed = dt.datetime.fromisoformat(j.get("updated_at") or "").strftime("%Y%m%dT%H%M%S")
+        except ValueError:
+            changed = stamp[:-1]
+        lines += ["BEGIN:VEVENT", f"UID:job-{j['id']}@{inst}", f"DTSTAMP:{stamp}", f"LAST-MODIFIED:{changed}", *when,
+                  f"SUMMARY:{ics_text(j['number'] + ' ' + j['name'] + (' (' + names[j['status']] + ')' if j['status'] in ('enquiry', 'quote', 'provisional') else ''))}",
+                  f"STATUS:{'TENTATIVE' if j['status'] in ('enquiry', 'quote', 'provisional') else 'CONFIRMED'}",
+                  f"TRANSP:{'TRANSPARENT' if j['status'] in ('enquiry', 'quote') else 'OPAQUE'}"]
+        if j.get("venue"):
+            lines.append(f"LOCATION:{ics_text(j['venue'])}")
+        lines += [f"DESCRIPTION:{ics_text(desc)}", "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(ics_fold(x) for x in lines) + "\r\n"
+
+
+def calendar_info(conn, req):
+    cs = cal_settings(conn)
+    tok = cs["token"]
+    host = request_host(req)
+    local = [f"http://{ip}:{PORT}/cal/{tok}.ics" for ip in lan_addresses()] if tok else []
+    if tok and host:
+        here = f"{'https' if TLS_CTX is not None else 'http'}://{'[' + host + ']' if ':' in host else host}:{PORT}/cal/{tok}.ics"
+        if here not in local:
+            local.insert(0, here)
+    ts = tailscale_status() if tok else {}
+    public = f"https://{ts['name']}/cal/{tok}.ics" if tok and ts.get("state") == "connected" and ts.get("name") else ""
+    return {"on": bool(tok), "statuses": cs["statuses"], "all_statuses": list(CAL_STATUSES), "urls": local,
+            "public_url": public, "public_on": get_secret(conn, "calendar_funnel") == "1",
+            "tailscale": bool(ts.get("state") == "connected"), "funnel_command": cal_funnel_cmd(),
+            "is_local": not req.remote}
+
+
+def cal_funnel_cmd(off=False):
+    target = f"http://127.0.0.1:{PORT}/cal"
+    return ["tailscale", "funnel", "--bg", "--set-path", "/cal", "off"] if off else ["tailscale", "funnel", "--bg", "--set-path", "/cal", target]
+
+
+@route("GET", "/api/calendar")
+def api_calendar(req, conn):
+    require_admin(req, conn)
+    return calendar_info(conn, req)
+
+
+@route("PUT", "/api/calendar")
+def api_calendar_put(req, conn):
+    """{on}: make (or keep) the secret link; {reset}: a new link (the old one stops working); {statuses}: which jobs."""
+    require_admin(req, conn)
+    d = req.json() or {}
+    if d.get("on") is False:
+        set_secret(conn, "calendar_token", "")
+    elif d.get("on") or d.get("reset"):
+        if d.get("reset") or not get_secret(conn, "calendar_token"):
+            set_secret(conn, "calendar_token", secrets.token_urlsafe(24))
+    if "statuses" in d:
+        st = [x for x in (d.get("statuses") or []) if x in CAL_STATUSES]
+        if not st:
+            raise ApiError(400, "Choose at least one kind of job to show")
+        set_secret(conn, "calendar_statuses", json.dumps(st))
+    conn.commit()
+    return calendar_info(conn, req)
+
+
+@route("POST", "/api/calendar/public")
+def api_calendar_public(req, conn):
+    """Publish (or stop publishing) only the calendar's address on the internet, with Tailscale Funnel, so Google
+    Calendar and Teamup can read it. The rest of the app stays private."""
+    require_admin(req, conn)
+    local_only(req, headless_ok=True)
+    on = bool((req.json() or {}).get("on"))
+    exe = tailscale_bin()
+    if not exe:
+        raise ApiError(400, "Set up Tailscale first (Settings → Users → Remote access)")
+    cmd = [exe] + cal_funnel_cmd(off=not on)[1:]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise ApiError(500, f"Couldn't run Tailscale: {e}") from e
+    out = (r.stdout + "\n" + r.stderr).strip()
+    if r.returncode != 0:
+        url = re.search(r"https://login\.tailscale\.com/\S+", out)
+        hint = (f" Tailscale needs Funnel allowed for this computer first: open {url.group(0)} and allow it, then try again."
+                if url else "")
+        raise ApiError(400, "Tailscale couldn't publish it: " + out[-400:] + hint)
+    set_secret(conn, "calendar_funnel", "1" if on else "0")
+    conn.commit()
+    return calendar_info(conn, req)
+
+
+def calendar_feed_response(conn, token):
+    want = get_secret(conn, "calendar_token")
+    if not want or not hmac.compare_digest(want.encode(), token.encode()):
+        return None
+    return calendar_ics(conn).encode("utf-8")
+
+
+# ---------------------------------------------------------------- patch: DMX addresses, radio frequencies, audio lines
+#
+# Lighting with a DMX footprint gets a universe and start address per unit; wireless kit gets a frequency per unit
+# (both kept on the job line, so they follow it). The audio input and output lists are kept per job.
+
+DMX_SLOTS = 512
+AUDIO_IN_COLS = ("ch", "source", "mic", "stand", "box", "phantom", "notes")
+AUDIO_OUT_COLS = ("out", "dest", "notes")
+
+
+def item_patch(it):
+    try:
+        v = json.loads(it.get("patch") or "{}")
+        return v if isinstance(v, dict) else {}
+    except ValueError:
+        return {}
+
+
+def rf_band_range(band):
+    """The MHz range in a band like "G50 470–534 MHz" or "606-614", if there is one."""
+    m = re.search(r"(\d{2,4}(?:\.\d+)?)\s*[-–—to]+\s*(\d{2,4}(?:\.\d+)?)", band or "")
+    if not m:
+        return None
+    a, b = float(m.group(1)), float(m.group(2))
+    return (min(a, b), max(a, b)) if a != b else None
+
+
+def job_patch(conn, jid):
+    job = job_detail(conn, jid)
+    dmx, rf = [], []
+    for it in job["items"]:
+        if it["kind"] != "rental" or not it.get("product_id"):
+            continue
+        p = item_patch(it)
+        qty = max(0, int(round(it["quantity"] or 0)))
+        if (it.get("product_dmx_channels") or 0) > 0:
+            units = (p.get("dmx") or [])[:qty]
+            units += [{"u": None, "a": None, "n": ""} for _ in range(qty - len(units))]
+            dmx.append({"item_id": it["id"], "name": it["description"] or it["product_name"], "quantity": qty,
+                        "footprint": int(p.get("fp") or it["product_dmx_channels"]),
+                        "product_footprint": it["product_dmx_channels"], "units": units})
+        if it.get("product_wireless"):
+            units = (p.get("rf") or [])[:qty]
+            units += [{"f": "", "n": ""} for _ in range(qty - len(units))]
+            rf.append({"item_id": it["id"], "name": it["description"] or it["product_name"], "quantity": qty,
+                       "band": it.get("product_rf_band") or "", "range": rf_band_range(it.get("product_rf_band")),
+                       "units": units})
+    row = one(conn.execute("SELECT * FROM job_audio_patch WHERE job_id = ?", (jid,)))
+    audio = {"inputs": [], "outputs": []}
+    if row:
+        try:
+            audio.update(json.loads(row["data"]))
+        except ValueError:
+            pass
+    return {"job": {k: job[k] for k in ("id", "number", "name", "start_date", "end_date", "start_time", "end_time", "venue")},
+            "dmx": dmx, "rf": rf, "audio": audio, "audio_updated": row and {"at": row["updated_at"], "by": row["updated_by"]},
+            "audio_sources": sorted({it["description"] for it in job["items"] if it["kind"] == "rental" and it.get("description")})}
+
+
+@route("GET", r"/api/jobs/(\d+)/patch")
+def api_patch(req, conn, jid):
+    if not conn.execute("SELECT 1 FROM jobs WHERE id = ?", (jid,)).fetchone():
+        raise ApiError(404, "Job not found")
+    return job_patch(conn, int(jid))
+
+
+def _clean_rows(rows_, cols, what):
+    if not isinstance(rows_, list) or len(rows_) > 500:
+        raise ApiError(400, f"The {what} list is up to 500 lines")
+    out = []
+    for r in rows_:
+        if not isinstance(r, dict):
+            continue
+        row = {c: str(r.get(c) if r.get(c) is not None else "").strip()[:200] for c in cols}
+        if any(row.values()):
+            out.append(row)
+    return out
+
+
+@route("PUT", r"/api/jobs/(\d+)/patch")
+def api_patch_put(req, conn, jid):
+    """Save DMX addresses and frequencies ({dmx: [{item_id, footprint, units: [{u, a, n}]}], rf: [{item_id, units:
+    [{f, n}]}]}) and the audio lists ({audio: {inputs, outputs}}) - any of them."""
+    jid = int(jid)
+    if not conn.execute("SELECT 1 FROM jobs WHERE id = ?", (jid,)).fetchone():
+        raise ApiError(404, "Job not found")
+    d = req.json() or {}
+    items = {r["id"]: r for r in rows(conn.execute("SELECT * FROM job_items WHERE job_id = ?", (jid,)))}
+
+    def line(x):
+        try:
+            it = items[int(x.get("item_id"))]
+        except (TypeError, ValueError, KeyError):
+            raise ApiError(400, "That line isn't on this job any more — reload the page")
+        return it
+    for x in d.get("dmx") or []:
+        it = line(x)
+        fp = as_int(x.get("footprint") or 0, "footprint")
+        if not 0 <= fp <= DMX_SLOTS:
+            raise ApiError(400, f"A DMX footprint is 1 to {DMX_SLOTS} channels")
+        units = []
+        for i, u in enumerate((x.get("units") or [])[:1000]):
+            uni = int_or_none(u.get("u"), "universe")
+            addr = int_or_none(u.get("a"), "address")
+            if uni is not None and not 1 <= uni <= 32768:
+                raise ApiError(400, "A DMX universe is 1 or more")
+            if addr is not None and not 1 <= addr <= DMX_SLOTS:
+                raise ApiError(400, f"A DMX address is 1 to {DMX_SLOTS}")
+            if addr is not None and fp and addr + fp - 1 > DMX_SLOTS:
+                raise ApiError(400, f"{it['description']} #{i + 1} at {addr} needs {fp} channels, past {DMX_SLOTS}. "
+                                    "Give it a lower address or the next universe.")
+            units.append({"u": uni, "a": addr, "n": str(u.get("n") or "").strip()[:60]})
+        p = item_patch(it)
+        p["dmx"] = units
+        p["fp"] = fp or None
+        conn.execute("UPDATE job_items SET patch = ? WHERE id = ?", (json.dumps(p), it["id"]))
+        it["patch"] = json.dumps(p)
+    for x in d.get("rf") or []:
+        it = line(x)
+        units = []
+        for u in (x.get("units") or [])[:1000]:
+            f = str(u.get("f") or "").strip().replace(",", ".")
+            if f:
+                try:
+                    mhz = float(f)
+                except ValueError:
+                    raise ApiError(400, f"“{f}” isn't a frequency — give it in MHz, e.g. 606.500")
+                if not 1 <= mhz <= 10000:
+                    raise ApiError(400, "Give frequencies in MHz, e.g. 606.500")
+                f = f"{mhz:.3f}"
+            units.append({"f": f, "n": str(u.get("n") or "").strip()[:60]})
+        p = item_patch(it)
+        p["rf"] = units
+        conn.execute("UPDATE job_items SET patch = ? WHERE id = ?", (json.dumps(p), it["id"]))
+        it["patch"] = json.dumps(p)
+    if isinstance(d.get("audio"), dict):
+        a = d["audio"]
+        data = {"inputs": _clean_rows(a.get("inputs") or [], AUDIO_IN_COLS, "input"),
+                "outputs": _clean_rows(a.get("outputs") or [], AUDIO_OUT_COLS, "output")}
+        conn.execute("INSERT INTO job_audio_patch(job_id, data, updated_at, updated_by) VALUES(?, ?, ?, ?) "
+                     "ON CONFLICT(job_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, "
+                     "updated_by = excluded.updated_by", (jid, json.dumps(data), now_iso(), actor_name()))
+    conn.commit()
+    return job_patch(conn, jid)
 
 
 @route("PUT", r"/api/jobs/(\d+)/plan")
@@ -5478,6 +5929,9 @@ def job_detail(conn, jid):
     if job.get("zoho_invoice_id") and get_secret(conn, "zoho_accounts_url"):
         host = urlparse(get_secret(conn, "zoho_accounts_url")).netloc.replace("accounts.", "books.", 1)
         job["zoho_invoice_url"] = f"https://{host}/app/{get_secret(conn, 'zoho_org_id')}#/invoices/{job['zoho_invoice_id']}"
+    if job.get("zoho_estimate_id") and get_secret(conn, "zoho_accounts_url"):
+        host = urlparse(get_secret(conn, "zoho_accounts_url")).netloc.replace("accounts.", "books.", 1)
+        job["zoho_estimate_url"] = f"https://{host}/app/{get_secret(conn, 'zoho_org_id')}#/quotes/{job['zoho_estimate_id']}"
     job["total_weight_kg"] = round(sum((it["product_weight"] or 0) * (it["quantity"] or 0)
                                        for it in items if it["product_id"]), 2)
     job["cases"] = job_cases(conn, jid, packed_only=True)
@@ -6808,8 +7262,21 @@ def set_role_line(conn, parent, role, product_id, per_stage, description=None):
             "meta": json.dumps({"role": role})})
 
 
-def apply_stage_extras(conn, parent, meta, clamp_product, points, sides, skirt_ids, filt=None):
-    # clamps
+def stage_fixing(d):
+    """How decks are joined: {"join": "clamps"} (one clamp per joint), or {"join": "bolts", bolt, nut, per} - some
+    deck systems bolt together instead, with `per` bolts (and as many nuts) at each joint."""
+    if (d.get("join") or "clamps") != "bolts":
+        return {"join": "clamps"}
+    per = as_int(d.get("bolts_per_joint") or 1, "bolts_per_joint")
+    if not 1 <= per <= 20:
+        raise ApiError(400, "Bolts per joint is 1 to 20")
+    return {"join": "bolts", "bolt_id": as_int(d.get("bolt_product_id"), "bolt_product_id", allow_none=True),
+            "nut_id": as_int(d.get("nut_product_id"), "nut_product_id", allow_none=True), "per": per}
+
+
+def apply_stage_extras(conn, parent, meta, clamp_product, points, sides, skirt_ids, filt=None, fix=None):
+    fix = fix or {"join": "clamps"}
+    # clamps, or bolts and nuts
     valid = set(clamp_points(meta.get("layout") or []))
     chosen = []
     for pt in points or []:
@@ -6822,10 +7289,22 @@ def apply_stage_extras(conn, parent, meta, clamp_product, points, sides, skirt_i
             raise ApiError(400, "A clamp isn't on a joint between decks")
         if match not in chosen:
             chosen.append(match)
-    if chosen and not clamp_product:
-        raise ApiError(400, "Choose which clamp to use")
-    meta["clamps"] = {"product_id": clamp_product if chosen else None, "points": [list(p_) for p_ in chosen]}
-    set_role_line(conn, parent, "clamps", clamp_product, len(chosen))
+    if fix["join"] == "bolts":
+        if chosen and not fix.get("bolt_id"):
+            raise ApiError(400, "Choose which bolt to use")
+        n = len(chosen) * fix["per"]
+        meta["clamps"] = {"product_id": None, "points": [list(p_) for p_ in chosen], "join": "bolts",
+                          "bolt_id": fix.get("bolt_id"), "nut_id": fix.get("nut_id"), "per": fix["per"]}
+        set_role_line(conn, parent, "clamps", None, 0)
+        set_role_line(conn, parent, "bolts", fix.get("bolt_id"), n)
+        set_role_line(conn, parent, "nuts", fix.get("nut_id"), n)
+    else:
+        if chosen and not clamp_product:
+            raise ApiError(400, "Choose which clamp to use")
+        meta["clamps"] = {"product_id": clamp_product if chosen else None, "points": [list(p_) for p_ in chosen]}
+        set_role_line(conn, parent, "clamps", clamp_product, len(chosen))
+        set_role_line(conn, parent, "bolts", None, 0)
+        set_role_line(conn, parent, "nuts", None, 0)
     # skirts
     sk = plan_skirts(conn, meta["width"], meta["depth"], sides, skirt_ids, filt=filt)
     meta["skirts"] = sk and {"sides": sk["sides"], "skirt_ids": skirt_ids or [], "per_side": sk["per_side"],
@@ -6852,7 +7331,12 @@ def api_stage_extras_list(req, conn):
     clamps = rows(conn.execute(
         "SELECT id, name, quantity FROM products WHERE archived = 0 AND item_type = 'equipment' "
         "AND (name LIKE '%clamp%' OR category LIKE '%clamp%') ORDER BY name"))
-    return {"clamps": clamps, "skirts": skirt_items(conn)}
+    # for decks that bolt together: anything called a bolt, nut, washer or fixing
+    fixings = rows(conn.execute(
+        "SELECT id, name, quantity FROM products WHERE archived = 0 AND item_type = 'equipment' "
+        "AND (name LIKE '%bolt%' OR name LIKE '%nut%' OR name LIKE '%washer%' OR name LIKE '%fixing%' "
+        "OR category LIKE '%fixing%') ORDER BY name"))
+    return {"clamps": clamps, "fixings": fixings, "skirts": skirt_items(conn)}
 
 
 @route("PUT", r"/api/stages/(\d+)")
@@ -6864,7 +7348,8 @@ def api_stage_put(req, conn, iid):
     d = req.json() or {}
     clamp = as_int(d.get("clamp_product_id"), "clamp_product_id", allow_none=True)
     apply_stage_extras(conn, parent, meta, clamp, d.get("clamp_points") or [],
-                       d.get("skirt_sides") or [], [int(x) for x in (d.get("skirt_ids") or [])], skirt_filter(d))
+                       d.get("skirt_sides") or [], [int(x) for x in (d.get("skirt_ids") or [])], skirt_filter(d),
+                       stage_fixing(d))
     conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now_iso(), parent["job_id"]))
     conn.commit()
     return job_detail(conn, parent["job_id"])
@@ -6931,8 +7416,10 @@ def api_stage(req, conn, jid):
             "section_id": section, "meta": json.dumps({"role": "legs"})})
     prow = one(conn.execute("SELECT * FROM job_items WHERE id = ?", (parent,)))
     clamp = as_int(d.get("clamp_product_id"), "clamp_product_id", allow_none=True)
-    points = clamp_points(plan["layout"]) if (clamp and d.get("clamp_all")) else []
-    apply_stage_extras(conn, prow, json.loads(prow["meta"]), clamp, points, sides, skirt_ids, filt)
+    fix = stage_fixing(d)
+    fixing = fix.get("bolt_id") if fix["join"] == "bolts" else clamp
+    points = clamp_points(plan["layout"]) if (fixing and d.get("clamp_all")) else []
+    apply_stage_extras(conn, prow, json.loads(prow["meta"]), clamp, points, sides, skirt_ids, filt, fix)
     conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now_iso(), jid))
     conn.commit()
     out = job_detail(conn, jid)
@@ -7556,7 +8043,7 @@ def as_root(command, what, password=None):
     if password is not None:
         r = sudo_run(command, password)
         if r.returncode != 0:
-            raise ApiError(500, f"Couldn't {what}: " + ((r.stderr or r.stdout).strip()[-300:] or f"exit code {r.returncode}"))
+            raise ApiError(500, f"Couldn't {what}: " + ((r.stderr or r.stdout).strip()[-700:] or f"exit code {r.returncode}"))
         return
     pk = shutil.which("pkexec")
     if not pk:
@@ -7566,7 +8053,7 @@ def as_root(command, what, password=None):
     if r.returncode in (126, 127):
         raise ApiError(400, "The password prompt was cancelled or isn't available. Nothing was changed.")
     if r.returncode != 0:
-        raise ApiError(500, f"Couldn't {what}: " + ((r.stderr or r.stdout).strip()[-300:] or f"exit code {r.returncode}"))
+        raise ApiError(500, f"Couldn't {what}: " + ((r.stderr or r.stdout).strip()[-700:] or f"exit code {r.returncode}"))
 
 
 def fetch_official(url, limit):
@@ -7626,6 +8113,33 @@ def tailscale_install_job(password=None):
         raise ApiError(500, "The installer finished but Tailscale wasn't found. See https://tailscale.com/download/linux")
 
 
+def tailscale_start_script(user):
+    """The commands that turn Tailscale on (run as root). The service can take a while to come up, or fail - so wait for
+    it (restarting it once), and if it never starts, say why in the system's own words."""
+    lines = [
+        # a service someone switched off completely ("masked") can't start until it's allowed again
+        "if [ \"$(systemctl is-enabled tailscaled 2>/dev/null)\" = masked ]; then systemctl unmask tailscaled; fi",
+        "systemctl enable tailscaled >/dev/null 2>&1",
+        "systemctl start tailscaled",
+        "up=",
+        "for i in $(seq 1 40); do",
+        "  if [ -S /run/tailscale/tailscaled.sock ] || [ -S /var/run/tailscale/tailscaled.sock ]; then up=1; break; fi",
+        "  if [ \"$i\" = 15 ]; then systemctl restart tailscaled; fi",
+        "  sleep 1",
+        "done",
+        "if [ -z \"$up\" ]; then",
+        "  echo \"Tailscale's background service (tailscaled) didn't start.\" >&2",
+        "  echo \"State: $(systemctl is-active tailscaled 2>&1) / $(systemctl is-enabled tailscaled 2>&1).\" >&2",
+        "  journalctl -u tailscaled -n 4 --no-pager -o cat 2>/dev/null | tail -c 400 >&2",
+        "  exit 1",
+        "fi",
+        "sleep 1",
+    ]
+    if user:
+        lines.append(f"tailscale set --operator={user}")
+    return "\n".join(lines) + "\n"
+
+
 def tailscale_start_job(password=None):
     exe = tailscale_bin()
     if not exe:
@@ -7638,8 +8152,7 @@ def tailscale_start_job(password=None):
     TAILSCALE_JOB["step"] = ("Turning Tailscale on…" if password is not None
                              else "Enter this computer's password in the prompt to turn Tailscale on…")
     # Start its background service now and at every boot, and let this account sign in without the password again.
-    script = "systemctl enable --now tailscaled && sleep 2" + (f" && tailscale set --operator={user}" if user else "")
-    as_root(["/bin/sh", "-c", script], "turn Tailscale on", password)
+    as_root(["/bin/sh", "-c", tailscale_start_script(user)], "turn Tailscale on", password)
     TAILSCALE_JOB["step"] = "Waiting for the Tailscale sign-in link…"
     # "tailscale up" waits for the sign-in to finish; leave it going and let Settings pick up the link.
     subprocess.Popen([exe, "up", "--timeout=600s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -7950,17 +8463,108 @@ def api_network_https(req, conn):
     return info
 
 
-@route("GET", "/ca.crt")
-def ca_certificate(req, conn):
-    """The app's own certificate authority, to install on a device so it trusts this app's HTTPS. Public: it holds no secret."""
+def ca_pem():
     if tls_own_cert() or not os.path.isfile(tls_path("ca.pem")):
         raise ApiError(404, "HTTPS with the app's own certificate isn't set up")
     with open(tls_path("ca.pem"), "rb") as f:
-        return Raw(f.read(), "application/x-x509-ca-cert", filename="horan-event-tracking-ca.crt")
+        return f.read()
+
+
+@route("GET", "/ca.crt")
+def ca_certificate(req, conn):
+    """The app's own certificate authority, to install on a device so it trusts this app's HTTPS. Public: it holds no secret.
+    ?install=1 sends it to be opened rather than saved: Firefox then shows its own "trust this certificate" box."""
+    if req.q("install") == "1":
+        return Raw(ca_pem(), "application/x-x509-ca-cert")
+    return Raw(ca_pem(), "application/x-x509-ca-cert", filename="horan-event-tracking-ca.crt")
+
+
+@route("GET", "/ca.cer")
+def ca_certificate_der(req, conn):
+    """The same certificate in binary (DER) form, which some Windows and Android versions prefer."""
+    import ssl
+    der = ssl.PEM_cert_to_DER_cert(ca_pem().decode("ascii"))
+    return Raw(der, "application/pkix-cert", filename="horan-event-tracking-ca.cer")
+
+
+def request_host(req):
+    raw = (req.handler.headers.get("Host") or "").strip()
+    host = raw[1:raw.index("]")] if raw.startswith("[") and "]" in raw else raw.rsplit(":", 1)[0]
+    return host.lower().rstrip(".")
+
+
+def host_covered(host):
+    """Is this address one the app's certificate is made for? If not, browsers warn even once it's trusted."""
+    n = tls_read_json("leaf.json").get("names") or {}
+    if not host or tls_own_cert():
+        return True
+    try:
+        return ipaddress.ip_address(host).compressed in {ipaddress.ip_address(x).compressed for x in n.get("ips") or []}
+    except ValueError:
+        return host in (n.get("dns") or [])
+
+
+TRUST_STEPS = [
+    ("iPhone / iPad", "Open this page in Safari and tap <b>Download (.crt)</b>, then Allow. Go to Settings → General → VPN &amp; Device "
+                      "Management, tap the profile and Install. Then Settings → General → About → Certificate Trust Settings → switch it on."),
+    ("Android", "Tap <b>Download (.crt)</b>. Then Settings → Security (or Security &amp; privacy) → More security settings → Encryption &amp; "
+                "credentials → Install a certificate → <b>CA certificate</b>, and choose the file. Chrome on Android uses it after that."),
+    ("Windows (Chrome, Edge)", "Download it, open the file → Install Certificate → Local Machine → “Place all certificates in the following "
+                               "store” → <b>Trusted Root Certification Authorities</b>. Restart the browser."),
+    ("Mac (Safari, Chrome)", "Download it and open it: it goes into Keychain Access. Double-click it there → Trust → “When using this "
+                             "certificate”: <b>Always Trust</b>. Restart the browser."),
+    ("Firefox (any computer)", "Click <b>Install in Firefox</b>. In the box that opens, tick <b>Trust this CA to identify websites</b> and "
+                               "press OK. (Firefox keeps its own list, so do this even if the computer already trusts it.) If Firefox "
+                               "saves the file instead: Settings → Privacy &amp; Security → View Certificates → Authorities → Import, "
+                               "and tick the same box."),
+    ("Linux / Bazzite (Chrome)", "Download it. Chrome: Settings → Privacy and security → Security → Manage certificates → "
+                                 "Authorities (or “Local certificates” → Custom → Installed by you) → Import, and tick “Trust this "
+                                 "certificate for identifying websites”."),
+]
+
+
+@route("GET", "/trust")
+def trust_page(req, conn):
+    """Set up a device to trust the app's HTTPS: open http://<address>:<port>/trust on it. Public, and works over
+    plain http even while HTTPS is on, so a browser's certificate warning can't get in the way of the download."""
+    on = TLS_CTX is not None and not tls_own_cert() and os.path.isfile(tls_path("ca.pem"))
+    info = tls_info(conn) if on else {}
+    host = request_host(req)
+    port = PORT
+    https_url = f"https://{'[' + host + ']' if ':' in host else host}:{port}/"
+    warn = ""
+    if on and not host_covered(host):
+        n = info.get("names") or []
+        warn = (f'<p class="banner warn">The certificate doesn’t cover <b>{html_escape(host)}</b>, the address you used, so browsers '
+                f'will warn even after you trust it. Use one of these instead: {html_escape(", ".join(n))}.</p>')
+    if not on:
+        body = ('<h1>HTTPS isn’t on</h1><p>There’s no certificate to install: this app is using plain http. An admin can turn on '
+                'HTTPS under Settings → Users → Network access.</p>')
+    else:
+        steps = "".join(f"<li><b>{t}:</b> {d}</li>" for t, d in TRUST_STEPS)
+        body = f"""<h1>Trust this app on this device</h1>
+<p>The app makes its own certificate, so a browser warns about it until the device is told to trust it. Do this once per device;
+after that there are no warnings, even if the computer's address changes.</p>
+{warn}
+<p class="actions"><a class="btn primary" href="/ca.crt" download>Download (.crt)</a>
+<a class="btn" href="/ca.cer" download>Download (.cer)</a>
+<a class="btn" href="/ca.crt?install=1">Install in Firefox</a></p>
+<ol class="steps">{steps}</ol>
+<p>Before trusting it, check the fingerprint your device shows matches this one:<br><code class="fp">{html_escape(info.get('fingerprint', ''))}</code></p>
+<p class="muted">It only works for this app on your own network: it can’t be used for any website on the internet.
+It covers: {html_escape(", ".join(info.get("names") or []))}.</p>
+<p><a href="{html_escape(https_url)}">Open the app with https →</a></p>"""
+    page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trust this app</title><link rel="stylesheet" href="/static/trust.css?v={VERSION}"></head>
+<body><main>{body}</main></body></html>"""
+    return Raw(page, "text/html; charset=utf-8")
 
 
 # Sent with every response. The policy only lets the page run the app's own script files, so even if some
 # text were ever shown without being made safe, a script hidden in it could not run or send data elsewhere.
+# what other devices may still fetch over plain http while HTTPS is on (public, and never a secret or a sign-in)
+PLAIN_HTTP_OK = ("/trust", "/ca.crt", "/ca.cer")
+
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
                                "img-src 'self' data: blob: https:; media-src 'self' blob:; font-src 'self' data:; "
@@ -8046,6 +8650,21 @@ class Handler(BaseHTTPRequestHandler):
                 return v
         return None
 
+    def _calendar(self, path):
+        """The calendar feed: the long secret in its address is what lets a calendar app read it (no sign-in)."""
+        m = CAL_PATH_RE.match(path)
+        conn = db()
+        try:
+            if not is_loopback(self.client_address[0]) and get_settings(conn)["network_access"] != "1":
+                return self._json(403, {"error": "Network access is turned off on the computer running this app"})
+            body = calendar_feed_response(conn, m.group(1)) if m else None
+        finally:
+            conn.close()
+        if body is None:
+            return self._send(404, b"Not found", "text/plain; charset=utf-8", {"Cache-Control": "no-store"})
+        return self._send(200, body, "text/calendar; charset=utf-8",
+                          {"Cache-Control": "no-cache", "Content-Disposition": 'inline; filename="jobs.ics"'})
+
     def _login_page(self):
         with open(os.path.join(STATIC_DIR, "login.html"), "rb") as f:
             body = versioned_assets(f.read())
@@ -8088,13 +8707,16 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _dispatch(self):
-        if not self._host_ok():
-            return self._json(403, {"error": "Forbidden host"})
         parsed = urlparse(self.path)
         path = parsed.path
         method = "GET" if self.command == "HEAD" else self.command
-        if self.plain_remote:
+        if method == "GET" and path.startswith("/cal/"):
+            return self._calendar(path)
+        if not self._host_ok():
+            return self._json(403, {"error": "Forbidden host"})
+        if self.plain_remote and not (method == "GET" and (path in PLAIN_HTTP_OK or path.startswith("/static/"))):
             # HTTPS is on: send other devices to the encrypted address, and never take sign-ins or data over plain http.
+            # (Setting a device up to trust the certificate is the exception: it holds no secret.)
             if method == "GET":
                 return self._send(301, b"", "text/plain", {"Location": f"https://{self.headers.get('Host')}{self.path}",
                                                            "Cache-Control": "no-store"})
@@ -8123,7 +8745,8 @@ class Handler(BaseHTTPRequestHandler):
         need_login = (has_users and not user) or (remote and not session)
         if need_login:
             public = (path in ("/api/login", "/api/login-options", "/api/meta", "/favicon", "/apple-touch-icon.png",
-                               "/manifest.webmanifest", "/app-icon-192.png", "/app-icon-512.png", "/logo", "/ca.crt")
+                               "/manifest.webmanifest", "/app-icon-192.png", "/app-icon-512.png", "/logo")
+                      or path in PLAIN_HTTP_OK
                       or path.startswith("/static/"))
             if not public:
                 if path.startswith("/api/"):
@@ -8318,7 +8941,15 @@ def init_db():
                              ("contacts", "next_job_number", "INTEGER"),
                              ("jobs", "discount_amount", "REAL NOT NULL DEFAULT 0"),
                              ("jobs", "start_time", "TEXT NOT NULL DEFAULT ''"),
-                             ("jobs", "end_time", "TEXT NOT NULL DEFAULT ''")):
+                             ("jobs", "end_time", "TEXT NOT NULL DEFAULT ''"),
+                             ("contacts", "invoice_prefix", "TEXT NOT NULL DEFAULT ''"),
+                             ("contacts", "payment_terms", "TEXT NOT NULL DEFAULT ''"),
+                             ("products", "dmx_channels", "INTEGER NOT NULL DEFAULT 0"),
+                             ("products", "wireless", "INTEGER NOT NULL DEFAULT 0"),
+                             ("products", "rf_band", "TEXT NOT NULL DEFAULT ''"),
+                             ("job_items", "patch", "TEXT NOT NULL DEFAULT ''"),
+                             ("jobs", "zoho_estimate_id", "TEXT"),
+                             ("jobs", "zoho_estimate_number", "TEXT")):
         if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():

@@ -2,6 +2,21 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.30.0 — 2026-11-13 · Patch sheets, terms of hire, calendar feed, Zoho quotes, client payment terms, and fixes
+
+- Fix: sending a job to Zoho Books marked it Invoiced, so it disappeared from your open jobs — and, because Invoiced jobs don't reserve stock, a job invoiced before its hire freed its kit for other bookings. Now the job's status only changes if you tick Mark this job as Invoiced (completed) when sending it. Invoicing several jobs with “Mark finished jobs as Invoiced” only changes jobs whose hire is over, and jobs invoiced in advance are tagged “invoiced” in the list.
+- Zoho Books quotes: send a job to Zoho as a quote (an estimate), and update it later, as well as an invoice. Connected to Zoho before? Disconnect and connect once more so Zoho lets the app make quotes.
+- Zoho invoices now have the same number as the app (the job number, with any invoice prefix) — or untick that in Settings to let Zoho number them. Zoho's Order Number is the client's PO from the job, never the job number. The due date and payment terms are sent too.
+- Payment terms per client: Due on receipt, Net 7 to Net 90, or Due end of next month. They set the due date and are printed next to it on invoices, in exports and in Zoho. A client can also have their own invoice number prefix, used instead of your usual one.
+- Terms of hire: a new document for each job (Documents → Terms of hire), with your terms from Settings and the client's name, the job's dates, times and venue filled in, and lines for both sides to sign.
+- Patch: a page for each job (Documents → Patch) to give lighting DMX addresses (universe and start address per unit, with auto-addressing and overlap warnings), give wireless kit a frequency per unit (with warnings for duplicates, frequencies too close together, or outside the band), and write the audio input and output lists. It prints as a patch sheet. Set a stock item's DMX footprint, or tick Wireless, to include it.
+- Stage builder: decks can be joined with bolts and nuts instead of clamps. Choose the bolt and nut items and how many bolts go in each joint; the job and the prep list get the right numbers.
+- Calendar feed: a link your calendar subscribes to, showing your jobs and staying up to date (Settings → External software → Calendar feed). Apple Calendar, Outlook and Thunderbird can use it on your network; for Google Calendar and Teamup the app publishes only the calendar link with Tailscale Funnel.
+- Fix: the HTTPS certificate is easier to install. Open http://<address>:8765/trust on a device for a page with the download and the steps for that device: it works before signing in and over plain http, so a browser's warning can't block the download. There's an Install in Firefox button that opens Firefox's own trust box, a .cer version for Windows and Android, and a warning when you open the app with an address the certificate doesn't cover (such as a Tailscale ….ts.net name).
+- Fix: turning Tailscale on could fail with “Failed to connect to local Tailscale daemon … tailscaled.service not running”, because the app only waited two seconds for Tailscale's background service. It now waits until the service is ready, restarts it once if it doesn't come up, and if it still won't start, shows the computer's own reason.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.29.0 — 2026-11-12 · Job discount button, start and end times, easier categories and a tidier Stock page
 
 - Discount the whole job from its own button: on a job, under Totals, press Add discount and give it as a percentage or as a fixed amount (e.g. £50 off). It shows what the job comes to as you type, and can be changed or removed the same way. A fixed amount is never more than the job itself.
