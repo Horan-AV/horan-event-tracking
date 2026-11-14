@@ -2,6 +2,14 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.31.1 — 2026-11-14 · Clean-up and a fix for issued invoices
+
+- Fix: an invoice that had already been issued (downloaded, printed, exported or sent to Zoho) changed its due date and payment terms if you later changed the client's terms. It now keeps the ones it was issued with.
+- Clean-up: removed code nothing used any more (an unused API address, two unused functions and some unused settings), and replaced two outdated browser features with current ones. No change to how the app works.
+- Checked: every page, print document and Settings tab loads without errors, every API address answers without a server error, and the Python and JavaScript pass automatic checks for unused code and likely mistakes.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.31.0 — 2026-11-14 · Linked view for check out and in, and no more jumping to the top
 
 - Check out and check in have a Default / Linked switch (each device remembers it). Default lists items by category, as before. Linked puts each item's accessories straight under it — the stands, cables and PSUs with the speaker or radio mic they go with — and package, stage and cable run contents under their name, in the job's order.

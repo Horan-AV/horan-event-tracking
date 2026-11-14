@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.31.0"
+VERSION = "1.31.1"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -56,8 +56,6 @@ HEADLESS = False  # started with --headless: a server with no screen of its own
 STATUSES = ["enquiry", "quote", "provisional", "confirmed", "out",
             "returned", "invoiced", "cancelled", "lost"]
 HARD = ("confirmed", "out")          # firmly reserve stock
-SOFT = ("provisional",)              # shown as a warning, not a hard booking
-OPEN_STATUSES = ("enquiry", "quote", "provisional", "confirmed", "out")
 KINDS = ("rental", "sale", "service")
 ITEM_TYPES = ("equipment", "cable", "power", "package", "case")
 MAX_RANGE_DAYS = 400
@@ -1811,9 +1809,6 @@ def app_name(conn):
     return (get_settings(conn).get("app_name") or "").strip() or DEFAULT_SETTINGS["app_name"]
 
 
-ACTIVITY_KINDS = ("job", "item", "scan", "stock", "contact", "vendor", "settings", "user")
-
-
 def log_activity(conn, kind, summary, job_id=None, product_id=None):
     conn.execute("INSERT INTO activity(at, user_id, user_name, kind, summary, job_id, product_id) VALUES(?, ?, ?, ?, ?, ?, ?)",
                  (now_iso(), actor_id(), actor_name(), kind, summary[:500], job_id, product_id))
@@ -2159,10 +2154,6 @@ def file_put(conn, key, ctype, data, name=""):
 
 def file_has(conn, key):
     return bool(conn.execute("SELECT 1 FROM files WHERE key = ?", (key,)).fetchone())
-
-
-def find_logo():  # kept for older callers: True when a logo is set
-    return None
 
 
 def logo_variant(req):
@@ -3138,13 +3129,6 @@ def api_zoho_disconnect(req, conn):
     return zoho_status(conn)
 
 
-def split_name(name):
-    parts = (name or "").strip().split()
-    if not parts:
-        return "", ""
-    return parts[0], " ".join(parts[1:])
-
-
 def zoho_customer_id(z, conn, contact):
     """Find the client in Zoho Books. Never creates customers."""
     if contact.get("zoho_contact_id"):
@@ -3315,6 +3299,11 @@ def invoice_info(job, s):
     issued = bool(job.get("invoice_date"))
     date = dt.date.fromisoformat(job["invoice_date"]) if issued else dt.date.today()
     days, label, due = payment_terms_for(job, s, date)
+    if issued and job.get("invoice_due"):
+        # issued: keep the due date and terms it went out with, even if the client's terms change later
+        due = dt.date.fromisoformat(job["invoice_due"])
+        label = job.get("invoice_terms") or label
+        days = max(0, (due - date).days)
     return {"number": number, "date": date.isoformat(), "due": due.isoformat(), "terms_days": days, "terms": label,
             "issued": issued, "exported_at": job.get("exported_at"), "exported_to": job.get("exported_to")}
 
@@ -3327,9 +3316,11 @@ def issue_invoice(conn, job):
     if "contact" not in job:
         job["contact"] = one(conn.execute("SELECT * FROM contacts WHERE id = ?", (job.get("contact_id"),))) if job.get("contact_id") else None
     number = f"{invoice_prefix_for(job, s)}{job['number']}"
-    conn.execute("UPDATE jobs SET invoice_number = ?, invoice_date = ? WHERE id = ?",
-                 (number, dt.date.today().isoformat(), job["id"]))
-    job["invoice_number"], job["invoice_date"] = number, dt.date.today().isoformat()
+    today = dt.date.today()
+    _days, label, due = payment_terms_for(job, s, today)
+    conn.execute("UPDATE jobs SET invoice_number = ?, invoice_date = ?, invoice_due = ?, invoice_terms = ? WHERE id = ?",
+                 (number, today.isoformat(), due.isoformat(), label, job["id"]))
+    job.update(invoice_number=number, invoice_date=today.isoformat(), invoice_due=due.isoformat(), invoice_terms=label)
 
 
 def _ordered_items(job):
@@ -6602,9 +6593,6 @@ def api_check_note(req, conn, jid):
     return check_lines(conn, int(jid), direction)
 
 
-ACTIVE_STATUSES = ("provisional", "confirmed", "out", "returned")
-
-
 def lookup_code(conn, code):
     """What a barcode is, and where it is: which job it's out on, and which jobs it's booked on."""
     asset = one(conn.execute("SELECT x.*, p.name AS product_name FROM assets x JOIN products p ON p.id = x.product_id "
@@ -6752,7 +6740,6 @@ JOIN_COST_M = {"excess": 1.0, "joins": 3.0}
 def best_run(cables, joiners, free, length, prefer="excess"):
     """Pick the cables for one run by scoring spare length against the number of joins."""
     ordered = sorted(cables, key=lambda c: -c["length_m"])
-    cable_ids = {c["id"] for c in cables}
     join_cost = JOIN_COST_M.get(prefer, 1.0)
     best = None
     for k in range(1, MAX_CABLES_PER_RUN + 1):
@@ -7182,7 +7169,6 @@ def skirt_items(conn):
     return out
 
 
-SKIRT_FILTER_KEYS = ("height", "style", "colour")
 
 
 def skirt_filter(d):
@@ -7340,11 +7326,6 @@ def apply_stage_extras(conn, parent, meta, clamp_product, points, sides, skirt_i
         if int(role.split(":")[1]) not in used:
             conn.execute("DELETE FROM job_items WHERE id = ?", (r["id"],))
     conn.execute("UPDATE job_items SET meta = ? WHERE id = ?", (json.dumps(meta), parent["id"]))
-
-
-@route("GET", "/api/equip-kinds")
-def api_equip_kinds(req, conn):
-    return [{"key": k, "label": v[0], "help": v[1], "fields": sorted(v[2])} for k, v in EQUIP_KINDS.items()]
 
 
 @route("GET", "/api/stage-extras")
@@ -8970,7 +8951,9 @@ def init_db():
                              ("products", "rf_band", "TEXT NOT NULL DEFAULT ''"),
                              ("job_items", "patch", "TEXT NOT NULL DEFAULT ''"),
                              ("jobs", "zoho_estimate_id", "TEXT"),
-                             ("jobs", "zoho_estimate_number", "TEXT")):
+                             ("jobs", "zoho_estimate_number", "TEXT"),
+                             ("jobs", "invoice_due", "TEXT"),
+                             ("jobs", "invoice_terms", "TEXT")):
         if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():

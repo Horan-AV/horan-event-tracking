@@ -1055,16 +1055,6 @@ async function router() {
 
 /* ---------------------------------------------------------------- dashboard */
 
-function jobRow(j, { showStatus = true } = {}) {
-  return `<tr class="click" data-href="/job/${j.id}">
-    <td><span class="mono muted">${esc(j.number)}</span><br><strong>${esc(j.name)}</strong></td>
-    <td>${esc(j.contact_company || j.contact_name || '')}${j.contact_company && j.contact_name ? `<br><span class="muted">${esc(j.contact_name)}</span>` : ''}</td>
-    <td>${esc(jobWhen(j))}</td>
-    ${showStatus ? `<td>${pill(j.status)}</td>` : ''}
-    <td class="n">${j.totals ? money(j.totals.net) : ''}</td>
-  </tr>`;
-}
-
 function rowLinks(view) {
   view.onclick = (e) => {
     const tr = e.target.closest('[data-href]');
@@ -4688,10 +4678,12 @@ function barcodeSVG(text) {
 function printCloseCode(code) {
   const w = window.open('', '_blank', 'width=420,height=320');
   if (!w) { toast('Allow pop-ups to print the label', 'error'); return; }
-  w.document.write(`<!doctype html><meta charset="utf-8"><title>Close flight case</title>
-    <style>body{font-family:system-ui,sans-serif;text-align:center;margin:24px}svg{width:320px;height:auto}h1{font-size:18px;margin:0 0 10px}</style>
-    <h1>CLOSE FLIGHT CASE</h1>${barcodeSVG(code)}<p style="font-size:12px">Scan at check-out to close the case being packed</p>`);
-  w.document.close();
+  const d = w.document;
+  d.title = 'Close flight case';
+  const style = d.createElement('style');
+  style.textContent = 'body{font-family:system-ui,sans-serif;text-align:center;margin:24px}svg{width:320px;height:auto}h1{font-size:18px;margin:0 0 10px}';
+  d.head.appendChild(style);
+  d.body.innerHTML = `<h1>CLOSE FLIGHT CASE</h1>${barcodeSVG(code)}<p style="font-size:12px">Scan at check-out to close the case being packed</p>`;
   w.focus();
   setTimeout(() => w.print(), 200);
 }
@@ -6051,10 +6043,17 @@ async function fitSVG(file) {
 
 /** Logo: fits it to its content (trims empty see-through edges; for SVGs, widens the drawing area so nothing is cut off).
  *  Returns { data_url, width, height, warning }. */
+/** Base64 of text as UTF-8 (in place of the old btoa(unescape(encodeURIComponent(…))) trick). */
+function b64utf8(text) {
+  let bin = '';
+  for (const byte of new TextEncoder().encode(text)) bin += String.fromCharCode(byte);
+  return btoa(bin);
+}
+
 async function prepareLogo(file) {
   if (file.type === 'image/svg+xml' || /\.svg$/i.test(file.name || '')) {
     const fit = await fitSVG(file);
-    const b64 = btoa(unescape(encodeURIComponent(fit.text)));
+    const b64 = b64utf8(fit.text);
     return { data_url: `data:image/svg+xml;base64,${b64}`, width: fit.width, height: fit.height, warning: '' };
   }
   const { img, url } = await loadImage(file);
@@ -6305,7 +6304,7 @@ function iconPickerModal(target, label, def) {
         if (f.type === 'image/svg+xml' || /\.svg$/i.test(f.name)) {
           const svg = sanitizeSVG((await loadSVGDocument(f)).documentElement);
           if (!svg || svg.nodeName.toLowerCase() !== 'svg') throw new Error('That SVG file couldn’t be read');
-          dataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(new XMLSerializer().serializeToString(svg))));
+          dataUrl = 'data:image/svg+xml;base64,' + b64utf8(new XMLSerializer().serializeToString(svg));
         } else {
           const { img, url } = await loadImage(f);
           dataUrl = squarePNG(img, 128); URL.revokeObjectURL(url);
