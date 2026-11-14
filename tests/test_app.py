@@ -1053,6 +1053,16 @@ class TestInvoicingAndZoho(ServerCase):
         self.assertEqual(self.c.put(f"/contacts/{cid}", {"name": "Zed Events", "payment_terms": "net-ish"})[0], 400)
         self.assertEqual(self.c.put(f"/contacts/{cid}", {"name": "Zed Events", "invoice_prefix": "has space"})[0], 400)
 
+    def test_an_issued_invoice_keeps_its_due_date(self):
+        job = self.zed_job(client={"payment_terms": "30"})
+        self.assertEqual(self.c.post("/invoices/issue", {"ids": [job["id"]]})[0], 200)
+        before = self.c.get(f"/jobs/{job['id']}")[1]["invoice"]
+        self.assertTrue(before["issued"])
+        # the client's terms change afterwards: the invoice already sent doesn't
+        self.c.put(f"/contacts/{job['contact_id']}", {"name": "Zed Events", "payment_terms": "0"})
+        after = self.c.get(f"/jobs/{job['id']}")[1]["invoice"]
+        self.assertEqual((after["due"], after["terms"]), (before["due"], "Net 30"))
+
     def test_zoho_invoice_uses_the_job_number_and_the_client_po(self):
         self.connect_zoho()
         job = self.zed_job(start_date="2030-05-01", end_date="2030-05-02", status="confirmed")

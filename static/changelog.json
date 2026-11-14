@@ -2,6 +2,24 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.31.1",
+      "date": "2026-11-14",
+      "title": "Clean-up and a fix for issued invoices",
+      "changes": [
+        {
+          "text": "Fix: an invoice that had already been issued (downloaded, printed, exported or sent to Zoho) changed its due date and payment terms if you later changed the client's terms. It now keeps the ones it was issued with."
+        },
+        {
+          "text": "Clean-up: removed code nothing used any more (an unused API address, two unused functions and some unused settings), and replaced two outdated browser features with current ones. No change to how the app works."
+        },
+        {
+          "text": "Checked: every page, print document and Settings tab loads without errors, every API address answers without a server error, and the Python and JavaScript pass automatic checks for unused code and likely mistakes."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.31.0",
       "date": "2026-11-14",
       "title": "Linked view for check out and in, and no more jumping to the top",
