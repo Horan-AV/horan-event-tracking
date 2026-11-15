@@ -411,14 +411,14 @@ function fieldHTML(f, value) {
 }
 
 /** Show a form. onSubmit(values) may throw to keep the dialog open with an error. */
-function formModal({ title, fields, values = {}, submitLabel = 'Save', wide, onSubmit, onInput, intro, extraButton, after }) {
+function formModal({ title, fields, values = {}, submitLabel = 'Save', cancelLabel = 'Cancel', wide, onSubmit, onInput, intro, extraButton, after }) {
   return new Promise((resolve) => {
     const m = openModal(`<form novalidate>
         <header><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-x aria-label="Close">×</button></header>
         ${intro ? `<p class="muted" style="margin:0;padding:12px 18px 0">${esc(intro)}</p>` : ''}
         <div class="form-grid">${fields.map((f) => fieldHTML(f, values[f.name])).join('')}</div>
         <p class="form-error" hidden></p>
-        <footer>${extraButton ? `<button type="button" class="btn danger" data-extra style="margin-right:auto">${esc(extraButton.label)}</button>` : ''}<button type="button" class="btn" data-x>Cancel</button>
+        <footer>${extraButton ? `<button type="button" class="btn danger" data-extra style="margin-right:auto">${esc(extraButton.label)}</button>` : ''}<button type="button" class="btn" data-x>${esc(cancelLabel)}</button>
           <button type="submit" class="btn primary">${esc(submitLabel)}</button></footer>
       </form>`, { wide });
     const form = $('form', m.el);
@@ -4764,6 +4764,27 @@ async function drawMeCard(view) {
   };
 }
 
+/** Everyone from before usernames chooses one the first time they're in (a suggestion made from their name is ready). */
+async function chooseUsernameModal() {
+  const me = S.meta.user;
+  const res = await formModal({
+    title: 'Choose your username',
+    intro: `From now on you sign in with a username and your password, instead of choosing your name. We’ve suggested one — keep it, or type your own.`,
+    fields: [{ name: 'username', label: 'Username', required: true, placeholder: 'e.g. sam.jones',
+      help: 'Letters, numbers and . _ - (no spaces). Capitals don’t matter when you sign in.' }],
+    values: { username: me.username },
+    submitLabel: 'Use this username', cancelLabel: 'Later',
+    onSubmit: (v) => put('/me/username', { username: v.username.trim() }),
+  });
+  if (!res) { toast('You’ll be asked again next time — until then, you can sign in with your name.'); return; }
+  try {  // a remembered username on this device follows the change
+    const k = 'het-username', saved = localStorage.getItem(k);
+    if (saved && (saved === (me.username || '').toLowerCase() || saved === me.name.toLowerCase())) localStorage.setItem(k, res.username);
+  } catch { /* storage unavailable */ }
+  me.username = res.username; me.username_chosen = true;
+  toast(`Your username is ${res.username} — use it next time you sign in.`, 'ok');
+}
+
 /** Change your own password (you need the current one). */
 async function changePasswordModal() {
   const ok = await formModal({
@@ -5399,7 +5420,7 @@ async function drawUsersCard(view) {
        <p class="muted small">Once there’s a user, everyone signs in with their username and password, on this computer too. Start with yourself. The first person is an admin, who can change settings and manage users.</p>
        <button type="button" class="btn primary" data-user-add>Add the first user (you)</button>`
     : `<ul class="user-list">${users.map((u) => `<li><span class="u"><span class="avatar" style="${u.active ? '' : 'opacity:.4'}">${esc(initials(u.name))}</span>
-        <span><strong>${esc(u.name)}</strong> <span class="mono muted small" title="Username — what they type to sign in">${esc(u.username || '')}</span>${u.is_admin ? ' <span class="badge ok">Admin</span>' : ''}${u.active ? '' : ' <span class="pill">Disabled</span>'}${me && me.id === u.id ? ' <span class="muted small">(you)</span>' : ''}
+        <span><strong>${esc(u.name)}</strong> <span class="mono muted small" title="Username — what they type to sign in">${esc(u.username || '')}</span>${u.username_chosen === false ? ' <span class="pill" title="From before usernames: they’re asked to choose one when they next sign in (with their name, until then)">not chosen yet</span>' : ''}${u.is_admin ? ' <span class="badge ok">Admin</span>' : ''}${u.active ? '' : ' <span class="pill">Disabled</span>'}${me && me.id === u.id ? ' <span class="muted small">(you)</span>' : ''}
         <br><span class="muted small">${u.last_activity ? `${esc(u.last_activity.summary)} · ${esc(fmtDate(u.last_activity.at.slice(0, 10)))} ${esc(u.last_activity.at.slice(11, 16))}` : 'No activity yet'}</span></span></span>
         ${canEdit ? `<button type="button" class="btn small" data-user-edit="${u.id}">Edit</button>` : ''}</li>`).join('')}</ul>
        ${canEdit ? '<div class="actions" style="margin-top:10px"><button type="button" class="btn primary small" data-user-add>Add user</button></div>' : ''}
@@ -7552,13 +7573,15 @@ async function boot() {
     labelsModal(b.dataset.printLabels.split(',').map(Number).filter(Boolean)).catch((ex) => toast(ex.message, 'error'));
   }, true);
   if (S.meta.is_admin && S.meta.can_update) offerScheduledUpdate();
-  try {  // signed in with an old short PIN: suggest a proper password, once per sign-in
+  // From before usernames: choose one now (asked each time the app opens, until it's done).
+  const pickName = S.meta.user && S.meta.user.username_chosen === false ? chooseUsernameModal() : Promise.resolve();
+  pickName.then(() => { try {  // signed in with an old short PIN: suggest a proper password, once per sign-in
     if (sessionStorage.getItem('het-weak-password')) {
       sessionStorage.removeItem('het-weak-password');
       confirmModal('You signed in with a short PIN. Passwords now need at least 8 characters — choose a new one to keep your account safe.',
         { title: 'Choose a password', okLabel: 'Change it now', danger: false }).then((yes) => { if (yes) changePasswordModal(); });
     }
-  } catch { /* storage unavailable */ }
+  } catch { /* storage unavailable */ } });
   try {
     const upd = sessionStorage.getItem('het-updated');
     if (upd) { sessionStorage.removeItem('het-updated'); toast(/^[0-9.]+$/.test(upd) ? `Now running version ${upd}` : upd, 'ok'); }

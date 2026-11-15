@@ -1196,7 +1196,8 @@ def api_meta(req, conn):
     admin = (not users_exist(conn)) or bool(u and u["is_admin"])
     return {"version": VERSION, "data_dir": DATA_DIR if admin else "", "signed_in": True,
             "remote": req.remote, "server_name": socket.gethostname(), "users_enabled": users_exist(conn),
-            "user": u and {"id": u["id"], "name": u["name"], "username": u.get("username") or "", "is_admin": bool(u["is_admin"])},
+            "user": u and {"id": u["id"], "name": u["name"], "username": u.get("username") or "",
+                           "username_chosen": bool(u.get("username_chosen")), "is_admin": bool(u["is_admin"])},
             "is_admin": (not users_exist(conn)) or bool(u and u["is_admin"]),
             "headless": HEADLESS, "can_update": (not req.remote) or HEADLESS,
             "github_repo": GITHUB_REPO,
@@ -1485,8 +1486,11 @@ def api_login(req, conn):
     target = None
     if users_exist(conn):
         if d.get("username") is not None:
-            row = conn.execute("SELECT id FROM users WHERE username = ? COLLATE NOCASE AND active = 1",
-                               (str(d.get("username") or "").strip(),)).fetchone()
+            typed = str(d.get("username") or "").strip()
+            row = conn.execute("SELECT id FROM users WHERE username = ? COLLATE NOCASE AND active = 1", (typed,)).fetchone()
+            if not row and typed:   # someone from before usernames, signing in with their name as they used to
+                row = conn.execute("SELECT id FROM users WHERE name = ? COLLATE NOCASE AND active = 1 AND username_chosen = 0",
+                                   (re.sub(r"\s+", " ", typed),)).fetchone()
             uid = row[0] if row else None
             # an unknown username is limited like a wrong password, without saying whether it exists
             target = f"user:{uid}" if uid else f"name:{str(d.get('username') or '').strip().lower()[:40]}"
@@ -1529,7 +1533,22 @@ def api_login(req, conn):
         if target:
             LOGIN_FAILS.pop(target, None)
     # An old short PIN still signs in, but the app asks them to choose a proper password.
-    return {"ok": True, "weak": bool(user) and len(secret) < USER_PIN_MIN}
+    return {"ok": True, "weak": bool(user) and len(secret) < USER_PIN_MIN,
+            "username": (user or {}).get("username") or "", "choose_username": bool(user) and not user.get("username_chosen")}
+
+
+@route("PUT", "/api/me/username")
+def api_my_username(req, conn):
+    """Choose your own username (everyone from before usernames is asked to, the first time they sign in)."""
+    me = current_user(conn, req)
+    if not me:
+        raise ApiError(400, "Sign in as a user first")
+    username = clean_username((req.json() or {}).get("username"))
+    if username_taken(conn, username, me["id"]):
+        raise ApiError(400, f"The username {username} is already taken — choose another")
+    conn.execute("UPDATE users SET username = ?, username_chosen = 1 WHERE id = ?", (username, me["id"]))
+    conn.commit()
+    return {"username": username}
 
 
 @route("PUT", "/api/me/password")
@@ -1610,7 +1629,7 @@ def check_user_pin(conn, uid, pin):
 def current_user(conn, req):
     """The signed-in person for this request (None when nobody needs to sign in)."""
     if req.session and req.session.get("user_id"):
-        return one(conn.execute("SELECT id, name, username, is_admin FROM users WHERE id = ? AND active = 1",
+        return one(conn.execute("SELECT id, name, username, username_chosen, is_admin FROM users WHERE id = ? AND active = 1",
                                 (req.session["user_id"],)))
     return None
 
@@ -1784,7 +1803,10 @@ def clean_pin(pin, required, name=""):
 
 
 def user_row(u):
-    return {k: u[k] for k in ("id", "name", "username", "is_admin", "active", "created_at", "last_seen") if k in u}
+    out = {k: u[k] for k in ("id", "name", "username", "is_admin", "active", "created_at", "last_seen") if k in u}
+    if "username_chosen" in u:
+        out["username_chosen"] = bool(u["username_chosen"])
+    return out
 
 
 @route("GET", "/api/users")
@@ -1810,7 +1832,7 @@ def api_users_post(req, conn):
     username = clean_username(d["username"]) if d.get("username") else username_from_name(conn, name)
     if username_taken(conn, username):
         raise ApiError(400, f"The username {username} is already taken — choose another")
-    uid = insert(conn, "users", {"name": name, "username": username,
+    uid = insert(conn, "users", {"name": name, "username": username, "username_chosen": 1,
                                  "pin_hash": clean_pin(d.get("password") or d.get("pin"), True, name),
                                  "is_admin": 1 if (first or d.get("is_admin")) else 0, "active": 1, "created_at": now_iso()})
     conn.commit()
@@ -1866,7 +1888,8 @@ def api_login_options(req, conn):
     nobody."""
     name = app_name(conn)
     extra = {"app_name": name, "default_name": name == DEFAULT_SETTINGS["app_name"], "has_logo": file_has(conn, "logo_light")}
-    return {"mode": "users" if users_exist(conn) else "passcode", **extra}
+    pending = bool(conn.execute("SELECT 1 FROM users WHERE active = 1 AND username_chosen = 0 LIMIT 1").fetchone())
+    return {"mode": "users" if users_exist(conn) else "passcode", "name_hint": pending, **extra}
 
 
 def app_name(conn):
@@ -2131,6 +2154,8 @@ def describe(fn_name, conn, req, groups, body, result, pre):
     if fn_name == "api_patch_put":
         what = [w for w, k in (("DMX addresses", "dmx"), ("frequencies", "rf"), ("the audio patch", "audio")) if body.get(k)]
         return ("job", "Changed " + (" and ".join(what) or "the patch"), g[0], None)
+    if fn_name == "api_my_username":
+        return ("user", f"Chose the username {r.get('username', '')}", None, None)
     if fn_name == "api_my_password":
         return ("user", "Changed their password", None, None)
     if fn_name == "api_users_post":
@@ -9019,7 +9044,8 @@ def init_db():
                              ("jobs", "zoho_estimate_number", "TEXT"),
                              ("jobs", "invoice_due", "TEXT"),
                              ("jobs", "invoice_terms", "TEXT"),
-                             ("users", "username", "TEXT")):
+                             ("users", "username", "TEXT"),
+                             ("users", "username_chosen", "INTEGER NOT NULL DEFAULT 0")):
         if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():

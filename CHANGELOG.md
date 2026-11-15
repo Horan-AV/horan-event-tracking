@@ -6,7 +6,8 @@ Every version of Horan Event Tracking. The same list is in the app under **Setti
 
 - Everyone now signs in with a username and password, instead of picking their name from a list. The sign-in page no longer shows who uses the app.
 - Tick Remember my username on this device when signing in: next time it's filled in, so you only type your password. Untick it to forget it.
-- Usernames are set in Settings → Users (leave the box blank to make one from the name), and you can see yours under Settings → Updates → Your details. Everyone added before this version gets one made from their name, e.g. sam.jones — check Settings → Users after updating and let people know theirs.
+- Usernames are set in Settings → Users (leave the box blank to make one from the name), and you can see yours under Settings → Updates → Your details.
+- Everyone added before this version chooses their own username: they sign in once with their name, as before, and the app then asks them to pick one (a suggestion made from their name is ready to keep or change). Someone still signed in is asked when they next open the app. Settings → Users shows who hasn't chosen yet.
 - A wrong username gets the same answer as a wrong password, so the sign-in page doesn't reveal which usernames exist. horan-rms reset-password takes a username (or a name), and horan-rms users lists them.
 
 🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan

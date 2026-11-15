@@ -3,18 +3,23 @@
 Run from the project folder with:  python3 -m unittest discover -s tests -v
 Uses only the Python standard library, like the app itself.
 """
+import datetime as dt
+import hashlib
 import http.client
+import http.server
 import json
 import os
 import re
 import shutil
 import socket
+import sqlite3
 import ssl
 import stat
 import subprocess
 import sys
 import zlib
 import tempfile
+import threading
 import time
 import unittest
 
@@ -276,7 +281,6 @@ class TestUsernames(ServerCase):
         self.assertEqual(c.get("/meta")[1]["user"]["username"], "alex.smith")
 
     def test_users_from_before_get_a_username(self):
-        import sqlite3
         self.c.post("/users", {"name": "Jo Bloggs", "password": "correct horse"})
         self.c.post("/users", {"name": "Jo Bloggs Two", "password": "correct horse"})
         db = sqlite3.connect(os.path.join(self.tmp.name, "rms.db"))
@@ -292,9 +296,34 @@ class TestUsernames(ServerCase):
         self.assertIn("jo.bloggs.two", out.stdout)
 
 
+class TestChooseUsername(ServerCase):
+    def test_people_from_before_choose_their_username(self):
+        _, jo = self.c.post("/users", {"name": "Jo Bloggs", "password": "correct horse"})
+        self.assertTrue(jo["username_chosen"])               # someone added now is told theirs
+        db = sqlite3.connect(os.path.join(self.tmp.name, "rms.db"))
+        db.execute("UPDATE users SET username_chosen = 0")   # as everyone from before usernames is
+        db.commit()
+        db.close()
+        self.assertTrue(Client(self.port).get("/login-options")[1]["name_hint"])
+        # they sign in with their name, as before, and are asked to choose a username
+        jo_c = Client(self.port)
+        status, r = jo_c.post("/login", {"username": "jo bloggs", "password": "correct horse"})
+        self.assertEqual((status, r["choose_username"], r["username"]), (200, True, "jo.bloggs"))
+        self.assertFalse(jo_c.get("/meta")[1]["user"]["username_chosen"])
+        self.assertEqual(jo_c.put("/me/username", {"username": "no spaces allowed"})[0], 400)
+        status, r = jo_c.put("/me/username", {"username": "JoB"})
+        self.assertEqual((status, r["username"]), (200, "job"))
+        self.assertTrue(jo_c.get("/meta")[1]["user"]["username_chosen"])
+        self.assertIn("Chose the username job", jo_c.get("/activity")[1][0]["summary"])
+        # from then on it's the username; the name no longer works, and the hint has gone
+        self.assertEqual(Client(self.port).post("/login", {"username": "Jo Bloggs", "password": "correct horse"})[0], 401)
+        status, r = Client(self.port).post("/login", {"username": "job", "password": "correct horse"})
+        self.assertEqual((status, r["choose_username"]), (200, False))
+        self.assertFalse(Client(self.port).get("/login-options")[1]["name_hint"])
+
+
 class TestPasswords(ServerCase):
     def db(self):
-        import sqlite3
         return sqlite3.connect(os.path.join(self.tmp.name, "rms.db"), timeout=15)
 
     def stored(self, uid):
@@ -312,7 +341,8 @@ class TestPasswords(ServerCase):
         self.assertEqual(c.post("/users", {"name": "Admin", "password": "aaaaaaaaaa"})[0], 400)
         self.assertEqual(c.post("/users", {"name": "Admin", "password": "x" * 500})[0], 400)
         self.assertEqual(c.post("/users", {"name": "Admin", "password": "correct horse"})[0], 200)
-        self.assertEqual(c.post("/login", {"username": "admin", "password": "correct horse"})[1], {"ok": True, "weak": False})
+        r = c.post("/login", {"username": "admin", "password": "correct horse"})[1]
+        self.assertEqual((r["ok"], r["weak"]), (True, False))
 
         # only a salted hash is stored, never the password, and two people with the same password differ
         h = self.stored(1)
@@ -324,7 +354,6 @@ class TestPasswords(ServerCase):
             self.assertNotIn(b"correct horse", f.read())
 
         # a short PIN from an older version still signs in, is re-hashed, and is flagged as weak
-        import hashlib
         salt = "00112233445566778899aabbccddeeff"
         old = salt + "$" + hashlib.pbkdf2_hmac("sha256", b"4321", bytes.fromhex(salt), 200_000).hex()
         conn = self.db()
@@ -332,7 +361,8 @@ class TestPasswords(ServerCase):
         conn.commit()
         conn.close()
         s = Client(self.port)
-        self.assertEqual(s.post("/login", {"username": "Sam", "pin": "4321"})[1], {"ok": True, "weak": True})
+        r = s.post("/login", {"username": "Sam", "pin": "4321"})[1]
+        self.assertEqual((r["ok"], r["weak"]), (True, True))
         self.assertTrue(self.stored(sam["id"]).startswith("pbkdf2_sha256$600000$"))
 
         # changing your own password needs the current one, and signs out your other devices
@@ -1020,8 +1050,6 @@ class FakeZoho:
     """A stand-in for Zoho's sign-in and Books API, recording what the app sends."""
 
     def __init__(self):
-        import http.server
-        import threading
         self.calls = []
         fake = self
 
@@ -1070,7 +1098,6 @@ class FakeZoho:
 
 class TestInvoicingAndZoho(ServerCase):
     def connect_zoho(self):
-        import sqlite3
         self.zoho = FakeZoho()
         self.addCleanup(self.zoho.server.shutdown)
         db = sqlite3.connect(os.path.join(self.tmp.name, "rms.db"))
@@ -1095,7 +1122,6 @@ class TestInvoicingAndZoho(ServerCase):
         cid = job["contact_id"]
         self.c.put(f"/contacts/{cid}", {"name": "Zed Events", "payment_terms": "eom", "invoice_prefix": ""})
         inv = self.c.get(f"/jobs/{job['id']}")[1]["invoice"]
-        import datetime as dt
         d = dt.date.fromisoformat(inv["date"])
         nxt = (d.replace(day=1) + dt.timedelta(days=32)).replace(day=1)
         self.assertEqual(inv["due"], ((nxt + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)).isoformat())

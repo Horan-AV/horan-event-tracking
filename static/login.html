@@ -28,6 +28,7 @@
   button[disabled] { opacity: .6; }
   .err { color: #c0392b; font-size: 14px; min-height: 20px; margin-top: 10px; }
   .gap { height: 14px; }
+  .hint { font-size: 13px; margin: 6px 0 0; }
   .remember { display: flex; align-items: center; gap: 8px; font-weight: 400; font-size: 14px; color: var(--grey); margin: 12px 0 0; cursor: pointer; }
   .remember input { width: 18px; height: 18px; margin: 0; accent-color: var(--green); }
 </style>
@@ -39,7 +40,8 @@
   <form id="f">
     <div id="who" hidden>
       <label for="un">Username</label>
-      <input id="un" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="40">
+      <input id="un" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="80">
+      <p class="hint" id="name-hint" hidden>Not chosen a username yet? Type your name, as you did before — you’ll choose one once you’re in.</p>
       <div class="gap"></div>
     </div>
     <label for="pc" id="pc-label">Passcode</label>

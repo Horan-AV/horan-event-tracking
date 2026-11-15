@@ -18,6 +18,7 @@ fetch('/api/login-options').then((r) => r.json()).then((o) => {
   $('who').hidden = false;
   $('rem-row').hidden = false;
   $('un').required = true;
+  if (o.name_hint) $('name-hint').hidden = false;
   // "Remember my username": this device fills it in next time, so you only type your password
   let saved = '';
   try { saved = localStorage.getItem(REMEMBER_KEY) || ''; } catch (e) {}
@@ -35,7 +36,7 @@ document.getElementById('f').addEventListener('submit', async (e) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Sign-in failed');
     try {
-      if (mode === 'users' && $('rem').checked) localStorage.setItem(REMEMBER_KEY, username.toLowerCase());
+      if (mode === 'users' && $('rem').checked) localStorage.setItem(REMEMBER_KEY, (data.username || username).toLowerCase());
       else if (mode === 'users') localStorage.removeItem(REMEMBER_KEY);
       localStorage.removeItem('het-last-user');   // from before usernames
     } catch (e2) {}
