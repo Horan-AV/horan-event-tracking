@@ -372,12 +372,14 @@ People can edit or withdraw their own requests; admins can change any.
 
 ## Users and activity
 
-Add the people who use Horan Event Tracking in **Settings → Users**. Each has a name and a **password** (at least 8 characters; a few words together work well).
+Add the people who use Horan Event Tracking in **Settings → Users**. Each has a name, a **username** and a **password** (at least 8 characters; a few words together work well).
 - The first person you add is an **admin**, and is signed in straight away.
-- Once there are users, everyone signs in by picking their name and entering their password. This applies on the main computer and on phones and other devices on the network. Other devices then don't need the shared network passcode.
+- Once there are users, everyone signs in with their **username** and password. This applies on the main computer and on phones and other devices on the network. Other devices then don't need the shared network passcode.
+- **Usernames** are letters, numbers, dots, dashes or underscores, e.g. `sam.jones`, and capitals don't matter. Leave the box blank when adding someone and one is made from their name. Admins can change it with **Edit**; everyone can see their own under **Settings → Updates → Your details**. (People added before version 1.32 were given one made from their name.)
+- Tick **Remember my username on this device** when signing in, and next time it's filled in so you only type your password. Untick it to forget it. The sign-in page doesn't list anyone's names.
 - **Admins** can change settings, logos, network access, Zoho Books and software updates, and add, edit or disable users. Everyone else can do everything else: jobs, stock, scanning, clients and vendors.
 - **Switch user** at the bottom of the sidebar signs out so someone else can sign in. Disabling someone signs them out everywhere and keeps their history.
-- **Locked out?** On the computer running it, run `horan-rms reset-password "Name" --admin` (on a Mac: `python3 ~/Library/Application\ Support/Horan\ Event\ Tracking/app/server.py --reset-pin "Name" --admin`).
+- **Locked out?** On the computer running it, run `horan-rms reset-password username --admin` (on a Mac: `python3 ~/Library/Application\ Support/Horan\ Event\ Tracking/app/server.py --reset-password username --admin`). Their name works too. `horan-rms users` lists everyone's usernames.
 
 **Activity** (in the sidebar) records who did what, newest first, and can be filtered by person, by kind or by searching. It covers:
 - creating jobs and changing their status;
@@ -847,7 +849,7 @@ Manage it over SSH with the `horan-rms` command:
 | `horan-rms logs` | Show the most recent log lines |
 | `horan-rms users` | List the people who can sign in |
 | `horan-rms https on` / `off` | Encrypt connections from other devices, using the app's own certificate |
-| `horan-rms reset-password "Name" --admin` | Give someone a new password (and make them an admin) |
+| `horan-rms reset-password username --admin` | Give someone a new password (and make them an admin) |
 | `horan-rms headless on\|off` | Server mode: lets admins install updates from any device. The installer turns it on; it's remembered however the server is restarted |
 
 **Updating a server.** From version 1.15, an admin can update it from any signed-in device. Go to **Settings → Updates → Software update → Install update from file…** and choose the new zip. The server backs up its data and the current version, installs the update and restarts, and every device then uses the new version. **Roll back** and **Restore from backup** work the same way. (Without users, anyone signed in with the passcode counts as the admin.)
@@ -869,4 +871,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.31.1 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.32.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)

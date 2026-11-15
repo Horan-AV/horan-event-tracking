@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.31.1"
+VERSION = "1.32.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -1196,7 +1196,7 @@ def api_meta(req, conn):
     admin = (not users_exist(conn)) or bool(u and u["is_admin"])
     return {"version": VERSION, "data_dir": DATA_DIR if admin else "", "signed_in": True,
             "remote": req.remote, "server_name": socket.gethostname(), "users_enabled": users_exist(conn),
-            "user": u and {"id": u["id"], "name": u["name"], "is_admin": bool(u["is_admin"])},
+            "user": u and {"id": u["id"], "name": u["name"], "username": u.get("username") or "", "is_admin": bool(u["is_admin"])},
             "is_admin": (not users_exist(conn)) or bool(u and u["is_admin"]),
             "headless": HEADLESS, "can_update": (not req.remote) or HEADLESS,
             "github_repo": GITHUB_REPO,
@@ -1484,17 +1484,28 @@ def api_login(req, conn):
     user = None
     target = None
     if users_exist(conn):
-        uid = as_int(d.get("user_id"), "user_id", allow_none=True)
-        target = f"user:{uid}"
+        if d.get("username") is not None:
+            row = conn.execute("SELECT id FROM users WHERE username = ? COLLATE NOCASE AND active = 1",
+                               (str(d.get("username") or "").strip(),)).fetchone()
+            uid = row[0] if row else None
+            # an unknown username is limited like a wrong password, without saying whether it exists
+            target = f"user:{uid}" if uid else f"name:{str(d.get('username') or '').strip().lower()[:40]}"
+        else:   # a sign-in page from before usernames
+            uid = as_int(d.get("user_id"), "user_id", allow_none=True)
+            target = f"user:{uid}"
         with LOGIN_LOCK:
             ufails = [t for t in LOGIN_FAILS.get(target, []) if now - t < 900]
             LOGIN_FAILS[target] = ufails
             if len(ufails) >= 10:
-                raise ApiError(429, "Too many wrong passwords for this person. Wait 15 minutes, or ask an admin to reset it.")
+                raise ApiError(429, "Too many wrong passwords for this username. Wait 15 minutes, or ask an admin to reset it.")
         secret = str(d.get("password") or d.get("pin") or "")
-        user = None if remote_blocked or not uid else check_user_pin(conn, uid, secret)
+        if remote_blocked or not uid:
+            verify_passcode(secret, dummy_hash())   # take as long as a real check, so timing doesn't tell
+            user = None
+        else:
+            user = check_user_pin(conn, uid, secret)
         ok = user is not None
-        msg = "That password isn't right"
+        msg = "That username or password isn't right"
     else:
         ok = not remote_blocked and req.remote and check_passcode(conn, str(d.get("passcode") or ""))
         msg = "That passcode isn't right"
@@ -1599,7 +1610,7 @@ def check_user_pin(conn, uid, pin):
 def current_user(conn, req):
     """The signed-in person for this request (None when nobody needs to sign in)."""
     if req.session and req.session.get("user_id"):
-        return one(conn.execute("SELECT id, name, is_admin FROM users WHERE id = ? AND active = 1",
+        return one(conn.execute("SELECT id, name, username, is_admin FROM users WHERE id = ? AND active = 1",
                                 (req.session["user_id"],)))
     return None
 
@@ -1695,10 +1706,58 @@ def new_session(conn, req, user_id=None):
                       + ("; Secure" if getattr(req.handler, "tls", False) else ""))  # over https: never sent over http
 
 
+_DUMMY = []
+
+
+def dummy_hash():
+    """A hash nobody's password matches, so checking an unknown username takes as long as a real check."""
+    if not _DUMMY:
+        _DUMMY.append(hash_passcode("not-a-real-password"))
+    return _DUMMY[0]
+
+
 USER_PIN_MIN = 8   # new passwords; shorter PINs set before 1.27 keep working until they're changed
 COMMON_PASSWORDS = {"password", "password1", "password123", "passw0rd", "12345678", "123456789", "1234567890", "87654321",
                     "qwertyui", "qwerty123", "qwertyuiop", "11111111", "00000000", "letmein1", "iloveyou", "admin123",
                     "administrator", "welcome1", "welcome123", "changeme", "abcdefgh", "abc12345", "1q2w3e4r", "football"}
+
+
+USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
+
+
+def clean_username(v):
+    """A username: 2-32 letters, numbers, dots, dashes or underscores, starting with a letter or number. Not case-
+    sensitive (kept in lower case)."""
+    u = str(v or "").strip().lower()
+    if not USERNAME_RE.match(u):
+        raise ApiError(400, "A username is 2 to 32 letters or numbers (and . _ -), with no spaces — e.g. sam.smith")
+    return u
+
+
+def username_from_name(conn, name, skip_id=None):
+    """A free username made from someone's name: "Sam Smith" → sam.smith (sam.smith2 if that's taken)."""
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
+    base = re.sub(r"[^a-z0-9]+", ".", plain).strip(".")[:28] or "user"
+    if len(base) < 2:
+        base = f"{base}user"
+    cand, n = base, 1
+    while conn.execute("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE AND id IS NOT ?", (cand, skip_id)).fetchone():
+        n += 1
+        cand = f"{base}{n}"
+    return cand
+
+
+def fill_usernames(conn):
+    """Users from before usernames (1.32) get one made from their name; then usernames must be unique."""
+    for u in conn.execute("SELECT id, name FROM users WHERE username IS NULL OR username = '' ORDER BY id").fetchall():
+        conn.execute("UPDATE users SET username = ? WHERE id = ?", (username_from_name(conn, u[1], u[0]), u[0]))
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)")
+
+
+def username_taken(conn, username, skip_id=None):
+    return bool(conn.execute("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE AND id IS NOT ?",
+                             (username, skip_id)).fetchone())
 
 
 def check_new_password(pw, name=""):
@@ -1725,7 +1784,7 @@ def clean_pin(pin, required, name=""):
 
 
 def user_row(u):
-    return {k: u[k] for k in ("id", "name", "is_admin", "active", "created_at", "last_seen") if k in u}
+    return {k: u[k] for k in ("id", "name", "username", "is_admin", "active", "created_at", "last_seen") if k in u}
 
 
 @route("GET", "/api/users")
@@ -1748,7 +1807,11 @@ def api_users_post(req, conn):
         raise ApiError(400, "Enter their name")
     if conn.execute("SELECT 1 FROM users WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
         raise ApiError(400, f"There's already someone called {name}")
-    uid = insert(conn, "users", {"name": name, "pin_hash": clean_pin(d.get("password") or d.get("pin"), True, name),
+    username = clean_username(d["username"]) if d.get("username") else username_from_name(conn, name)
+    if username_taken(conn, username):
+        raise ApiError(400, f"The username {username} is already taken — choose another")
+    uid = insert(conn, "users", {"name": name, "username": username,
+                                 "pin_hash": clean_pin(d.get("password") or d.get("pin"), True, name),
                                  "is_admin": 1 if (first or d.get("is_admin")) else 0, "active": 1, "created_at": now_iso()})
     conn.commit()
     if first:
@@ -1776,6 +1839,10 @@ def api_user_put(req, conn, uid):
             raise ApiError(400, "Enter their name")
         if conn.execute("SELECT 1 FROM users WHERE name = ? COLLATE NOCASE AND id != ?", (data["name"], uid)).fetchone():
             raise ApiError(400, f"There's already someone called {data['name']}")
+    if d.get("username"):
+        data["username"] = clean_username(d["username"])
+        if username_taken(conn, data["username"], int(uid)):
+            raise ApiError(400, f"The username {data['username']} is already taken — choose another")
     if d.get("password") or d.get("pin"):
         data["pin_hash"] = clean_pin(d.get("password") or d.get("pin"), True, data.get("name") or u["name"])
     if "is_admin" in d:
@@ -1795,13 +1862,11 @@ def api_user_put(req, conn, uid):
 
 @route("GET", "/api/login-options")
 def api_login_options(req, conn):
-    """What the sign-in page should ask for. Public: lists first names only, no other details."""
+    """What the sign-in page should ask for: a username and password, or the network passcode. Public, so it names
+    nobody."""
     name = app_name(conn)
     extra = {"app_name": name, "default_name": name == DEFAULT_SETTINGS["app_name"], "has_logo": file_has(conn, "logo_light")}
-    if users_exist(conn):
-        return {"mode": "users", **extra, "users": rows(conn.execute(
-            "SELECT id, name FROM users WHERE active = 1 ORDER BY name COLLATE NOCASE"))}
-    return {"mode": "passcode", **extra}
+    return {"mode": "users" if users_exist(conn) else "passcode", **extra}
 
 
 def app_name(conn):
@@ -8953,7 +9018,8 @@ def init_db():
                              ("jobs", "zoho_estimate_id", "TEXT"),
                              ("jobs", "zoho_estimate_number", "TEXT"),
                              ("jobs", "invoice_due", "TEXT"),
-                             ("jobs", "invoice_terms", "TEXT")):
+                             ("jobs", "invoice_terms", "TEXT"),
+                             ("users", "username", "TEXT")):
         if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():
@@ -8966,6 +9032,7 @@ def init_db():
         migrate_stock_types(conn)
         conn.execute("INSERT INTO settings(key, value) VALUES('migrated_stock_types', '1')")
     fill_equip_kinds(conn)
+    fill_usernames(conn)
     if not conn.execute("SELECT 1 FROM settings WHERE key = 'instance_id'").fetchone():
         conn.execute("INSERT INTO settings(key, value) VALUES('instance_id', ?)", (new_instance_id(),))
     apply_fulfilled(conn)
@@ -9080,7 +9147,7 @@ def main():
                     help="turn https (with the app's own certificate) on or off for other devices, then exit")
     ap.add_argument("--status", action="store_true", help="show the version, data folder and network addresses, then exit")
     ap.add_argument("--list-users", action="store_true", help="list the people who can sign in, then exit")
-    ap.add_argument("--reset-password", "--reset-pin", dest="reset_pin", metavar="NAME", help="give someone a new password (and make sure they're an active admin "
+    ap.add_argument("--reset-password", "--reset-pin", dest="reset_pin", metavar="USERNAME", help="give someone a new password (and make sure they're an active admin "
                     "with --admin), then exit - for when everyone is locked out")
     ap.add_argument("--admin", action="store_true", help="with --reset-password: also make them an admin")
     ap.add_argument("--headless-mode", choices=("on", "off"),
@@ -9198,15 +9265,16 @@ def cli_admin(args):
                 print("Devices show a warning until they trust the app's certificate: open https://<address>/ca.crt on each "
                       f"device and install it.\nCertificate fingerprint (SHA-256): {tls_info(c)['fingerprint']}")
         if args.list_users:
-            us = rows(c.execute("SELECT name, is_admin, active FROM users ORDER BY name COLLATE NOCASE"))
+            us = rows(c.execute("SELECT name, username, is_admin, active FROM users ORDER BY name COLLATE NOCASE"))
             if not us:
                 print("No users yet - nobody needs to sign in on this computer.")
             for u in us:
-                print(f"{u['name']}{'  (admin)' if u['is_admin'] else ''}{'  [disabled]' if not u['active'] else ''}")
+                print(f"{u['username'] or '-':<20} {u['name']}{'  (admin)' if u['is_admin'] else ''}{'  [disabled]' if not u['active'] else ''}")
         if args.reset_pin:
-            u = one(c.execute("SELECT * FROM users WHERE name = ? COLLATE NOCASE", (args.reset_pin,)))
+            u = one(c.execute("SELECT * FROM users WHERE username = ? COLLATE NOCASE OR name = ? COLLATE NOCASE "
+                              "ORDER BY username = ? COLLATE NOCASE DESC", (args.reset_pin, args.reset_pin, args.reset_pin)))
             if not u:
-                print(f"Nobody called {args.reset_pin}. See: horan-rms users", file=sys.stderr)
+                print(f"No user called {args.reset_pin}. See their usernames with: horan-rms users", file=sys.stderr)
                 return 1
             pin = os.environ.get("HORAN_RMS_PIN", "")
             if not pin:

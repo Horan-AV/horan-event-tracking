@@ -2,6 +2,15 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.32.0 — 2026-11-15 · Sign in with a username
+
+- Everyone now signs in with a username and password, instead of picking their name from a list. The sign-in page no longer shows who uses the app.
+- Tick Remember my username on this device when signing in: next time it's filled in, so you only type your password. Untick it to forget it.
+- Usernames are set in Settings → Users (leave the box blank to make one from the name), and you can see yours under Settings → Updates → Your details. Everyone added before this version gets one made from their name, e.g. sam.jones — check Settings → Users after updating and let people know theirs.
+- A wrong username gets the same answer as a wrong password, so the sign-in page doesn't reveal which usernames exist. horan-rms reset-password takes a username (or a name), and horan-rms users lists them.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.31.1 — 2026-11-14 · Clean-up and a fix for issued invoices
 
 - Fix: an invoice that had already been issued (downloaded, printed, exported or sent to Zoho) changed its due date and payment terms if you later changed the client's terms. It now keeps the ones it was issued with.

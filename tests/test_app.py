@@ -175,11 +175,11 @@ class TestPermissions(ServerCase):
         super().setUpClass()
         admin = cls.c
         assert admin.post("/users", {"name": "Admin", "password": "correct horse"})[0] == 200
-        assert admin.post("/login", {"user_id": 1, "password": "correct horse"})[0] == 200
+        assert admin.post("/login", {"username": "admin", "password": "correct horse"})[0] == 200
         status, sam = admin.post("/users", {"name": "Sam", "password": "battery staple", "is_admin": False})
         assert status == 200, sam
         cls.sam = Client(cls.port)
-        assert cls.sam.post("/login", {"user_id": sam["id"], "password": "battery staple"})[0] == 200
+        assert cls.sam.post("/login", {"username": "sam", "password": "battery staple"})[0] == 200
 
     def test_signed_out_gets_nothing(self):
         anon = Client(self.port)
@@ -234,11 +234,62 @@ class TestSignInLimit(ServerCase):
     def test_wrong_pins_are_limited(self):
         self.assertEqual(self.c.post("/users", {"name": "Admin", "password": "correct horse"})[0], 200)
         guesser = Client(self.port)
-        seen = [guesser.post("/login", {"user_id": 1, "password": f"wrong guess {i}"})[0] for i in range(7)]
+        seen = [guesser.post("/login", {"username": "admin", "password": f"wrong guess {i}"})[0] for i in range(7)]
         self.assertEqual(seen[:5], [401] * 5)
         self.assertEqual(seen[5:], [429, 429])
         # even the right PIN is refused while locked out
-        self.assertEqual(guesser.post("/login", {"user_id": 1, "password": "correct horse"})[0], 429)
+        self.assertEqual(guesser.post("/login", {"username": "admin", "password": "correct horse"})[0], 429)
+
+
+class TestUsernames(ServerCase):
+    def test_sign_in_with_a_username(self):
+        c = self.c
+        status, me = c.post("/users", {"name": "Alex Smith", "password": "correct horse"})
+        self.assertEqual((status, me["username"]), (200, "alex.smith"))      # made from the name
+        # the sign-in page no longer lists anybody
+        opts = Client(self.port).get("/login-options")[1]
+        self.assertEqual(opts["mode"], "users")
+        self.assertNotIn("users", opts)
+        self.assertNotIn("Alex", json.dumps(opts))
+        # sign in with the username, in any case
+        self.assertEqual(Client(self.port).post("/login", {"username": "Alex.Smith", "password": "correct horse"})[0], 200)
+        # a wrong password and an unknown username get the same answer
+        a = Client(self.port).post("/login", {"username": "alex.smith", "password": "wrong password"})
+        b = Client(self.port).post("/login", {"username": "nobody.here", "password": "wrong password"})
+        self.assertEqual((a[0], b[0]), (401, 401))
+        self.assertEqual(a[1]["error"], b[1]["error"])
+        # choose one, change one, and they can't clash
+        c.post("/login", {"username": "alex.smith", "password": "correct horse"})
+        status, sam = c.post("/users", {"name": "Sam", "username": "SoundSam", "password": "battery staple"})
+        self.assertEqual((status, sam["username"]), (200, "soundsam"))
+        self.assertEqual(c.post("/users", {"name": "Sam Two", "username": "soundsam", "password": "battery staple"})[0], 400)
+        self.assertEqual(c.post("/users", {"name": "Bad", "username": "has space", "password": "battery staple"})[0], 400)
+        self.assertEqual(c.put(f"/users/{sam['id']}", {"username": "alex.smith"})[0], 400)
+        status, sam = c.put(f"/users/{sam['id']}", {"username": "sam.audio"})
+        self.assertEqual((status, sam["username"]), (200, "sam.audio"))
+        self.assertEqual(Client(self.port).post("/login", {"username": "sam.audio", "password": "battery staple"})[0], 200)
+        self.assertEqual(Client(self.port).post("/login", {"username": "soundsam", "password": "battery staple"})[0], 401)
+        # two people with the same first name get different usernames
+        _, s2 = c.post("/users", {"name": "Alex Smith Jr", "password": "battery staple"})
+        _, s3 = c.post("/users", {"name": "alex  smith!", "password": "battery staple"})
+        self.assertEqual((s2["username"], s3["username"]), ("alex.smith.jr", "alex.smith2"))
+        self.assertEqual(c.get("/meta")[1]["user"]["username"], "alex.smith")
+
+    def test_users_from_before_get_a_username(self):
+        import sqlite3
+        self.c.post("/users", {"name": "Jo Bloggs", "password": "correct horse"})
+        self.c.post("/users", {"name": "Jo Bloggs Two", "password": "correct horse"})
+        db = sqlite3.connect(os.path.join(self.tmp.name, "rms.db"))
+        db.execute("DROP INDEX idx_users_username")
+        db.execute("UPDATE users SET username = NULL")   # as an older version left them
+        db.commit()
+        db.close()
+        # starting the app again fills them in
+        env = dict(os.environ, HORAN_RMS_GITHUB_API="http://127.0.0.1:9")
+        out = subprocess.run([sys.executable, os.path.join(ROOT, "server.py"), "--data", self.tmp.name, "--list-users"],
+                             env=env, capture_output=True, text=True, timeout=60)
+        self.assertIn("jo.bloggs ", out.stdout)
+        self.assertIn("jo.bloggs.two", out.stdout)
 
 
 class TestPasswords(ServerCase):
@@ -261,7 +312,7 @@ class TestPasswords(ServerCase):
         self.assertEqual(c.post("/users", {"name": "Admin", "password": "aaaaaaaaaa"})[0], 400)
         self.assertEqual(c.post("/users", {"name": "Admin", "password": "x" * 500})[0], 400)
         self.assertEqual(c.post("/users", {"name": "Admin", "password": "correct horse"})[0], 200)
-        self.assertEqual(c.post("/login", {"user_id": 1, "password": "correct horse"})[1], {"ok": True, "weak": False})
+        self.assertEqual(c.post("/login", {"username": "admin", "password": "correct horse"})[1], {"ok": True, "weak": False})
 
         # only a salted hash is stored, never the password, and two people with the same password differ
         h = self.stored(1)
@@ -281,20 +332,20 @@ class TestPasswords(ServerCase):
         conn.commit()
         conn.close()
         s = Client(self.port)
-        self.assertEqual(s.post("/login", {"user_id": sam["id"], "pin": "4321"})[1], {"ok": True, "weak": True})
+        self.assertEqual(s.post("/login", {"username": "Sam", "pin": "4321"})[1], {"ok": True, "weak": True})
         self.assertTrue(self.stored(sam["id"]).startswith("pbkdf2_sha256$600000$"))
 
         # changing your own password needs the current one, and signs out your other devices
         other = Client(self.port)
-        self.assertEqual(other.post("/login", {"user_id": sam["id"], "password": "4321"})[0], 200)
+        self.assertEqual(other.post("/login", {"username": "sam", "password": "4321"})[0], 200)
         self.assertEqual(s.put("/me/password", {"current": "wrong", "new": "battery staple"})[0], 400)
         self.assertEqual(s.put("/me/password", {"current": "4321", "new": "tiny"})[0], 400)
         self.assertEqual(s.put("/me/password", {"current": "4321", "new": "battery staple"})[0], 200)
         self.assertEqual(s.get("/jobs")[0], 200)
         self.assertEqual(other.get("/jobs")[0], 401)
         fresh = Client(self.port)
-        self.assertEqual(fresh.post("/login", {"user_id": sam["id"], "password": "4321"})[0], 401)
-        self.assertEqual(fresh.post("/login", {"user_id": sam["id"], "password": "battery staple"})[0], 200)
+        self.assertEqual(fresh.post("/login", {"username": "sam", "password": "4321"})[0], 401)
+        self.assertEqual(fresh.post("/login", {"username": "sam", "password": "battery staple"})[0], 200)
         # an admin can't read a password, only replace it
         self.assertFalse([u for u in c.get("/users")[1] if "pin_hash" in u or "password" in u])
 
@@ -417,7 +468,7 @@ class TestHttps(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.assertIn("Secure", r.getheader("Set-Cookie"))
         plain = Client(self.port)
-        status, r, _ = plain.request("POST", "/api/login", {"user_id": 1, "password": "correct horse"}, raw=True)
+        status, r, _ = plain.request("POST", "/api/login", {"username": "admin", "password": "correct horse"}, raw=True)
         self.assertEqual(status, 200)
         self.assertNotIn("Secure", r.getheader("Set-Cookie"))
 

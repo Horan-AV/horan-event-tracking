@@ -4750,8 +4750,9 @@ async function drawMeCard(view) {
       <label class="field half"><span>Company</span><input data-me-company value="${esc(me.company)}" maxlength="120" placeholder="e.g. Smith Events Ltd"></label>
     </div>
     <div class="actions" style="margin-top:10px"><button type="button" class="btn small" data-me-save>Save my details</button></div>
-    ${S.meta && S.meta.user ? `<h3 class="net-h">Your password</h3>
-      <p class="muted small" style="margin-top:0">At least 8 characters — a few words together work well. Changing it signs you out on your other devices.</p>
+    ${S.meta && S.meta.user ? `<h3 class="net-h">Signing in</h3>
+      <p class="small" style="margin-top:0">Your username is <strong class="mono">${esc(S.meta.user.username || '')}</strong>${S.meta.is_admin ? ' (change it in Settings → Users)' : ' (an admin can change it)'}.</p>
+      <p class="muted small" style="margin-top:0">Password: at least 8 characters — a few words together work well. Changing it signs you out on your other devices.</p>
       <button type="button" class="btn small" data-me-password>Change my password…</button>` : ''}`;
   const pwBtn = $('[data-me-password]', card);
   if (pwBtn) pwBtn.onclick = () => changePasswordModal();
@@ -5395,14 +5396,14 @@ async function drawUsersCard(view) {
   const active = users.filter((u) => u.active);
   $('.body', card).innerHTML = !users.length
     ? `<p style="margin-top:0">Add the people who use ${esc(appName())}. Each gets a <strong>password</strong>, and the app records who creates jobs, adds kit, and scans items out and in (see <a href="/activity">Activity</a>).</p>
-       <p class="muted small">Once there’s a user, everyone signs in with their name and password, on this computer too. Start with yourself. The first person is an admin, who can change settings and manage users.</p>
+       <p class="muted small">Once there’s a user, everyone signs in with their username and password, on this computer too. Start with yourself. The first person is an admin, who can change settings and manage users.</p>
        <button type="button" class="btn primary" data-user-add>Add the first user (you)</button>`
     : `<ul class="user-list">${users.map((u) => `<li><span class="u"><span class="avatar" style="${u.active ? '' : 'opacity:.4'}">${esc(initials(u.name))}</span>
-        <span><strong>${esc(u.name)}</strong>${u.is_admin ? ' <span class="badge ok">Admin</span>' : ''}${u.active ? '' : ' <span class="pill">Disabled</span>'}${me && me.id === u.id ? ' <span class="muted small">(you)</span>' : ''}
+        <span><strong>${esc(u.name)}</strong> <span class="mono muted small" title="Username — what they type to sign in">${esc(u.username || '')}</span>${u.is_admin ? ' <span class="badge ok">Admin</span>' : ''}${u.active ? '' : ' <span class="pill">Disabled</span>'}${me && me.id === u.id ? ' <span class="muted small">(you)</span>' : ''}
         <br><span class="muted small">${u.last_activity ? `${esc(u.last_activity.summary)} · ${esc(fmtDate(u.last_activity.at.slice(0, 10)))} ${esc(u.last_activity.at.slice(11, 16))}` : 'No activity yet'}</span></span></span>
         ${canEdit ? `<button type="button" class="btn small" data-user-edit="${u.id}">Edit</button>` : ''}</li>`).join('')}</ul>
        ${canEdit ? '<div class="actions" style="margin-top:10px"><button type="button" class="btn primary small" data-user-add>Add user</button></div>' : ''}
-       <p class="muted small" style="margin-bottom:0">${num(active.length)} active. Disabling someone signs them out and keeps their history. Passwords are stored scrambled (hashed), so nobody — not even an admin — can read them. Forgotten the only admin password? On the computer running it: <code>horan-rms reset-password "Name" --admin</code>.</p>`;
+       <p class="muted small" style="margin-bottom:0">${num(active.length)} active. Disabling someone signs them out and keeps their history. Passwords are stored scrambled (hashed), so nobody — not even an admin — can read them. Forgotten the only admin password? On the computer running it: <code>horan-rms reset-password username --admin</code>.</p>`;
   card.onclick = async (e) => {
     try {
       if (e.target.closest('[data-user-add]')) {
@@ -5410,17 +5411,20 @@ async function drawUsersCard(view) {
         const v = await formModal({
           title: first ? 'Add yourself' : 'Add user',
           fields: [
-            { name: 'name', label: 'Name', required: true, placeholder: first ? 'e.g. Alex Smith' : 'e.g. Sam' },
+            { name: 'name', label: 'Name', required: true, placeholder: first ? 'e.g. Alex Smith' : 'e.g. Sam Jones', half: true,
+              help: 'Shown in the app and in Activity.' },
+            { name: 'username', label: 'Username', half: true, placeholder: 'e.g. sam.jones',
+              help: 'What they type to sign in. Leave blank to make one from the name.' },
             { name: 'password', label: 'Password', type: 'password', required: true, half: true, placeholder: 'At least 8 characters',
               help: 'A few words together work well. They can change it later under Settings → Updates → Your details.' },
             ...(first ? [] : [{ name: 'is_admin', label: 'Admin — can change settings and manage users', type: 'checkbox' }]),
           ],
           submitLabel: 'Add',
-          onSubmit: (vals) => post('/users', { ...vals, is_admin: !!Number(vals.is_admin) }),
+          onSubmit: (vals) => post('/users', { ...vals, username: vals.username.trim() || undefined, is_admin: !!Number(vals.is_admin) }),
         });
         if (!v) return;
-        if (first) { toast(`Welcome, ${v.name} — you’re signed in`, 'ok'); location.reload(); return; }
-        toast(`${v.name} added`, 'ok'); drawUsersCard(view);
+        if (first) { toast(`Welcome, ${v.name} — you’re signed in. Your username is ${v.username}.`, 'ok'); location.reload(); return; }
+        toast(`${v.name} added — their username is ${v.username}`, 'ok'); drawUsersCard(view);
         return;
       }
       const ed = e.target.closest('[data-user-edit]');
@@ -5429,14 +5433,15 @@ async function drawUsersCard(view) {
         const v = await formModal({
           title: `Edit ${u.name}`,
           fields: [
-            { name: 'name', label: 'Name', required: true },
+            { name: 'name', label: 'Name', required: true, half: true },
+            { name: 'username', label: 'Username', required: true, half: true, help: 'What they type to sign in.' },
             { name: 'password', label: 'New password', type: 'password', half: true, placeholder: 'Leave blank to keep it',
               help: 'At least 8 characters. Setting one signs them out everywhere.' },
             { name: 'is_admin', label: 'Admin — can change settings and manage users', type: 'checkbox' },
             { name: 'active', label: 'Can sign in (untick to disable — their history is kept)', type: 'checkbox' },
           ],
-          values: { name: u.name, is_admin: u.is_admin, active: u.active },
-          onSubmit: (vals) => put(`/users/${u.id}`, { name: vals.name, password: vals.password || undefined, is_admin: !!Number(vals.is_admin), active: !!Number(vals.active) }),
+          values: { name: u.name, username: u.username, is_admin: u.is_admin, active: u.active },
+          onSubmit: (vals) => put(`/users/${u.id}`, { name: vals.name, username: vals.username.trim(), password: vals.password || undefined, is_admin: !!Number(vals.is_admin), active: !!Number(vals.active) }),
         });
         if (v) { toast('Saved', 'ok'); if (me && me.id === u.id && !v.active) location.reload(); else drawUsersCard(view); }
       }

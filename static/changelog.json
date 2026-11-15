@@ -2,6 +2,27 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.32.0",
+      "date": "2026-11-15",
+      "title": "Sign in with a username",
+      "changes": [
+        {
+          "text": "Everyone now signs in with a username and password, instead of picking their name from a list. The sign-in page no longer shows who uses the app."
+        },
+        {
+          "text": "Tick Remember my username on this device when signing in: next time it's filled in, so you only type your password. Untick it to forget it."
+        },
+        {
+          "text": "Usernames are set in Settings → Users (leave the box blank to make one from the name), and you can see yours under Settings → Updates → Your details. Everyone added before this version gets one made from their name, e.g. sam.jones — check Settings → Users after updating and let people know theirs."
+        },
+        {
+          "text": "A wrong username gets the same answer as a wrong password, so the sign-in page doesn't reveal which usernames exist. horan-rms reset-password takes a username (or a name), and horan-rms users lists them."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.31.1",
       "date": "2026-11-14",
       "title": "Clean-up and a fix for issued invoices",

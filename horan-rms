@@ -11,7 +11,7 @@
 #   horan-rms url             print the address(es) to open
 #   horan-rms https on|off    encrypt connections from other devices, using the app's own certificate
 #   horan-rms users           list the people who can sign in
-#   horan-rms reset-password NAME  give someone a new password (add --admin to make them an admin too)
+#   horan-rms reset-password USERNAME  give someone a new password (add --admin to make them an admin too)
 #   horan-rms headless on|off server mode: admins can install updates from any device
 
 APP_DIR="${HORAN_RMS_HOME:-$HOME/.local/share/horan-rms/app}"
@@ -109,7 +109,7 @@ case "${1:-open}" in
     esac
     ;;
   reset-password|reset-pin)
-    [ -n "${2:-}" ] || { echo "Usage: horan-rms reset-password NAME [--admin]" >&2; exit 2; }
+    [ -n "${2:-}" ] || { echo "Usage: horan-rms reset-password USERNAME [--admin]" >&2; exit 2; }
     admin --reset-password "$2" ${3:+"$3"}
     ;;
   stop)
