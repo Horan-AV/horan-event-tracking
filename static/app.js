@@ -7213,7 +7213,7 @@ function rfClashes(rf, spacing = 0.3) {
 
 const AUDIO_IN = [['ch', 'Ch', 'w-xs'], ['source', 'Source / name', ''], ['scribble', 'Scribble strip', 'w-s'], ['mic', 'Mic / DI', ''], ['stand', 'Stand', 'w-s'],
   ['abox', 'Analogue box', 'w-m'], ['phys', 'Input', 'w-m'], ['phantom', '48V', 'w-xs'], ['notes', 'Notes', '']];
-const AUDIO_OUT = [['out', 'Output', 'w-m'], ['phys', 'Physical out', 'w-m'], ['dest', 'Destination', ''], ['notes', 'Notes', '']];
+const AUDIO_OUT = [['out', 'Output', 'w-m'], ['abox', 'Analogue box', 'w-m'], ['phys', 'Physical out', 'w-m'], ['dest', 'Destination', ''], ['notes', 'Notes', '']];
 // every table's columns, for the Columns menus (and the patch sheet)
 const PATCH_COLS = {
   dmx: [['fixture', 'Fixture'], ['unit', 'Unit'], ['label', 'Label'], ['universe', 'Universe'], ['address', 'Address'], ['to', 'Channels']],
@@ -7242,7 +7242,7 @@ const BUS_LABEL = { aux: 'Aux', group: 'Group', matrix: 'Matrix', fx: 'FX' };
 function audioRig(P) {
   const a = P.audio, cons = new Map((P.consoles || []).map((c) => [c.item_id, c]));
   const desk = cons.get(a.desk) && cons.get(a.desk).console.role === 'desk' ? cons.get(a.desk) : null;
-  const ins = [], outs = [], an = [], label = new Map(), target = new Map();
+  const ins = [], outs = [], an = [], anOut = [], label = new Map(), target = new Map();
   const add = (list, ref, text, group, n) => { list.push({ ref, label: text, group, n }); label.set(ref, text); };
   const sockets = (con, dev, prefix) => (con.ports || []).forEach((pt, pi) => {
     for (let n = 1; n <= pt.count; n++) {
@@ -7255,26 +7255,37 @@ function audioRig(P) {
     const c = cons.get(b.item_id);
     if (c) sockets(c.console, b.id, `${b.label || c.name} `);
   }
-  // analogue boxes: each channel lands on the socket its channel 1 is plugged into, plus the channel number - 1
+  // analogue boxes: each of their inputs is plugged into an input of the desk or a stage box, and each output
+  // is fed from one of their outputs (x.map: i3 -> the socket its input 3 is plugged into, o1 -> ...)
   for (const x of a.analogue || []) {
-    const m = /^(.+):(\d+):(\d+)$/.exec(x.into || '');
-    for (let n = 1; n <= x.channels; n++) {
-      const to = m ? `${m[1]}:${m[2]}:${Number(m[3]) + n - 1}` : '';
-      add(an, `${x.id}:0:${n}`, `${x.name} ${n}`, x.name, n);
-      target.set(`${x.id}:0:${n}`, label.has(to) ? to : '');
+    const tag = x.label || x.name;
+    for (const [dir, count, list, word] of [['i', x.ins, an, 'In'], ['o', x.outs, anOut, 'Out']]) {
+      for (let n = 1; n <= (count || 0); n++) {
+        const ref = `${x.id}:${dir}:${n}`, to = (x.map || {})[dir + n] || '';
+        add(list, ref, `${tag} ${word} ${n}`, `${tag} ${word}`, n);
+        target.set(ref, label.has(to) ? to : '');
+      }
     }
   }
   const buses = desk ? [['main:LR', 'Main L/R'], ['main:L', 'Main L'], ['main:R', 'Main R'],
     ...Object.entries(desk.console.buses || {}).flatMap(([k, n]) => Array.from({ length: n }, (_, i) => [`${k}:${i + 1}`, `${BUS_LABEL[k] || k} ${i + 1}`]))] : [];
-  return { desk, ins, outs, an, target, label, buses, busLabel: new Map(buses), scribble: desk ? Number(desk.console.scribble) || 0 : 0 };
+  return { desk, ins, outs, an, anOut, target, label, buses, busLabel: new Map(buses), scribble: desk ? Number(desk.console.scribble) || 0 : 0 };
 }
-/** A line on an analogue box is plugged into whatever that box channel lands on: keep its Input in step. */
-function settleAnalogue(inputs, rig) {
-  for (const r of inputs) {
-    if (!r.abox && /^a\d+:0:\d+$/.test(r.phys || '')) { r.abox = r.phys; r.phys = ''; }   // saved before 1.34
-    if (r.abox && !rig.label.has(r.abox)) r.abox = '';   // that box is gone
+/** A line on an analogue box goes through whatever that box channel is plugged into: keep its Input in step. */
+function settleAnalogue(lines, rig) {
+  for (const r of lines) {
+    if (r.abox && !rig.label.has(r.abox)) r.abox = '';   // that box (or channel) is gone
     if (r.abox) r.phys = rig.target.get(r.abox) || '';
   }
+}
+/** Plug an analogue box channel (a1:i:3) into a socket of the desk or a stage box, or unplug it ('').
+ * A socket takes one plug, so it comes out of any other analogue channel first. */
+function plugAnalogue(P, ref, socket) {
+  const m = /^(a\d+):([io]):(\d+)$/.exec(ref || ''); if (!m) return;
+  const x = P.audio.analogue.find((b) => b.id === m[1]); if (!x) return;
+  if (socket) for (const b of P.audio.analogue) for (const [k, v] of Object.entries(b.map || {})) if (k[0] === m[2] && v === socket) delete b.map[k];
+  x.map ||= {};
+  if (socket) x.map[m[2] + m[3]] = socket; else delete x.map[m[2] + m[3]];
 }
 
 /* Scribble strips: a shorter name when the source's is too long for the desk. */
@@ -7326,7 +7337,7 @@ function matrixPref(set) {
 }
 function matrixCard(P, rig, pc) {
   if (!rig.ins.length && !rig.outs.length) return '';
-  const pref = matrixPref(), kind = pref.view === 'outputs' ? 'outputs' : 'inputs';
+  const pref = matrixPref(), kind = ['outputs', 'analogue'].includes(pref.view) && (pref.view !== 'analogue' || rig.an.length || rig.anOut.length) ? pref.view : 'inputs';
   const groups = (cols) => {
     const g = [];
     for (const c of cols) { const last = g[g.length - 1]; if (last && last.name === c.group) last.n++; else g.push({ name: c.group, n: 1 }); }
@@ -7344,26 +7355,41 @@ function matrixCard(P, rig, pc) {
         ${cols.map((c, k) => {
           const isAn = rig.target.has(c.ref), on = isAn ? r.abox === c.ref : r.phys === c.ref && !r.abox, via = !isAn && r.abox && r.phys === c.ref;
           const other = !on && !via && usedBy.has(c.ref) ? ins[usedBy.get(c.ref)] : null;
+          const tip = r.abox && !isAn ? `Plug ${rig.label.get(r.abox)} into ${c.label}` : `Ch ${r.ch || i + 1} → ${c.label}`;
           return `<td class="mx ${on ? 'on' : via ? 'via' : other ? 'taken' : ''} ${k && cols[k - 1].group !== c.group ? 'mx-start' : ''}" data-mx-in="${i}" data-ref="${esc(c.ref)}"
-            title="${esc(`Ch ${r.ch || i + 1} → ${c.label}${via ? ` (through ${rig.label.get(r.abox)})` : ''}${other ? ` — now ch ${other.ch}` : ''}`)}">${on ? '●' : via ? '○' : ''}</td>`;
+            title="${esc(`${tip}${via ? ' (plugged in here)' : ''}${other ? ` — now ch ${other.ch}` : ''}`)}">${on ? '●' : via ? '○' : ''}</td>`;
         }).join('')}</tr>`).join('')}</tbody></table>`;
-  } else {
-    const cols = rig.outs, outs = P.audio.outputs;
+  } else if (kind === 'outputs') {
+    const cols = [...rig.outs, ...rig.anOut], outs = P.audio.outputs;
     grid = !rig.buses.length ? '<p class="muted" style="margin:0">Choose the mixing desk (above) to route its outputs.</p>'
       : !cols.length ? '<p class="muted" style="margin:0">The desk and stage boxes have no outputs in Stock.</p>'
       : `<table class="mx-grid">${head(cols, 'Bus')}<tbody>${rig.buses.map(([bus, name]) => `<tr><th class="mx-row">${esc(name)}</th>
         ${cols.map((c, k) => {
-          const on = outs.some((o) => o.out === bus && o.phys === c.ref), other = !on && outs.find((o) => o.phys === c.ref && o.out);
-          return `<td class="mx ${on ? 'on' : other ? 'taken' : ''} ${k && cols[k - 1].group !== c.group ? 'mx-start' : ''}" data-mx-out="${esc(bus)}" data-ref="${esc(c.ref)}"
-            title="${esc(`${name} → ${c.label}${other ? ` — now ${rig.busLabel.get(other.out) || other.out}` : ''}`)}">${on ? '●' : ''}</td>`;
+          const isAn = rig.target.has(c.ref), mine = (o) => (isAn ? o.abox === c.ref : o.phys === c.ref && !o.abox);
+          const on = outs.some((o) => o.out === bus && mine(o)), via = !isAn && outs.some((o) => o.out === bus && o.abox && o.phys === c.ref);
+          const other = !on && outs.find((o) => mine(o) && o.out);
+          return `<td class="mx ${on ? 'on' : via ? 'via' : other ? 'taken' : ''} ${k && cols[k - 1].group !== c.group ? 'mx-start' : ''}" data-mx-out="${esc(bus)}" data-ref="${esc(c.ref)}"
+            title="${esc(`${name} → ${c.label}${via ? ' (through an analogue box)' : ''}${other ? ` — now ${rig.busLabel.get(other.out) || other.out}` : ''}`)}">${on ? '●' : via ? '○' : ''}</td>`;
         }).join('')}</tr>`).join('')}</tbody></table>`;
+  } else {   // analogue boxes: each channel against the sockets it can plug into
+    const plugged = new Map();
+    for (const x of P.audio.analogue) for (const [k, v] of Object.entries(x.map || {})) plugged.set(`${k[0]}|${v}`, `${x.id}:${k[0]}:${k.slice(1)}`);
+    const part = (rows, cols, dir, what) => (!rows.length ? '' : !cols.length ? `<p class="muted small">The desk and stage boxes have no ${what} in Stock.</p>`
+      : `<table class="mx-grid" style="margin-bottom:10px">${head(cols, dir === 'i' ? 'Box input' : 'Box output')}<tbody>${rows.map((x) => `<tr><th class="mx-row">${esc(x.label)}</th>
+        ${cols.map((c, k) => {
+          const on = rig.target.get(x.ref) === c.ref, other = !on && plugged.get(`${dir}|${c.ref}`);
+          return `<td class="mx ${on ? 'on' : other ? 'taken' : ''} ${k && cols[k - 1].group !== c.group ? 'mx-start' : ''}" data-mx-an="${esc(x.ref)}" data-ref="${esc(c.ref)}"
+            title="${esc(`${x.label} ${dir === 'i' ? 'into' : 'fed from'} ${c.label}${other ? ` — now ${rig.label.get(other)}` : ''}`)}">${on ? '●' : ''}</td>`;
+        }).join('')}</tr>`).join('')}</tbody></table>`);
+    grid = part(rig.an, rig.ins, 'i', 'inputs') + part(rig.anOut, rig.outs, 'o', 'outputs');
   }
   return `<div class="card"><header><h2>Routing matrix</h2><div class="actions">
-      ${pref.open ? ['inputs', 'outputs'].map((k) => `<button class="btn small ${kind === k ? 'primary' : ''}" data-mx-view="${k}">${k === 'inputs' ? 'Inputs' : 'Outputs'}</button>`).join('') : ''}
+      ${pref.open ? [['inputs', 'Inputs'], ['outputs', 'Outputs'], ...(rig.an.length || rig.anOut.length ? [['analogue', 'Analogue boxes']] : [])].map(([k, l]) => `<button class="btn small ${kind === k ? 'primary' : ''}" data-mx-view="${k}">${l}</button>`).join('') : ''}
       <button class="btn small" data-mx-toggle>${pref.open ? 'Hide' : 'Show'}</button></div></header>
     ${pref.open ? `<div class="body"><p class="muted small" style="margin-top:0">${kind === 'inputs'
-      ? 'Click a square to patch that line to that input — the lists above change to match. Click it again to unpatch. ○ shows the input an analogue box channel lands on.'
-      : 'Click a square to send that bus to that output — a line is added to Audio outputs (or changed). A socket carries one bus.'}</p>
+      ? 'Click a square to patch that line to that input — the lists above change to match. Click it again to unpatch. For a line on an analogue box, clicking an input of the desk or a stage box plugs that box channel into it (○).'
+      : kind === 'outputs' ? 'Click a square to send that bus to that output — a line is added to Audio outputs (or changed). A socket carries one bus.'
+      : 'Which input of the desk or a stage box each analogue box input is plugged into, and which output feeds each of its outputs. Click a square to plug it in; again to unplug.'}</p>
       <div class="mx-wrap">${grid}</div></div>` : ''}</div>`;
 }
 
@@ -7381,7 +7407,7 @@ async function renderPatch(view, jid) {
   const markDirty = () => { dirty = true; const b = $('[data-save]', view); if (b) { b.disabled = false; b.textContent = 'Save changes'; } };
   const nextId = (prefix, list) => prefix + (Math.max(0, ...list.map((x) => Number(String(x.id).slice(1)) || 0)) + 1);
   const draw = () => {
-    const rig = audioRig(P); settleAnalogue(P.audio.inputs, rig);
+    const rig = audioRig(P); settleAnalogue(P.audio.inputs, rig); settleAnalogue(P.audio.outputs, rig);
     const dc = dmxClashes(P.dmx), rc = rfClashes(P.rf), pc = physClashes(P, rig);
     const desks = (P.consoles || []).filter((c) => c.console.role === 'desk'), boxes = (P.consoles || []).filter((c) => c.console.role === 'stagebox');
     const dmxRows = P.dmx.map((line) => line.units.map((u, i) => {
@@ -7405,10 +7431,12 @@ async function renderPatch(view, jid) {
     const cell = (kind, i, r, k, c) => {
       const at = `data-au="${kind}:${i}" data-k="${k}"`;
       if (k === 'abox') {
-        return rig.an.length ? `<select ${at} aria-label="Analogue box"><option value="">—</option>${rig.an.map((x) => `<option value="${esc(x.ref)}" ${r.abox === x.ref ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>` : '<span class="muted small">—</span>';
+        const list = kind === 'inputs' ? rig.an : rig.anOut;
+        return list.length ? `<select ${at} aria-label="Analogue box"><option value="">—</option>${list.map((x) => `<option value="${esc(x.ref)}" ${r.abox === x.ref ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>` : '<span class="muted small">—</span>';
       }
-      if (k === 'phys' && kind === 'inputs' && r.abox) {
-        return `<span class="via" title="Through ${esc(rig.label.get(r.abox) || '')}">${r.phys ? esc(rig.label.get(r.phys)) : '<span class="muted">Say where the box is plugged in</span>'}</span>`;
+      if (k === 'phys' && r.abox) {   // where that analogue box channel is plugged in: change it here, or in the matrix
+        const socks = kind === 'inputs' ? rig.ins : rig.outs;
+        return `<select data-anmap="${esc(r.abox)}" class="via" title="Where ${esc(rig.label.get(r.abox) || '')} is plugged in" aria-label="Plugged into"><option value="">— plugged into?</option>${socks.map((x) => `<option value="${esc(x.ref)}" ${r.phys === x.ref ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>`;
       }
       if (k === 'phys' && kind === 'inputs' && rig.ins.length) {
         return `<select ${at} aria-label="Input"><option value="">—</option>${rig.ins.map((x) => `<option value="${esc(x.ref)}" ${r.phys === x.ref ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>`;
@@ -7451,10 +7479,12 @@ async function renderPatch(view, jid) {
           <button class="icon-btn" data-box-del="${i}" aria-label="Remove">×</button></div>`).join('') || '<p class="muted small" style="margin:0">None.</p>'}
         ${boxes.length ? '<button class="btn small" data-box-add>+ Add a stage box</button>' : '<p class="muted small">No stage boxes on this job. Give one <b>Inputs &amp; outputs</b> in Stock and add it to the job.</p>'}
         <h3 class="net-h">Analogue stage boxes &amp; multicores</h3>
-        <p class="muted small" style="margin:0 0 6px">Passive boxes plugged into the desk or a stage box, e.g. 8 channels into AR2412 In 12–19. Choose a line’s channel in the <b>Analogue box</b> column and its <b>Input</b> follows.</p>
-        ${P.audio.analogue.map((x, i) => `<div class="rig-row"><input data-an="${i}" data-k="name" value="${esc(x.name)}" placeholder="e.g. Stage box A" aria-label="Name">
-          <label class="small">channels <input data-an="${i}" data-k="channels" type="number" min="1" max="128" value="${num(x.channels)}" style="width:64px"></label>
-          <label class="small">1 into <select data-an="${i}" data-k="into"><option value="">—</option>${rig.ins.map((d) => `<option value="${esc(d.ref)}" ${x.into === d.ref ? 'selected' : ''}>${esc(d.label)}</option>`).join('')}</select></label>
+        <p class="muted small" style="margin:0 0 6px">Passive boxes and multicores. Choose a line’s channel in the <b>Analogue box</b> column, then which input of the desk or a stage box it’s plugged into — there, or in the routing matrix.</p>
+        ${P.audio.analogue.map((x, i) => `<div class="rig-row an-row"><input data-an="${i}" data-k="name" value="${esc(x.name)}" placeholder="e.g. Stage box A" aria-label="Name">
+          <input data-an="${i}" data-k="label" value="${esc(x.label || '')}" placeholder="Label, e.g. Drum sub" aria-label="Label">
+          <label class="small">Inputs <input data-an="${i}" data-k="ins" type="number" min="0" max="128" value="${num(x.ins || 0)}" style="width:64px"></label>
+          <label class="small">Outputs <input data-an="${i}" data-k="outs" type="number" min="0" max="128" value="${num(x.outs || 0)}" style="width:64px"></label>
+          <span class="muted small">${num(Object.keys(x.map || {}).length)} plugged in</span>
           <button class="icon-btn" data-an-del="${i}" aria-label="Remove">×</button></div>`).join('')}
         <button class="btn small" data-an-add>+ Add an analogue box</button>`
         : '<p class="muted" style="margin:0">Add the mixing desk (and any stage boxes) to this job, and give them <b>Inputs &amp; outputs</b> on their page in Stock, to choose each channel’s physical input from a list. Until then, type it.</p>'}
@@ -7516,7 +7546,13 @@ async function renderPatch(view, jid) {
       markDirty();
     }
     else if (t.dataset.box !== undefined) { const b = P.audio.boxes[Number(t.dataset.box)]; b[t.dataset.k] = t.dataset.k === 'item_id' ? Number(t.value) : t.value; markDirty(); }
-    else if (t.dataset.an !== undefined) { const x = P.audio.analogue[Number(t.dataset.an)]; x[t.dataset.k] = t.dataset.k === 'channels' ? Math.max(1, Number(t.value) || 1) : t.value; markDirty(); }
+    else if (t.dataset.an !== undefined) {
+      const x = P.audio.analogue[Number(t.dataset.an)], k = t.dataset.k;
+      x[k] = k === 'ins' || k === 'outs' ? Math.min(128, Math.max(0, Number(t.value) || 0)) : t.value;
+      if (k === 'ins' || k === 'outs') for (const key of Object.keys(x.map || {})) if (key[0] === k[0] && Number(key.slice(1)) > x[k]) delete x.map[key];
+      markDirty();
+    }
+    else if (t.dataset.anmap) { plugAnalogue(P, t.dataset.anmap, t.value); markDirty(); }
   };
   // Redraw after a change so warnings and lists update. A box you type in changes when you leave it - often by
   // clicking a button - so redraw only once that click has happened (a redraw under it would swallow it), and keep
@@ -7544,7 +7580,7 @@ async function renderPatch(view, jid) {
       return;
     }
     if (t.dataset.rig === 'desk') { P.audio.desk = t.value ? Number(t.value) : null; markDirty(); draw(); return; }
-    if (t.dataset.dmx || t.dataset.rf || t.dataset.fp || t.dataset.au || t.dataset.box !== undefined || t.dataset.an !== undefined) {
+    if (t.dataset.dmx || t.dataset.rf || t.dataset.fp || t.dataset.au || t.dataset.anmap || t.dataset.box !== undefined || t.dataset.an !== undefined) {
       if (t.tagName === 'SELECT') { redraw(); return; }   // a choice from a list: nothing to click through
       if (t.dataset.k === 'mic') {   // the "from stock" tick, straight away
         const r = P.audio.inputs[Number(t.dataset.au.split(':')[1])];
@@ -7585,6 +7621,9 @@ async function renderPatch(view, jid) {
     const mi = t.closest('[data-mx-in]');
     if (mi) {   // route a line to an input (or an analogue box channel): one per line, and it moves off any other line
       const rig = audioRig(P), r = P.audio.inputs[Number(mi.dataset.mxIn)], ref = mi.dataset.ref, isAn = rig.target.has(ref);
+      if (r.abox && !isAn) {   // a line on an analogue box: plug that box channel into this socket (or unplug it)
+        plugAnalogue(P, r.abox, rig.target.get(r.abox) === ref ? '' : ref); markDirty(); draw(); return;
+      }
       const on = isAn ? r.abox === ref : r.phys === ref && !r.abox;
       for (const o of P.audio.inputs) if (o !== r && (isAn ? o.abox === ref : o.phys === ref && !o.abox)) { if (isAn) o.abox = ''; o.phys = ''; }
       if (on) { r.abox = ''; r.phys = ''; } else if (isAn) r.abox = ref; else { r.abox = ''; r.phys = ref; }
@@ -7592,22 +7631,30 @@ async function renderPatch(view, jid) {
     }
     const mo = t.closest('[data-mx-out]');
     if (mo) {   // a bus to a physical output: a socket carries one bus, so it moves from any other
-      const outs = P.audio.outputs, bus = mo.dataset.mxOut, ref = mo.dataset.ref;
-      const here = outs.findIndex((o) => o.out === bus && o.phys === ref);
-      if (here >= 0) { const o = outs[here]; if (!o.dest && !o.notes) outs.splice(here, 1); else o.phys = ''; }
+      const outs = P.audio.outputs, bus = mo.dataset.mxOut, ref = mo.dataset.ref, isAn = audioRig(P).target.has(ref), k = isAn ? 'abox' : 'phys';
+      const mine = (o) => (isAn ? o.abox === ref : o.phys === ref && !o.abox);
+      const here = outs.findIndex((o) => o.out === bus && mine(o));
+      if (here >= 0) { const o = outs[here]; if (!o.dest && !o.notes) outs.splice(here, 1); else { o[k] = ''; if (isAn) o.phys = ''; } }
       else {
-        const other = outs.find((o) => o.phys === ref), blank = outs.find((o) => o.out === bus && !o.phys);
-        if (other) other.out = bus; else if (blank) blank.phys = ref; else outs.push({ out: bus, phys: ref, dest: '', notes: '' });
+        const other = outs.find(mine), blank = outs.find((o) => o.out === bus && !o.phys && !o.abox);
+        if (other) other.out = bus; else if (blank) blank[k] = ref; else outs.push({ out: bus, abox: isAn ? ref : '', phys: isAn ? '' : ref, dest: '', notes: '' });
       }
       markDirty(); draw(); return;
     }
+    const ma = t.closest('[data-mx-an]');
+    if (ma) { const ref = ma.dataset.mxAn; plugAnalogue(P, ref, audioRig(P).target.get(ref) === ma.dataset.ref ? '' : ma.dataset.ref); markDirty(); draw(); return; }
     if (t.closest('[data-au-autopatch]')) {
       // each line without an input gets the next free one: the desk's own, then the stage boxes', in order
       const rig = audioRig(P);
-      const taken = new Set(P.audio.inputs.flatMap((r) => [r.phys, r.abox]).filter(Boolean));
+      const plugs = P.audio.analogue.flatMap((x) => Object.entries(x.map || {}).filter(([k2]) => k2[0] === 'i').map(([, v]) => v));
+      const taken = new Set([...P.audio.inputs.map((r) => r.phys), ...plugs].filter(Boolean));
       const free = rig.ins.map((x) => x.ref).filter((ref) => !taken.has(ref));
       let n = 0;
-      for (const r of P.audio.inputs) if (!r.phys && !r.abox && free.length) { r.phys = free.shift(); n++; }
+      for (const r of P.audio.inputs) {
+        if (r.phys || !free.length) continue;
+        if (r.abox) plugAnalogue(P, r.abox, free.shift()); else r.phys = free.shift();   // a box channel not plugged in yet
+        n++;
+      }
       if (n) { markDirty(); draw(); toast(`${n} input${n === 1 ? '' : 's'} patched — check them, then Save`, 'ok'); } else toast('Every line already has an input (or none are free)');
       return;
     }
@@ -7618,7 +7665,7 @@ async function renderPatch(view, jid) {
       markDirty(); draw(); return;
     }
     if (t.closest('[data-an-add]')) {
-      P.audio.analogue.push({ id: nextId('a', P.audio.boxes.concat(P.audio.analogue)), name: `Stage box ${String.fromCharCode(65 + P.audio.analogue.length)}`, channels: 8, into: '' });
+      P.audio.analogue.push({ id: nextId('a', P.audio.boxes.concat(P.audio.analogue)), name: `Stage box ${String.fromCharCode(65 + P.audio.analogue.length)}`, label: '', ins: 8, outs: 0, map: {} });
       markDirty(); draw(); return;
     }
     const bd = t.closest('[data-box-del]');
@@ -7633,7 +7680,7 @@ async function renderPatch(view, jid) {
         if (kind === 'inputs') {
           const last = list.length ? Number(list[list.length - 1].ch) : 0;
           list.push({ ch: String((last || 0) + 1), source: '', scribble: '', mic: '', stand: '', abox: '', phys: '', box: '', phantom: '', notes: '' });
-        } else list.push({ out: '', phys: '', dest: '', notes: '' });
+        } else list.push({ out: '', abox: '', phys: '', dest: '', notes: '' });
       }
       markDirty(); draw(); return;
     }
@@ -7662,7 +7709,7 @@ function patchDocBody(P) {
     return '<div class="doc-block"><p>Nothing patched yet. Open the job and choose <strong>Patch</strong> to add DMX addresses, frequencies and audio lines.</p></div>';
   }
   const rig = audioRig({ ...P, audio: { inputs: [], outputs: [], boxes: [], analogue: [], ...a } });
-  settleAnalogue(ins, rig);
+  settleAnalogue(ins, rig); settleAnalogue(outs, rig);
   const rowsDmx = dmx.flatMap((l) => l.units.map((u, i) => (u.a ? { l, u, i } : null)).filter(Boolean))
     .sort((x, y) => (x.u.u || 1) - (y.u.u || 1) || x.u.a - y.u.a);
   const rowsRf = rf.flatMap((l) => l.units.map((u, i) => (u.f ? { l, u, i } : null)).filter(Boolean)).sort((x, y) => Number(x.u.f) - Number(y.u.f));
@@ -7671,10 +7718,14 @@ function patchDocBody(P) {
   const td = (k, v) => `<td data-col="${k}">${v}</td>`;
   const inVal = (r, k) => (k === 'phys' ? esc(rig.label.get(r.phys) || r.box || '') : k === 'abox' ? esc(rig.label.get(r.abox) || '')
     : k === 'scribble' ? esc(scribbleOf(r, rig.scribble)) : esc(r[k] || ''));
-  const outVal = (r, k) => (k === 'out' ? esc(rig.busLabel.get(r.out) || r.out || '') : k === 'phys' ? esc(rig.label.get(r.phys) || '') : esc(r[k] || ''));
+  const outVal = (r, k) => (k === 'out' ? esc(rig.busLabel.get(r.out) || r.out || '') : k === 'phys' || k === 'abox' ? esc(rig.label.get(r[k]) || '') : esc(r[k] || ''));
   const setup = [rig.desk && `Desk: <strong>${esc(rig.desk.name)}</strong>`,
     ...(a.boxes || []).map((b) => { const c = (P.consoles || []).find((x) => x.item_id === b.item_id); return c && `Stage box: <strong>${esc(b.label || c.name)}</strong>${b.label ? ` (${esc(c.name)})` : ''}`; }),
-    ...(a.analogue || []).map((x) => `Analogue: <strong>${esc(x.name)}</strong> — ${num(x.channels)} ch${rig.label.get(x.into) ? `, 1 into ${esc(rig.label.get(x.into))}` : ''}`)].filter(Boolean);
+    ...(a.analogue || []).map((x) => {
+      const plugs = Object.entries(x.map || {}).filter(([, v]) => rig.label.has(v)).sort(([p], [q]) => p[0].localeCompare(q[0]) || p.slice(1) - q.slice(1))
+        .map(([k, v]) => `${k[0] === 'i' ? 'In' : 'Out'} ${k.slice(1)} ${k[0] === 'i' ? '→' : '←'} ${esc(rig.label.get(v))}`);
+      return `Analogue: <strong>${esc(x.label || x.name)}</strong>${x.label ? ` (${esc(x.name)})` : ''} — ${[x.ins && `${num(x.ins)} in`, x.outs && `${num(x.outs)} out`].filter(Boolean).join(', ')}${plugs.length ? `<br><span class="small">${plugs.join(' · ')}</span>` : ''}`;
+    })].filter(Boolean);
   return `<style>${hiddenColsCSS('.sheet')}</style>
     ${rowsDmx.length ? `<div class="doc-block"><h3>DMX</h3>${tbl('dmx', [['universe', 'Universe'], ['address', 'Address'], ['fixture', 'Fixture'], ['unit', 'Unit'], ['label', 'Label'], ['to', 'Channels']],
       rowsDmx.map(({ l, u, i }) => `<tr>${td('universe', num(u.u || 1))}${td('address', `<strong>${String(u.a).padStart(3, '0')}</strong>–${String(Number(u.a) + l.footprint - 1).padStart(3, '0')}`)}${td('fixture', esc(l.name))}${td('unit', '#' + (i + 1))}${td('label', esc(u.n || ''))}${td('to', num(l.footprint))}</tr>`).join(''))}</div>` : ''}

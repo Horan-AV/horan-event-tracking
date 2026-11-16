@@ -1242,16 +1242,29 @@ class TestAudioPatch(ServerCase):
         p = c.get(f"/jobs/{job['id']}/patch")[1]
         self.assertEqual(sorted(x["console"]["role"] for x in p["consoles"]), ["desk", "stagebox"])
         audio = {"desk": line[desk["id"]], "boxes": [{"id": "b1", "item_id": line[box["id"]], "label": "SB1"}],
-                 "analogue": [{"id": "a1", "name": "Stage box A", "channels": 8, "into": "b1:0:12"}],
+                 "analogue": [{"id": "a1", "name": "Stage box A", "label": "Drum sub", "ins": 8, "outs": 4,
+                               "map": {"i1": "b1:0:12", "i3": "b1:0:14", "o1": "b1:1:1", "i99": "d:0:1"}}],
                  "inputs": [{"ch": str(n), "source": f"Vox {n}", "mic": "Test SM58", "mic_pid": mic["id"], "phys": f"d:0:{n}"} for n in range(1, 6)]
-                 + [{"ch": "6", "source": "Kick drum inside", "scribble": "Kick In", "mic": "Beta 91", "abox": "a1:0:3", "phys": "b1:0:14"}],
+                 + [{"ch": "6", "source": "Kick drum inside", "scribble": "Kick In", "mic": "Beta 91", "abox": "a1:i:3", "phys": "b1:0:14"}],
                  "outputs": [{"out": "aux:1", "phys": "d:2:1", "dest": "Wedge 1"}]}
         status, p = c.put(f"/jobs/{job['id']}/patch", {"audio": audio})
         self.assertEqual(status, 200, p)
-        self.assertEqual((p["audio"]["desk"], p["audio"]["boxes"][0]["label"], p["audio"]["analogue"][0]["into"]), (line[desk["id"]], "SB1", "b1:0:12"))
+        an = p["audio"]["analogue"][0]
+        self.assertEqual((p["audio"]["desk"], p["audio"]["boxes"][0]["label"], an["label"], an["ins"], an["outs"]), (line[desk["id"]], "SB1", "Drum sub", 8, 4))
+        self.assertEqual(an["map"], {"i1": "b1:0:12", "i3": "b1:0:14", "o1": "b1:1:1"})   # i99: no such input
         self.assertEqual(p["audio"]["inputs"][0]["mic_pid"], mic["id"])
         self.assertNotIn("mic_pid", p["audio"]["inputs"][5])          # typed, not from stock
-        self.assertEqual({k: p["audio"]["inputs"][5][k] for k in ("scribble", "abox", "phys")}, {"scribble": "Kick In", "abox": "a1:0:3", "phys": "b1:0:14"})
+        self.assertEqual({k: p["audio"]["inputs"][5][k] for k in ("scribble", "abox", "phys")}, {"scribble": "Kick In", "abox": "a1:i:3", "phys": "b1:0:14"})
+        # a patch saved by an older version: one run of channels from "1 into", channels a1:0:n
+        old = {"analogue": [{"id": "a2", "name": "Old box", "channels": 4, "into": "d:0:5"}], "inputs": [{"ch": "1", "phys": "a2:0:2"}]}
+        conn = sqlite3.connect(os.path.join(self.tmp.name, "rms.db"), timeout=15)
+        try:
+            conn.execute("UPDATE job_audio_patch SET data = ? WHERE job_id = ?", (json.dumps(old), job["id"])); conn.commit()
+        finally:
+            conn.close()
+        p = c.get(f"/jobs/{job['id']}/patch")[1]["audio"]
+        self.assertEqual((p["analogue"][0]["ins"], p["analogue"][0]["map"]["i1"], p["analogue"][0]["map"]["i4"]), (4, "d:0:5", "d:0:8"))
+        self.assertEqual((p["inputs"][0]["abox"], p["inputs"][0]["phys"]), ("a2:i:2", ""))
         # 5 SM58s in the patch, 2 already on the job: 3 more go on the job (and so the prep list)
         def patch_line():
             items = c.get(f"/jobs/{job['id']}")[1]["items"]
