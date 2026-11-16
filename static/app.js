@@ -7542,6 +7542,8 @@ async function renderPatch(view, jid) {
       const [k, i] = t.dataset.au.split(':'); const r = P.audio[k][Number(i)];
       r[t.dataset.k] = t.value;
       if (t.dataset.k === 'scribble') t.classList.remove('auto');
+      // a line that already has an input (or output): plug the analogue box channel into that, rather than change it
+      if (t.dataset.k === 'abox' && t.value && r.phys) plugAnalogue(P, t.value, r.phys);
       if (t.dataset.k === 'mic') { const hit = byName.get(t.value.trim().toLowerCase()); if (hit) r.mic_pid = hit.id; else delete r.mic_pid; }
       markDirty();
     }
@@ -7625,8 +7627,10 @@ async function renderPatch(view, jid) {
         plugAnalogue(P, r.abox, rig.target.get(r.abox) === ref ? '' : ref); markDirty(); draw(); return;
       }
       const on = isAn ? r.abox === ref : r.phys === ref && !r.abox;
-      for (const o of P.audio.inputs) if (o !== r && (isAn ? o.abox === ref : o.phys === ref && !o.abox)) { if (isAn) o.abox = ''; o.phys = ''; }
-      if (on) { r.abox = ''; r.phys = ''; } else if (isAn) r.abox = ref; else { r.abox = ''; r.phys = ref; }
+      // the box channel (or socket) comes off any other line; a line keeps its input unless the channel would land there too
+      for (const o of P.audio.inputs) if (o !== r && (isAn ? o.abox === ref : o.phys === ref && !o.abox)) { if (isAn) o.abox = ''; if (!isAn || !r.phys) o.phys = ''; }
+      if (on && isAn) r.abox = '';   // off the box, still on its input
+      else if (on) r.phys = ''; else if (isAn) { if (r.phys) plugAnalogue(P, ref, r.phys); r.abox = ref; } else { r.abox = ''; r.phys = ref; }
       markDirty(); draw(); return;
     }
     const mo = t.closest('[data-mx-out]');
@@ -7634,10 +7638,12 @@ async function renderPatch(view, jid) {
       const outs = P.audio.outputs, bus = mo.dataset.mxOut, ref = mo.dataset.ref, isAn = audioRig(P).target.has(ref), k = isAn ? 'abox' : 'phys';
       const mine = (o) => (isAn ? o.abox === ref : o.phys === ref && !o.abox);
       const here = outs.findIndex((o) => o.out === bus && mine(o));
-      if (here >= 0) { const o = outs[here]; if (!o.dest && !o.notes) outs.splice(here, 1); else { o[k] = ''; if (isAn) o.phys = ''; } }
+      if (here >= 0) { const o = outs[here]; if (isAn) o.abox = ''; else if (!o.dest && !o.notes) outs.splice(here, 1); else o.phys = ''; }
       else {
-        const other = outs.find(mine), blank = outs.find((o) => o.out === bus && !o.phys && !o.abox);
-        if (other) other.out = bus; else if (blank) blank[k] = ref; else outs.push({ out: bus, abox: isAn ? ref : '', phys: isAn ? '' : ref, dest: '', notes: '' });
+        // a line for this bus with nothing in this column yet takes it; an analogue box output plugs into its physical out
+        const other = outs.find(mine), blank = outs.find((o) => o.out === bus && !o.abox && (isAn || !o.phys));
+        if (other) other.out = bus;
+        else if (blank) { if (isAn && blank.phys) plugAnalogue(P, ref, blank.phys); blank[k] = ref; } else outs.push({ out: bus, abox: isAn ? ref : '', phys: isAn ? '' : ref, dest: '', notes: '' });
       }
       markDirty(); draw(); return;
     }
