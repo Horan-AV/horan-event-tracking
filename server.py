@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.33.0"
+VERSION = "1.34.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -598,6 +598,7 @@ def console_field(v):
     out = {"role": v["role"], "ports": []}
     if v["role"] == "desk":
         out["channels"] = count(v.get("channels"), "Input channels", 512)
+        out["scribble"] = count(v.get("scribble"), "Scribble strip characters", 64)
         b = v.get("buses") or {}
         out["buses"] = {k: count(b.get(k), k.title() + " outputs", 128) for k in CONSOLE_BUSES if k != "main"}
     ports = v.get("ports") or []
@@ -4895,7 +4896,7 @@ def calendar_feed_response(conn, token):
 # (both kept on the job line, so they follow it). The audio input and output lists are kept per job.
 
 DMX_SLOTS = 512
-AUDIO_IN_COLS = ("ch", "source", "mic", "stand", "phys", "box", "phantom", "notes")
+AUDIO_IN_COLS = ("ch", "source", "scribble", "mic", "stand", "abox", "phys", "box", "phantom", "notes")
 AUDIO_OUT_COLS = ("out", "phys", "dest", "notes")
 
 
@@ -4955,8 +4956,7 @@ def job_patch(conn, jid):
                              "quantity": max(1, int(round(it["quantity"] or 1))), "console": con})
     return {"job": {k: job[k] for k in ("id", "number", "name", "start_date", "end_date", "start_time", "end_time", "venue")},
             "dmx": dmx, "rf": rf, "audio": audio, "consoles": consoles,
-            "audio_updated": row and {"at": row["updated_at"], "by": row["updated_by"]},
-            "audio_sources": sorted({it["description"] for it in job["items"] if it["kind"] == "rental" and it.get("description")})}
+            "audio_updated": row and {"at": row["updated_at"], "by": row["updated_by"]}}
 
 
 @route("GET", r"/api/jobs/(\d+)/patch")

@@ -1038,3 +1038,27 @@ tr.foldable:hover td { background: color-mix(in srgb, var(--brand) 6%, var(--sur
 .card > header .cols-menu .more-panel { min-width: 200px; }
 .cols-menu .more-panel .check { padding: 4px 6px; font-size: 14px; }
 @media print { .cols-menu { display: none; } }
+
+/* patch: scribble strips and the routing matrix */
+.patch-table input.auto { font-style: italic; color: var(--muted); }
+.patch-table .via { font-size: 13px; white-space: nowrap; }
+.mx-wrap { overflow: auto; max-height: 560px; border: 1px solid var(--border); border-radius: var(--radius); }
+.mx-grid { border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.mx-grid th, .mx-grid td { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.mx-grid thead th { position: sticky; background: var(--surface-2); z-index: 2; font-weight: 600; }
+.mx-grid thead tr:first-child th { top: 0; }
+.mx-grid thead tr:nth-child(2) th { top: 24px; }
+.mx-grid .mx-group { height: 24px; padding: 0 6px; text-align: left; white-space: nowrap; border-left: 2px solid var(--border-strong); }
+.mx-grid .mx-n { min-width: 24px; height: 22px; text-align: center; color: var(--muted); font-weight: 500; }
+.mx-grid .mx-corner { left: 0; z-index: 3; text-align: left; padding: 0 8px; color: var(--muted); font-weight: 500; white-space: nowrap; }
+.mx-grid .mx-row { position: sticky; left: 0; background: var(--surface); z-index: 1; text-align: left; padding: 3px 8px; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.mx-grid td.mx { width: 24px; height: 24px; text-align: center; cursor: pointer; color: var(--accent); font-size: 14px; line-height: 1; user-select: none; }
+.mx-grid .mx-start { border-left: 2px solid var(--border-strong); }
+.mx-grid td.mx:hover { background: var(--accent-soft); }
+.mx-grid td.mx.on { background: var(--accent-soft); font-weight: 700; }
+.mx-grid td.mx.taken { background: repeating-linear-gradient(45deg, transparent 0 4px, var(--surface-2) 4px 7px); }
+.mx-grid td.mx.via { color: var(--muted); }
+.mx-grid tr.clash .mx-row, .mx-grid tr.clash td.mx.on { background: var(--warn-bg); }
+.mx-grid tbody tr:hover .mx-row { color: var(--accent); }
+.patch-table[data-tbl="inputs"] td[data-col="source"], .patch-table[data-tbl="inputs"] td[data-col="mic"] { min-width: 150px; }
+.patch-table[data-tbl="inputs"] .w-m { width: 170px; }

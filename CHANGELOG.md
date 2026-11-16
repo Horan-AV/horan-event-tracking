@@ -2,6 +2,15 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.34.0 — 2026-11-16 · Patch list: analogue box column, scribble strips and a routing matrix
+
+- Audio inputs have an Analogue box column of their own: choose the box channel (e.g. Stage box A 3) and the Input column shows where it's plugged in (SB1 In 14). Patches saved before move across by themselves.
+- Source / name is a plain text box again, with no drop-down.
+- Scribble strips: give a desk its character limit under Inputs & outputs in Stock. On the patch, a Scribble strip column next to the name stays blank when the name fits, and suggests a short name when it doesn't (Lead Vocal → Ld Vox). Type over it to use your own. The patch sheet prints it.
+- Routing matrix: a grid of lines against inputs, and of buses against physical outputs. Click a square to patch it and the lists change to match.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.33.0 — 2026-11-16 · Audio patch with desks and stage boxes, and removing users
 
 - Audio patch: pick mics and DIs from your stock. When you save, they're added to the job — and so the prep list — as many as the patch uses beyond what the job already has, on a line that follows the patch as you change it.

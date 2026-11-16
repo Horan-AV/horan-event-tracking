@@ -1222,7 +1222,7 @@ class TestPatch(ServerCase):
 class TestAudioPatch(ServerCase):
     def test_desk_stage_boxes_and_mics_from_stock(self):
         c = self.c
-        sq5 = {"role": "desk", "channels": 48, "buses": {"aux": 12, "group": 0, "matrix": 3, "fx": 8},
+        sq5 = {"role": "desk", "channels": 48, "scribble": 6, "buses": {"aux": 12, "group": 0, "matrix": 3, "fx": 8},
                "ports": [{"name": "Local", "dir": "in", "type": "XLR", "count": 16}, {"name": "ST", "dir": "in", "type": "Stereo line", "count": 2},
                          {"name": "Local out", "dir": "out", "type": "XLR", "count": 12}, {"name": "AES out", "dir": "out", "type": "AES", "count": 1}]}
         _, desk = c.post("/products", {"name": "Test SQ5", "sku": "T-SQ5", "quantity": 1, "console": sq5})
@@ -1230,7 +1230,8 @@ class TestAudioPatch(ServerCase):
                                       "console": {"role": "stagebox", "ports": [{"name": "In", "dir": "in", "count": 24}, {"name": "Out", "dir": "out", "count": 12}]}})
         _, mic = c.post("/products", {"name": "Test SM58", "sku": "T-SM58", "quantity": 20, "day_rate": 5})
         saved = json.loads(desk["console"])
-        self.assertEqual((saved["channels"], saved["buses"]["matrix"], len(saved["ports"])), (48, 3, 4))
+        self.assertEqual((saved["channels"], saved["scribble"], saved["buses"]["matrix"], len(saved["ports"])), (48, 6, 3, 4))
+        self.assertEqual(c.put(f"/products/{desk['id']}", {"console": dict(sq5, scribble=99)})[0], 400)
         # checked: a socket count out of range, and an item that isn't a desk or box
         self.assertEqual(c.put(f"/products/{desk['id']}", {"console": {"role": "desk", "ports": [{"name": "x", "count": 999}]}})[0], 400)
         self.assertEqual(c.put(f"/products/{mic['id']}", {"console": {"role": "toaster"}})[1]["console"], "")
@@ -1243,13 +1244,14 @@ class TestAudioPatch(ServerCase):
         audio = {"desk": line[desk["id"]], "boxes": [{"id": "b1", "item_id": line[box["id"]], "label": "SB1"}],
                  "analogue": [{"id": "a1", "name": "Stage box A", "channels": 8, "into": "b1:0:12"}],
                  "inputs": [{"ch": str(n), "source": f"Vox {n}", "mic": "Test SM58", "mic_pid": mic["id"], "phys": f"d:0:{n}"} for n in range(1, 6)]
-                 + [{"ch": "6", "source": "Kick", "mic": "Beta 91", "phys": "a1:0:3"}],
+                 + [{"ch": "6", "source": "Kick drum inside", "scribble": "Kick In", "mic": "Beta 91", "abox": "a1:0:3", "phys": "b1:0:14"}],
                  "outputs": [{"out": "aux:1", "phys": "d:2:1", "dest": "Wedge 1"}]}
         status, p = c.put(f"/jobs/{job['id']}/patch", {"audio": audio})
         self.assertEqual(status, 200, p)
         self.assertEqual((p["audio"]["desk"], p["audio"]["boxes"][0]["label"], p["audio"]["analogue"][0]["into"]), (line[desk["id"]], "SB1", "b1:0:12"))
         self.assertEqual(p["audio"]["inputs"][0]["mic_pid"], mic["id"])
         self.assertNotIn("mic_pid", p["audio"]["inputs"][5])          # typed, not from stock
+        self.assertEqual({k: p["audio"]["inputs"][5][k] for k in ("scribble", "abox", "phys")}, {"scribble": "Kick In", "abox": "a1:0:3", "phys": "b1:0:14"})
         # 5 SM58s in the patch, 2 already on the job: 3 more go on the job (and so the prep list)
         def patch_line():
             items = c.get(f"/jobs/{job['id']}")[1]["items"]
