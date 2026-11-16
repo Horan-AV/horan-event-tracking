@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.31.1"
+VERSION = "1.33.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -572,7 +572,47 @@ PRODUCT_SPEC = {
     "size_w": float_or_none, "size_d": float_or_none, "size_h": float_or_none, "plan_shape": as_str,
     "inner_w": float_or_none, "inner_d": float_or_none, "inner_h": float_or_none, "case_for_id": int_or_none,
     "dmx_channels": as_int, "wireless": bool_int, "rf_band": as_str,
+    "console": lambda v, f: console_field(v),
 }
+CONSOLE_PORT_TYPES = ("XLR", "TRS jack", "Stereo line", "AES", "ADAT", "Dante", "MADI", "Link (e.g. SLink)", "Headphones", "Other")
+CONSOLE_BUSES = ("main", "aux", "group", "matrix", "fx")
+
+
+def console_field(v):
+    """A mixing desk's or stage box's inputs and outputs (stored as JSON on the item), or '' for neither:
+    {role: desk|stagebox, channels, buses: {aux, group, matrix, fx}, ports: [{name, dir: in|out, type, count}]}"""
+    if not v:
+        return ""
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except ValueError:
+            raise ApiError(400, "That isn't a list of inputs and outputs")
+    if not isinstance(v, dict) or v.get("role") not in ("desk", "stagebox"):
+        return ""
+    def count(x, what, hi):
+        n = as_int(x or 0, what)
+        if not 0 <= n <= hi:
+            raise ApiError(400, f"{what} is 0 to {hi}")
+        return n
+    out = {"role": v["role"], "ports": []}
+    if v["role"] == "desk":
+        out["channels"] = count(v.get("channels"), "Input channels", 512)
+        b = v.get("buses") or {}
+        out["buses"] = {k: count(b.get(k), k.title() + " outputs", 128) for k in CONSOLE_BUSES if k != "main"}
+    ports = v.get("ports") or []
+    if not isinstance(ports, list) or len(ports) > 40:
+        raise ApiError(400, "Up to 40 kinds of socket")
+    for x in ports:
+        if not isinstance(x, dict):
+            continue
+        name = as_str(x.get("name"), "name")[:30]
+        n = count(x.get("count"), "Number of sockets", 256)
+        if not name or not n:
+            continue
+        typ = x.get("type") if x.get("type") in CONSOLE_PORT_TYPES else "Other"
+        out["ports"].append({"name": name, "dir": "out" if x.get("dir") == "out" else "in", "type": typ, "count": n})
+    return json.dumps(out)
 CASE_FIELDS = {"inner_w", "inner_d", "inner_h", "case_for_id"}
 SIZE_FIELDS = {"size_w", "size_d", "size_h", "plan_shape"}
 # Equipment comes in kinds; each kind only keeps the fields that make sense for it.
@@ -843,6 +883,7 @@ def load_items(conn, job_ids):
                        p.sku AS product_sku, p.sub_hire AS product_sub_hire, p.vendor_id AS product_vendor_id,
                        v.name AS vendor_name, p.sub_hire_cost AS product_sub_hire_cost,
                        p.dmx_channels AS product_dmx_channels, p.wireless AS product_wireless, p.rf_band AS product_rf_band,
+                       p.console AS product_console,
                        COALESCE(sv.name, CASE WHEN ji.sub_vendor_id IS NULL THEN v.name END) AS sub_vendor_name
                 FROM job_items ji LEFT JOIN products p ON p.id = ji.product_id
                 LEFT JOIN vendors v ON v.id = p.vendor_id
@@ -1196,7 +1237,8 @@ def api_meta(req, conn):
     admin = (not users_exist(conn)) or bool(u and u["is_admin"])
     return {"version": VERSION, "data_dir": DATA_DIR if admin else "", "signed_in": True,
             "remote": req.remote, "server_name": socket.gethostname(), "users_enabled": users_exist(conn),
-            "user": u and {"id": u["id"], "name": u["name"], "is_admin": bool(u["is_admin"])},
+            "user": u and {"id": u["id"], "name": u["name"], "username": u.get("username") or "",
+                           "username_chosen": bool(u.get("username_chosen")), "is_admin": bool(u["is_admin"])},
             "is_admin": (not users_exist(conn)) or bool(u and u["is_admin"]),
             "headless": HEADLESS, "can_update": (not req.remote) or HEADLESS,
             "github_repo": GITHUB_REPO,
@@ -1484,17 +1526,31 @@ def api_login(req, conn):
     user = None
     target = None
     if users_exist(conn):
-        uid = as_int(d.get("user_id"), "user_id", allow_none=True)
-        target = f"user:{uid}"
+        if d.get("username") is not None:
+            typed = str(d.get("username") or "").strip()
+            row = conn.execute("SELECT id FROM users WHERE username = ? COLLATE NOCASE AND active = 1", (typed,)).fetchone()
+            if not row and typed:   # someone from before usernames, signing in with their name as they used to
+                row = conn.execute("SELECT id FROM users WHERE name = ? COLLATE NOCASE AND active = 1 AND username_chosen = 0",
+                                   (re.sub(r"\s+", " ", typed),)).fetchone()
+            uid = row[0] if row else None
+            # an unknown username is limited like a wrong password, without saying whether it exists
+            target = f"user:{uid}" if uid else f"name:{str(d.get('username') or '').strip().lower()[:40]}"
+        else:   # a sign-in page from before usernames
+            uid = as_int(d.get("user_id"), "user_id", allow_none=True)
+            target = f"user:{uid}"
         with LOGIN_LOCK:
             ufails = [t for t in LOGIN_FAILS.get(target, []) if now - t < 900]
             LOGIN_FAILS[target] = ufails
             if len(ufails) >= 10:
-                raise ApiError(429, "Too many wrong passwords for this person. Wait 15 minutes, or ask an admin to reset it.")
+                raise ApiError(429, "Too many wrong passwords for this username. Wait 15 minutes, or ask an admin to reset it.")
         secret = str(d.get("password") or d.get("pin") or "")
-        user = None if remote_blocked or not uid else check_user_pin(conn, uid, secret)
+        if remote_blocked or not uid:
+            verify_passcode(secret, dummy_hash())   # take as long as a real check, so timing doesn't tell
+            user = None
+        else:
+            user = check_user_pin(conn, uid, secret)
         ok = user is not None
-        msg = "That password isn't right"
+        msg = "That username or password isn't right"
     else:
         ok = not remote_blocked and req.remote and check_passcode(conn, str(d.get("passcode") or ""))
         msg = "That passcode isn't right"
@@ -1518,7 +1574,22 @@ def api_login(req, conn):
         if target:
             LOGIN_FAILS.pop(target, None)
     # An old short PIN still signs in, but the app asks them to choose a proper password.
-    return {"ok": True, "weak": bool(user) and len(secret) < USER_PIN_MIN}
+    return {"ok": True, "weak": bool(user) and len(secret) < USER_PIN_MIN,
+            "username": (user or {}).get("username") or "", "choose_username": bool(user) and not user.get("username_chosen")}
+
+
+@route("PUT", "/api/me/username")
+def api_my_username(req, conn):
+    """Choose your own username (everyone from before usernames is asked to, the first time they sign in)."""
+    me = current_user(conn, req)
+    if not me:
+        raise ApiError(400, "Sign in as a user first")
+    username = clean_username((req.json() or {}).get("username"))
+    if username_taken(conn, username, me["id"]):
+        raise ApiError(400, f"The username {username} is already taken — choose another")
+    conn.execute("UPDATE users SET username = ?, username_chosen = 1 WHERE id = ?", (username, me["id"]))
+    conn.commit()
+    return {"username": username}
 
 
 @route("PUT", "/api/me/password")
@@ -1599,7 +1670,7 @@ def check_user_pin(conn, uid, pin):
 def current_user(conn, req):
     """The signed-in person for this request (None when nobody needs to sign in)."""
     if req.session and req.session.get("user_id"):
-        return one(conn.execute("SELECT id, name, is_admin FROM users WHERE id = ? AND active = 1",
+        return one(conn.execute("SELECT id, name, username, username_chosen, is_admin FROM users WHERE id = ? AND active = 1",
                                 (req.session["user_id"],)))
     return None
 
@@ -1695,10 +1766,58 @@ def new_session(conn, req, user_id=None):
                       + ("; Secure" if getattr(req.handler, "tls", False) else ""))  # over https: never sent over http
 
 
+_DUMMY = []
+
+
+def dummy_hash():
+    """A hash nobody's password matches, so checking an unknown username takes as long as a real check."""
+    if not _DUMMY:
+        _DUMMY.append(hash_passcode("not-a-real-password"))
+    return _DUMMY[0]
+
+
 USER_PIN_MIN = 8   # new passwords; shorter PINs set before 1.27 keep working until they're changed
 COMMON_PASSWORDS = {"password", "password1", "password123", "passw0rd", "12345678", "123456789", "1234567890", "87654321",
                     "qwertyui", "qwerty123", "qwertyuiop", "11111111", "00000000", "letmein1", "iloveyou", "admin123",
                     "administrator", "welcome1", "welcome123", "changeme", "abcdefgh", "abc12345", "1q2w3e4r", "football"}
+
+
+USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
+
+
+def clean_username(v):
+    """A username: 2-32 letters, numbers, dots, dashes or underscores, starting with a letter or number. Not case-
+    sensitive (kept in lower case)."""
+    u = str(v or "").strip().lower()
+    if not USERNAME_RE.match(u):
+        raise ApiError(400, "A username is 2 to 32 letters or numbers (and . _ -), with no spaces — e.g. sam.smith")
+    return u
+
+
+def username_from_name(conn, name, skip_id=None):
+    """A free username made from someone's name: "Sam Smith" → sam.smith (sam.smith2 if that's taken)."""
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
+    base = re.sub(r"[^a-z0-9]+", ".", plain).strip(".")[:28] or "user"
+    if len(base) < 2:
+        base = f"{base}user"
+    cand, n = base, 1
+    while conn.execute("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE AND id IS NOT ?", (cand, skip_id)).fetchone():
+        n += 1
+        cand = f"{base}{n}"
+    return cand
+
+
+def fill_usernames(conn):
+    """Users from before usernames (1.32) get one made from their name; then usernames must be unique."""
+    for u in conn.execute("SELECT id, name FROM users WHERE username IS NULL OR username = '' ORDER BY id").fetchall():
+        conn.execute("UPDATE users SET username = ? WHERE id = ?", (username_from_name(conn, u[1], u[0]), u[0]))
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)")
+
+
+def username_taken(conn, username, skip_id=None):
+    return bool(conn.execute("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE AND id IS NOT ?",
+                             (username, skip_id)).fetchone())
 
 
 def check_new_password(pw, name=""):
@@ -1725,7 +1844,10 @@ def clean_pin(pin, required, name=""):
 
 
 def user_row(u):
-    return {k: u[k] for k in ("id", "name", "is_admin", "active", "created_at", "last_seen") if k in u}
+    out = {k: u[k] for k in ("id", "name", "username", "is_admin", "active", "created_at", "last_seen") if k in u}
+    if "username_chosen" in u:
+        out["username_chosen"] = bool(u["username_chosen"])
+    return out
 
 
 @route("GET", "/api/users")
@@ -1748,7 +1870,11 @@ def api_users_post(req, conn):
         raise ApiError(400, "Enter their name")
     if conn.execute("SELECT 1 FROM users WHERE name = ? COLLATE NOCASE", (name,)).fetchone():
         raise ApiError(400, f"There's already someone called {name}")
-    uid = insert(conn, "users", {"name": name, "pin_hash": clean_pin(d.get("password") or d.get("pin"), True, name),
+    username = clean_username(d["username"]) if d.get("username") else username_from_name(conn, name)
+    if username_taken(conn, username):
+        raise ApiError(400, f"The username {username} is already taken — choose another")
+    uid = insert(conn, "users", {"name": name, "username": username, "username_chosen": 1,
+                                 "pin_hash": clean_pin(d.get("password") or d.get("pin"), True, name),
                                  "is_admin": 1 if (first or d.get("is_admin")) else 0, "active": 1, "created_at": now_iso()})
     conn.commit()
     if first:
@@ -1776,6 +1902,10 @@ def api_user_put(req, conn, uid):
             raise ApiError(400, "Enter their name")
         if conn.execute("SELECT 1 FROM users WHERE name = ? COLLATE NOCASE AND id != ?", (data["name"], uid)).fetchone():
             raise ApiError(400, f"There's already someone called {data['name']}")
+    if d.get("username"):
+        data["username"] = clean_username(d["username"])
+        if username_taken(conn, data["username"], int(uid)):
+            raise ApiError(400, f"The username {data['username']} is already taken — choose another")
     if d.get("password") or d.get("pin"):
         data["pin_hash"] = clean_pin(d.get("password") or d.get("pin"), True, data.get("name") or u["name"])
     if "is_admin" in d:
@@ -1793,15 +1923,40 @@ def api_user_put(req, conn, uid):
     return user_row(one(conn.execute("SELECT * FROM users WHERE id = ?", (uid,))))
 
 
+@route("DELETE", r"/api/users/(\d+)")
+def api_user_delete(req, conn, uid):
+    """Remove someone. Their name stays on what they did (activity, jobs, scans and requests keep it as text), but
+    nothing points at their account any more - so a new user can never inherit their history or job permissions."""
+    require_admin(req, conn)
+    uid = int(uid)
+    u = one(conn.execute("SELECT * FROM users WHERE id = ?", (uid,)))
+    if not u:
+        raise ApiError(404, "User not found")
+    me = current_user(conn, req)
+    if me and me["id"] == uid:
+        raise ApiError(400, "You can't remove yourself — ask another admin to")
+    if u["is_admin"] and u["active"] and not conn.execute(
+            "SELECT 1 FROM users WHERE is_admin = 1 AND active = 1 AND id != ?", (uid,)).fetchone():
+        raise ApiError(400, "Keep at least one active admin, or nobody could change settings")
+    conn.execute("DELETE FROM sessions WHERE user_id = ?", (uid,))   # signed out everywhere
+    for table, col in (("activity", "user_id"), ("job_checks", "user_id"), ("requests", "user_id"), ("jobs", "created_by_id")):
+        conn.execute(f"UPDATE {table} SET {col} = NULL WHERE {col} = ?", (uid,))
+    for j in rows(conn.execute("SELECT id, editors FROM jobs WHERE editors LIKE ?", (f"%{uid}%",))):
+        eds = [e for e in job_editors(j) if e != uid]
+        conn.execute("UPDATE jobs SET editors = ? WHERE id = ?", (json.dumps(eds), j["id"]))
+    conn.execute("DELETE FROM users WHERE id = ?", (uid,))
+    conn.commit()
+    return {"ok": True, "name": u["name"]}
+
+
 @route("GET", "/api/login-options")
 def api_login_options(req, conn):
-    """What the sign-in page should ask for. Public: lists first names only, no other details."""
+    """What the sign-in page should ask for: a username and password, or the network passcode. Public, so it names
+    nobody."""
     name = app_name(conn)
     extra = {"app_name": name, "default_name": name == DEFAULT_SETTINGS["app_name"], "has_logo": file_has(conn, "logo_light")}
-    if users_exist(conn):
-        return {"mode": "users", **extra, "users": rows(conn.execute(
-            "SELECT id, name FROM users WHERE active = 1 ORDER BY name COLLATE NOCASE"))}
-    return {"mode": "passcode", **extra}
+    pending = bool(conn.execute("SELECT 1 FROM users WHERE active = 1 AND username_chosen = 0 LIMIT 1").fetchone())
+    return {"mode": "users" if users_exist(conn) else "passcode", "name_hint": pending, **extra}
 
 
 def app_name(conn):
@@ -2066,6 +2221,10 @@ def describe(fn_name, conn, req, groups, body, result, pre):
     if fn_name == "api_patch_put":
         what = [w for w, k in (("DMX addresses", "dmx"), ("frequencies", "rf"), ("the audio patch", "audio")) if body.get(k)]
         return ("job", "Changed " + (" and ".join(what) or "the patch"), g[0], None)
+    if fn_name == "api_user_delete":
+        return ("user", f"Removed user {r.get('name', '')}", None, None)
+    if fn_name == "api_my_username":
+        return ("user", f"Chose the username {r.get('username', '')}", None, None)
     if fn_name == "api_my_password":
         return ("user", "Changed their password", None, None)
     if fn_name == "api_users_post":
@@ -4736,8 +4895,8 @@ def calendar_feed_response(conn, token):
 # (both kept on the job line, so they follow it). The audio input and output lists are kept per job.
 
 DMX_SLOTS = 512
-AUDIO_IN_COLS = ("ch", "source", "mic", "stand", "box", "phantom", "notes")
-AUDIO_OUT_COLS = ("out", "dest", "notes")
+AUDIO_IN_COLS = ("ch", "source", "mic", "stand", "phys", "box", "phantom", "notes")
+AUDIO_OUT_COLS = ("out", "phys", "dest", "notes")
 
 
 def item_patch(it):
@@ -4778,14 +4937,25 @@ def job_patch(conn, jid):
                        "band": it.get("product_rf_band") or "", "range": rf_band_range(it.get("product_rf_band")),
                        "units": units})
     row = one(conn.execute("SELECT * FROM job_audio_patch WHERE job_id = ?", (jid,)))
-    audio = {"inputs": [], "outputs": []}
+    audio = {"inputs": [], "outputs": [], "desk": None, "boxes": [], "analogue": []}
     if row:
         try:
             audio.update(json.loads(row["data"]))
         except ValueError:
             pass
+    # the desks and stage boxes on this job, with their sockets (from Stock)
+    consoles = []
+    for it in job["items"]:
+        try:
+            con = json.loads(it.get("product_console") or "") if it.get("product_console") else None
+        except ValueError:
+            con = None
+        if con and it["kind"] == "rental":
+            consoles.append({"item_id": it["id"], "product_id": it["product_id"], "name": it["description"] or it["product_name"],
+                             "quantity": max(1, int(round(it["quantity"] or 1))), "console": con})
     return {"job": {k: job[k] for k in ("id", "number", "name", "start_date", "end_date", "start_time", "end_time", "venue")},
-            "dmx": dmx, "rf": rf, "audio": audio, "audio_updated": row and {"at": row["updated_at"], "by": row["updated_by"]},
+            "dmx": dmx, "rf": rf, "audio": audio, "consoles": consoles,
+            "audio_updated": row and {"at": row["updated_at"], "by": row["updated_by"]},
             "audio_sources": sorted({it["description"] for it in job["items"] if it["kind"] == "rental" and it.get("description")})}
 
 
@@ -4796,7 +4966,7 @@ def api_patch(req, conn, jid):
     return job_patch(conn, int(jid))
 
 
-def _clean_rows(rows_, cols, what):
+def _clean_rows(rows_, cols, what, products=None):
     if not isinstance(rows_, list) or len(rows_) > 500:
         raise ApiError(400, f"The {what} list is up to 500 lines")
     out = []
@@ -4804,9 +4974,73 @@ def _clean_rows(rows_, cols, what):
         if not isinstance(r, dict):
             continue
         row = {c: str(r.get(c) if r.get(c) is not None else "").strip()[:200] for c in cols}
-        if any(row.values()):
+        if products is not None:   # a mic / DI chosen from stock
+            pid = int_or_none(r.get("mic_pid"), "mic")
+            if pid and pid in products:
+                row["mic_pid"] = pid
+        if any(v for k, v in row.items()):
             out.append(row)
     return out
+
+
+def _clean_audio_setup(a, items):
+    """The desk and stage boxes (lines on this job) and any analogue boxes, for the audio patch."""
+    desk = int_or_none(a.get("desk"), "desk")
+    if desk and desk not in items:
+        desk = None
+    boxes, seen = [], set()
+    for b in (a.get("boxes") or [])[:32]:
+        bid, iid = str(b.get("id") or "")[:8], int_or_none(b.get("item_id"), "stage box")
+        if not re.match(r"^b\d{1,4}$", bid) or bid in seen or iid not in items:
+            continue
+        seen.add(bid)
+        boxes.append({"id": bid, "item_id": iid, "label": as_str(b.get("label"), "label")[:40]})
+    analogue = []
+    for x in (a.get("analogue") or [])[:32]:
+        aid = str(x.get("id") or "")[:8]
+        if not re.match(r"^a\d{1,4}$", aid) or aid in seen:
+            continue
+        seen.add(aid)
+        n = as_int(x.get("channels") or 0, "channels")
+        if not 1 <= n <= 128:
+            raise ApiError(400, "An analogue stage box has 1 to 128 channels")
+        analogue.append({"id": aid, "name": as_str(x.get("name"), "name")[:40] or "Stage box", "channels": n,
+                         "into": str(x.get("into") or "")[:24]})
+    return {"desk": desk, "boxes": boxes, "analogue": analogue}
+
+
+def sync_patch_mics(conn, jid, inputs):
+    """Mics and DIs chosen from stock in the audio patch go on the job (and so the prep list): as many as the patch
+    uses beyond what the job already has, on a line of their own that follows the patch."""
+    from collections import Counter
+    want = Counter(r["mic_pid"] for r in inputs if r.get("mic_pid"))
+    normal, mine = Counter(), {}
+    for it in rows(conn.execute("SELECT id, product_id, quantity, meta FROM job_items WHERE job_id = ? AND kind = 'rental' "
+                                "AND product_id IS NOT NULL", (jid,))):
+        try:
+            role = (json.loads(it["meta"]) if it["meta"] else {}).get("role")
+        except ValueError:
+            role = None
+        if role == "patch-mic":
+            mine[it["product_id"]] = it
+        else:
+            normal[it["product_id"]] += it["quantity"] or 0
+    for pid in set(want) | set(mine):
+        need = max(0, want[pid] - normal[pid])
+        line = mine.get(pid)
+        if need and line:
+            if line["quantity"] != need:
+                conn.execute("UPDATE job_items SET quantity = ? WHERE id = ?", (need, line["id"]))
+                sync_accessories(conn, line["id"])
+        elif need:
+            p = one(conn.execute("SELECT name, day_rate FROM products WHERE id = ?", (pid,)))
+            sort = (conn.execute("SELECT COALESCE(MAX(sort), 0) FROM job_items WHERE job_id = ?", (jid,)).fetchone()[0] or 0) + 1
+            new = insert(conn, "job_items", {"job_id": jid, "product_id": pid, "kind": "rental", "description": p["name"],
+                                             "quantity": need, "unit_price": p["day_rate"], "sort": sort,
+                                             "meta": json.dumps({"role": "patch-mic"})})
+            add_accessories(conn, new)
+        elif line:
+            conn.execute("DELETE FROM job_items WHERE id = ? OR parent_item_id = ?", (line["id"], line["id"]))
 
 
 @route("PUT", r"/api/jobs/(\d+)/patch")
@@ -4867,8 +5101,11 @@ def api_patch_put(req, conn, jid):
         it["patch"] = json.dumps(p)
     if isinstance(d.get("audio"), dict):
         a = d["audio"]
-        data = {"inputs": _clean_rows(a.get("inputs") or [], AUDIO_IN_COLS, "input"),
-                "outputs": _clean_rows(a.get("outputs") or [], AUDIO_OUT_COLS, "output")}
+        stock = {r[0] for r in conn.execute("SELECT id FROM products WHERE archived = 0")}
+        data = {"inputs": _clean_rows(a.get("inputs") or [], AUDIO_IN_COLS, "input", stock),
+                "outputs": _clean_rows(a.get("outputs") or [], AUDIO_OUT_COLS, "output"),
+                **_clean_audio_setup(a, set(items))}
+        sync_patch_mics(conn, jid, data["inputs"])
         conn.execute("INSERT INTO job_audio_patch(job_id, data, updated_at, updated_by) VALUES(?, ?, ?, ?) "
                      "ON CONFLICT(job_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, "
                      "updated_by = excluded.updated_by", (jid, json.dumps(data), now_iso(), actor_name()))
@@ -8953,7 +9190,10 @@ def init_db():
                              ("jobs", "zoho_estimate_id", "TEXT"),
                              ("jobs", "zoho_estimate_number", "TEXT"),
                              ("jobs", "invoice_due", "TEXT"),
-                             ("jobs", "invoice_terms", "TEXT")):
+                             ("jobs", "invoice_terms", "TEXT"),
+                             ("users", "username", "TEXT"),
+                             ("users", "username_chosen", "INTEGER NOT NULL DEFAULT 0"),
+                             ("products", "console", "TEXT NOT NULL DEFAULT ''")):
         if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():
@@ -8966,6 +9206,7 @@ def init_db():
         migrate_stock_types(conn)
         conn.execute("INSERT INTO settings(key, value) VALUES('migrated_stock_types', '1')")
     fill_equip_kinds(conn)
+    fill_usernames(conn)
     if not conn.execute("SELECT 1 FROM settings WHERE key = 'instance_id'").fetchone():
         conn.execute("INSERT INTO settings(key, value) VALUES('instance_id', ?)", (new_instance_id(),))
     apply_fulfilled(conn)
@@ -9080,7 +9321,7 @@ def main():
                     help="turn https (with the app's own certificate) on or off for other devices, then exit")
     ap.add_argument("--status", action="store_true", help="show the version, data folder and network addresses, then exit")
     ap.add_argument("--list-users", action="store_true", help="list the people who can sign in, then exit")
-    ap.add_argument("--reset-password", "--reset-pin", dest="reset_pin", metavar="NAME", help="give someone a new password (and make sure they're an active admin "
+    ap.add_argument("--reset-password", "--reset-pin", dest="reset_pin", metavar="USERNAME", help="give someone a new password (and make sure they're an active admin "
                     "with --admin), then exit - for when everyone is locked out")
     ap.add_argument("--admin", action="store_true", help="with --reset-password: also make them an admin")
     ap.add_argument("--headless-mode", choices=("on", "off"),
@@ -9198,15 +9439,16 @@ def cli_admin(args):
                 print("Devices show a warning until they trust the app's certificate: open https://<address>/ca.crt on each "
                       f"device and install it.\nCertificate fingerprint (SHA-256): {tls_info(c)['fingerprint']}")
         if args.list_users:
-            us = rows(c.execute("SELECT name, is_admin, active FROM users ORDER BY name COLLATE NOCASE"))
+            us = rows(c.execute("SELECT name, username, is_admin, active FROM users ORDER BY name COLLATE NOCASE"))
             if not us:
                 print("No users yet - nobody needs to sign in on this computer.")
             for u in us:
-                print(f"{u['name']}{'  (admin)' if u['is_admin'] else ''}{'  [disabled]' if not u['active'] else ''}")
+                print(f"{u['username'] or '-':<20} {u['name']}{'  (admin)' if u['is_admin'] else ''}{'  [disabled]' if not u['active'] else ''}")
         if args.reset_pin:
-            u = one(c.execute("SELECT * FROM users WHERE name = ? COLLATE NOCASE", (args.reset_pin,)))
+            u = one(c.execute("SELECT * FROM users WHERE username = ? COLLATE NOCASE OR name = ? COLLATE NOCASE "
+                              "ORDER BY username = ? COLLATE NOCASE DESC", (args.reset_pin, args.reset_pin, args.reset_pin)))
             if not u:
-                print(f"Nobody called {args.reset_pin}. See: horan-rms users", file=sys.stderr)
+                print(f"No user called {args.reset_pin}. See their usernames with: horan-rms users", file=sys.stderr)
                 return 1
             pin = os.environ.get("HORAN_RMS_PIN", "")
             if not pin:

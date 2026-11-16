@@ -3,18 +3,23 @@
 Run from the project folder with:  python3 -m unittest discover -s tests -v
 Uses only the Python standard library, like the app itself.
 """
+import datetime as dt
+import hashlib
 import http.client
+import http.server
 import json
 import os
 import re
 import shutil
 import socket
+import sqlite3
 import ssl
 import stat
 import subprocess
 import sys
 import zlib
 import tempfile
+import threading
 import time
 import unittest
 
@@ -175,11 +180,11 @@ class TestPermissions(ServerCase):
         super().setUpClass()
         admin = cls.c
         assert admin.post("/users", {"name": "Admin", "password": "correct horse"})[0] == 200
-        assert admin.post("/login", {"user_id": 1, "password": "correct horse"})[0] == 200
+        assert admin.post("/login", {"username": "admin", "password": "correct horse"})[0] == 200
         status, sam = admin.post("/users", {"name": "Sam", "password": "battery staple", "is_admin": False})
         assert status == 200, sam
         cls.sam = Client(cls.port)
-        assert cls.sam.post("/login", {"user_id": sam["id"], "password": "battery staple"})[0] == 200
+        assert cls.sam.post("/login", {"username": "sam", "password": "battery staple"})[0] == 200
 
     def test_signed_out_gets_nothing(self):
         anon = Client(self.port)
@@ -234,16 +239,91 @@ class TestSignInLimit(ServerCase):
     def test_wrong_pins_are_limited(self):
         self.assertEqual(self.c.post("/users", {"name": "Admin", "password": "correct horse"})[0], 200)
         guesser = Client(self.port)
-        seen = [guesser.post("/login", {"user_id": 1, "password": f"wrong guess {i}"})[0] for i in range(7)]
+        seen = [guesser.post("/login", {"username": "admin", "password": f"wrong guess {i}"})[0] for i in range(7)]
         self.assertEqual(seen[:5], [401] * 5)
         self.assertEqual(seen[5:], [429, 429])
         # even the right PIN is refused while locked out
-        self.assertEqual(guesser.post("/login", {"user_id": 1, "password": "correct horse"})[0], 429)
+        self.assertEqual(guesser.post("/login", {"username": "admin", "password": "correct horse"})[0], 429)
+
+
+class TestUsernames(ServerCase):
+    def test_sign_in_with_a_username(self):
+        c = self.c
+        status, me = c.post("/users", {"name": "Alex Smith", "password": "correct horse"})
+        self.assertEqual((status, me["username"]), (200, "alex.smith"))      # made from the name
+        # the sign-in page no longer lists anybody
+        opts = Client(self.port).get("/login-options")[1]
+        self.assertEqual(opts["mode"], "users")
+        self.assertNotIn("users", opts)
+        self.assertNotIn("Alex", json.dumps(opts))
+        # sign in with the username, in any case
+        self.assertEqual(Client(self.port).post("/login", {"username": "Alex.Smith", "password": "correct horse"})[0], 200)
+        # a wrong password and an unknown username get the same answer
+        a = Client(self.port).post("/login", {"username": "alex.smith", "password": "wrong password"})
+        b = Client(self.port).post("/login", {"username": "nobody.here", "password": "wrong password"})
+        self.assertEqual((a[0], b[0]), (401, 401))
+        self.assertEqual(a[1]["error"], b[1]["error"])
+        # choose one, change one, and they can't clash
+        c.post("/login", {"username": "alex.smith", "password": "correct horse"})
+        status, sam = c.post("/users", {"name": "Sam", "username": "SoundSam", "password": "battery staple"})
+        self.assertEqual((status, sam["username"]), (200, "soundsam"))
+        self.assertEqual(c.post("/users", {"name": "Sam Two", "username": "soundsam", "password": "battery staple"})[0], 400)
+        self.assertEqual(c.post("/users", {"name": "Bad", "username": "has space", "password": "battery staple"})[0], 400)
+        self.assertEqual(c.put(f"/users/{sam['id']}", {"username": "alex.smith"})[0], 400)
+        status, sam = c.put(f"/users/{sam['id']}", {"username": "sam.audio"})
+        self.assertEqual((status, sam["username"]), (200, "sam.audio"))
+        self.assertEqual(Client(self.port).post("/login", {"username": "sam.audio", "password": "battery staple"})[0], 200)
+        self.assertEqual(Client(self.port).post("/login", {"username": "soundsam", "password": "battery staple"})[0], 401)
+        # two people with the same first name get different usernames
+        _, s2 = c.post("/users", {"name": "Alex Smith Jr", "password": "battery staple"})
+        _, s3 = c.post("/users", {"name": "alex  smith!", "password": "battery staple"})
+        self.assertEqual((s2["username"], s3["username"]), ("alex.smith.jr", "alex.smith2"))
+        self.assertEqual(c.get("/meta")[1]["user"]["username"], "alex.smith")
+
+    def test_users_from_before_get_a_username(self):
+        self.c.post("/users", {"name": "Jo Bloggs", "password": "correct horse"})
+        self.c.post("/users", {"name": "Jo Bloggs Two", "password": "correct horse"})
+        db = sqlite3.connect(os.path.join(self.tmp.name, "rms.db"))
+        db.execute("DROP INDEX idx_users_username")
+        db.execute("UPDATE users SET username = NULL")   # as an older version left them
+        db.commit()
+        db.close()
+        # starting the app again fills them in
+        env = dict(os.environ, HORAN_RMS_GITHUB_API="http://127.0.0.1:9")
+        out = subprocess.run([sys.executable, os.path.join(ROOT, "server.py"), "--data", self.tmp.name, "--list-users"],
+                             env=env, capture_output=True, text=True, timeout=60)
+        self.assertIn("jo.bloggs ", out.stdout)
+        self.assertIn("jo.bloggs.two", out.stdout)
+
+
+class TestChooseUsername(ServerCase):
+    def test_people_from_before_choose_their_username(self):
+        _, jo = self.c.post("/users", {"name": "Jo Bloggs", "password": "correct horse"})
+        self.assertTrue(jo["username_chosen"])               # someone added now is told theirs
+        db = sqlite3.connect(os.path.join(self.tmp.name, "rms.db"))
+        db.execute("UPDATE users SET username_chosen = 0")   # as everyone from before usernames is
+        db.commit()
+        db.close()
+        self.assertTrue(Client(self.port).get("/login-options")[1]["name_hint"])
+        # they sign in with their name, as before, and are asked to choose a username
+        jo_c = Client(self.port)
+        status, r = jo_c.post("/login", {"username": "jo bloggs", "password": "correct horse"})
+        self.assertEqual((status, r["choose_username"], r["username"]), (200, True, "jo.bloggs"))
+        self.assertFalse(jo_c.get("/meta")[1]["user"]["username_chosen"])
+        self.assertEqual(jo_c.put("/me/username", {"username": "no spaces allowed"})[0], 400)
+        status, r = jo_c.put("/me/username", {"username": "JoB"})
+        self.assertEqual((status, r["username"]), (200, "job"))
+        self.assertTrue(jo_c.get("/meta")[1]["user"]["username_chosen"])
+        self.assertIn("Chose the username job", jo_c.get("/activity")[1][0]["summary"])
+        # from then on it's the username; the name no longer works, and the hint has gone
+        self.assertEqual(Client(self.port).post("/login", {"username": "Jo Bloggs", "password": "correct horse"})[0], 401)
+        status, r = Client(self.port).post("/login", {"username": "job", "password": "correct horse"})
+        self.assertEqual((status, r["choose_username"]), (200, False))
+        self.assertFalse(Client(self.port).get("/login-options")[1]["name_hint"])
 
 
 class TestPasswords(ServerCase):
     def db(self):
-        import sqlite3
         return sqlite3.connect(os.path.join(self.tmp.name, "rms.db"), timeout=15)
 
     def stored(self, uid):
@@ -261,7 +341,8 @@ class TestPasswords(ServerCase):
         self.assertEqual(c.post("/users", {"name": "Admin", "password": "aaaaaaaaaa"})[0], 400)
         self.assertEqual(c.post("/users", {"name": "Admin", "password": "x" * 500})[0], 400)
         self.assertEqual(c.post("/users", {"name": "Admin", "password": "correct horse"})[0], 200)
-        self.assertEqual(c.post("/login", {"user_id": 1, "password": "correct horse"})[1], {"ok": True, "weak": False})
+        r = c.post("/login", {"username": "admin", "password": "correct horse"})[1]
+        self.assertEqual((r["ok"], r["weak"]), (True, False))
 
         # only a salted hash is stored, never the password, and two people with the same password differ
         h = self.stored(1)
@@ -273,7 +354,6 @@ class TestPasswords(ServerCase):
             self.assertNotIn(b"correct horse", f.read())
 
         # a short PIN from an older version still signs in, is re-hashed, and is flagged as weak
-        import hashlib
         salt = "00112233445566778899aabbccddeeff"
         old = salt + "$" + hashlib.pbkdf2_hmac("sha256", b"4321", bytes.fromhex(salt), 200_000).hex()
         conn = self.db()
@@ -281,20 +361,21 @@ class TestPasswords(ServerCase):
         conn.commit()
         conn.close()
         s = Client(self.port)
-        self.assertEqual(s.post("/login", {"user_id": sam["id"], "pin": "4321"})[1], {"ok": True, "weak": True})
+        r = s.post("/login", {"username": "Sam", "pin": "4321"})[1]
+        self.assertEqual((r["ok"], r["weak"]), (True, True))
         self.assertTrue(self.stored(sam["id"]).startswith("pbkdf2_sha256$600000$"))
 
         # changing your own password needs the current one, and signs out your other devices
         other = Client(self.port)
-        self.assertEqual(other.post("/login", {"user_id": sam["id"], "password": "4321"})[0], 200)
+        self.assertEqual(other.post("/login", {"username": "sam", "password": "4321"})[0], 200)
         self.assertEqual(s.put("/me/password", {"current": "wrong", "new": "battery staple"})[0], 400)
         self.assertEqual(s.put("/me/password", {"current": "4321", "new": "tiny"})[0], 400)
         self.assertEqual(s.put("/me/password", {"current": "4321", "new": "battery staple"})[0], 200)
         self.assertEqual(s.get("/jobs")[0], 200)
         self.assertEqual(other.get("/jobs")[0], 401)
         fresh = Client(self.port)
-        self.assertEqual(fresh.post("/login", {"user_id": sam["id"], "password": "4321"})[0], 401)
-        self.assertEqual(fresh.post("/login", {"user_id": sam["id"], "password": "battery staple"})[0], 200)
+        self.assertEqual(fresh.post("/login", {"username": "sam", "password": "4321"})[0], 401)
+        self.assertEqual(fresh.post("/login", {"username": "sam", "password": "battery staple"})[0], 200)
         # an admin can't read a password, only replace it
         self.assertFalse([u for u in c.get("/users")[1] if "pin_hash" in u or "password" in u])
 
@@ -417,7 +498,7 @@ class TestHttps(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.assertIn("Secure", r.getheader("Set-Cookie"))
         plain = Client(self.port)
-        status, r, _ = plain.request("POST", "/api/login", {"user_id": 1, "password": "correct horse"}, raw=True)
+        status, r, _ = plain.request("POST", "/api/login", {"username": "admin", "password": "correct horse"}, raw=True)
         self.assertEqual(status, 200)
         self.assertNotIn("Secure", r.getheader("Set-Cookie"))
 
@@ -969,8 +1050,6 @@ class FakeZoho:
     """A stand-in for Zoho's sign-in and Books API, recording what the app sends."""
 
     def __init__(self):
-        import http.server
-        import threading
         self.calls = []
         fake = self
 
@@ -1019,7 +1098,6 @@ class FakeZoho:
 
 class TestInvoicingAndZoho(ServerCase):
     def connect_zoho(self):
-        import sqlite3
         self.zoho = FakeZoho()
         self.addCleanup(self.zoho.server.shutdown)
         db = sqlite3.connect(os.path.join(self.tmp.name, "rms.db"))
@@ -1044,7 +1122,6 @@ class TestInvoicingAndZoho(ServerCase):
         cid = job["contact_id"]
         self.c.put(f"/contacts/{cid}", {"name": "Zed Events", "payment_terms": "eom", "invoice_prefix": ""})
         inv = self.c.get(f"/jobs/{job['id']}")[1]["invoice"]
-        import datetime as dt
         d = dt.date.fromisoformat(inv["date"])
         nxt = (d.replace(day=1) + dt.timedelta(days=32)).replace(day=1)
         self.assertEqual(inv["due"], ((nxt + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)).isoformat())
@@ -1140,6 +1217,82 @@ class TestPatch(ServerCase):
                     {"rf": [{"item_id": ri, "units": [{"f": "loud"}]}]},
                     {"dmx": [{"item_id": 999999, "units": []}]}):
             self.assertEqual(self.c.put(f"/jobs/{job['id']}/patch", bad)[0], 400, bad)
+
+
+class TestAudioPatch(ServerCase):
+    def test_desk_stage_boxes_and_mics_from_stock(self):
+        c = self.c
+        sq5 = {"role": "desk", "channels": 48, "buses": {"aux": 12, "group": 0, "matrix": 3, "fx": 8},
+               "ports": [{"name": "Local", "dir": "in", "type": "XLR", "count": 16}, {"name": "ST", "dir": "in", "type": "Stereo line", "count": 2},
+                         {"name": "Local out", "dir": "out", "type": "XLR", "count": 12}, {"name": "AES out", "dir": "out", "type": "AES", "count": 1}]}
+        _, desk = c.post("/products", {"name": "Test SQ5", "sku": "T-SQ5", "quantity": 1, "console": sq5})
+        _, box = c.post("/products", {"name": "Test AR2412", "sku": "T-AR2412", "quantity": 2,
+                                      "console": {"role": "stagebox", "ports": [{"name": "In", "dir": "in", "count": 24}, {"name": "Out", "dir": "out", "count": 12}]}})
+        _, mic = c.post("/products", {"name": "Test SM58", "sku": "T-SM58", "quantity": 20, "day_rate": 5})
+        saved = json.loads(desk["console"])
+        self.assertEqual((saved["channels"], saved["buses"]["matrix"], len(saved["ports"])), (48, 3, 4))
+        # checked: a socket count out of range, and an item that isn't a desk or box
+        self.assertEqual(c.put(f"/products/{desk['id']}", {"console": {"role": "desk", "ports": [{"name": "x", "count": 999}]}})[0], 400)
+        self.assertEqual(c.put(f"/products/{mic['id']}", {"console": {"role": "toaster"}})[1]["console"], "")
+        job = self.new_job()
+        for pid, q in ((desk["id"], 1), (box["id"], 1), (mic["id"], 2)):   # the job already has 2 SM58s
+            job = c.post(f"/jobs/{job['id']}/items", {"product_id": pid, "quantity": q})[1]
+        line = {it["product_id"]: it["id"] for it in job["items"]}
+        p = c.get(f"/jobs/{job['id']}/patch")[1]
+        self.assertEqual(sorted(x["console"]["role"] for x in p["consoles"]), ["desk", "stagebox"])
+        audio = {"desk": line[desk["id"]], "boxes": [{"id": "b1", "item_id": line[box["id"]], "label": "SB1"}],
+                 "analogue": [{"id": "a1", "name": "Stage box A", "channels": 8, "into": "b1:0:12"}],
+                 "inputs": [{"ch": str(n), "source": f"Vox {n}", "mic": "Test SM58", "mic_pid": mic["id"], "phys": f"d:0:{n}"} for n in range(1, 6)]
+                 + [{"ch": "6", "source": "Kick", "mic": "Beta 91", "phys": "a1:0:3"}],
+                 "outputs": [{"out": "aux:1", "phys": "d:2:1", "dest": "Wedge 1"}]}
+        status, p = c.put(f"/jobs/{job['id']}/patch", {"audio": audio})
+        self.assertEqual(status, 200, p)
+        self.assertEqual((p["audio"]["desk"], p["audio"]["boxes"][0]["label"], p["audio"]["analogue"][0]["into"]), (line[desk["id"]], "SB1", "b1:0:12"))
+        self.assertEqual(p["audio"]["inputs"][0]["mic_pid"], mic["id"])
+        self.assertNotIn("mic_pid", p["audio"]["inputs"][5])          # typed, not from stock
+        # 5 SM58s in the patch, 2 already on the job: 3 more go on the job (and so the prep list)
+        def patch_line():
+            items = c.get(f"/jobs/{job['id']}")[1]["items"]
+            return [it for it in items if it["product_id"] == mic["id"] and json.loads(it.get("meta") or "{}").get("role") == "patch-mic"]
+        self.assertEqual([it["quantity"] for it in patch_line()], [3])
+        self.assertEqual(patch_line()[0]["unit_price"], 5)
+        picks = c.get(f"/jobs/{job['id']}/check?dir=out")[1]["lines"]
+        self.assertEqual(next(l["needed"] for l in picks if l["product_id"] == mic["id"]), 5)
+        # it follows the patch: fewer mics, then none beyond what the job has
+        audio["inputs"] = audio["inputs"][:3] + audio["inputs"][5:]
+        c.put(f"/jobs/{job['id']}/patch", {"audio": audio})
+        self.assertEqual([it["quantity"] for it in patch_line()], [1])
+        audio["inputs"] = audio["inputs"][:2]
+        c.put(f"/jobs/{job['id']}/patch", {"audio": audio})
+        self.assertEqual(patch_line(), [])
+        # a stage box that isn't on the job is dropped
+        audio["boxes"].append({"id": "b2", "item_id": 999999})
+        p = c.put(f"/jobs/{job['id']}/patch", {"audio": audio})[1]
+        self.assertEqual([b["id"] for b in p["audio"]["boxes"]], ["b1"])
+
+
+class TestRemoveUser(ServerCase):
+    def test_remove_a_user(self):
+        c = self.c
+        _, admin = c.post("/users", {"name": "Admin", "password": "correct horse"})
+        _, sam = c.post("/users", {"name": "Sam", "password": "battery staple"})
+        s = Client(self.port)
+        self.assertEqual(s.post("/login", {"username": "sam", "password": "battery staple"})[0], 200)
+        s.post("/jobs", {"name": "Sam's job", "start_date": "2030-03-01", "end_date": "2030-03-02"})
+        self.assertEqual(s.delete(f"/users/{admin['id']}")[0], 403)          # only admins
+        self.assertEqual(c.delete(f"/users/{admin['id']}")[0], 400)          # not yourself
+        status, r = c.delete(f"/users/{sam['id']}")
+        self.assertEqual((status, r["name"]), (200, "Sam"))
+        self.assertEqual(s.get("/jobs")[0], 401)                             # signed out everywhere
+        self.assertNotIn("Sam", [u["name"] for u in c.get("/users")[1]])
+        self.assertEqual(Client(self.port).post("/login", {"username": "sam", "password": "battery staple"})[0], 401)
+        # their name stays on what they did, and nothing points at the old account
+        jobs = c.get("/jobs")[1]
+        mine = next(j for j in jobs if j["name"] == "Sam's job")
+        self.assertEqual((mine["created_by"], mine["created_by_id"]), ("Sam", None))
+        self.assertTrue(any(a["user_name"] == "Sam" and a["user_id"] is None for a in c.get("/activity")[1]))
+        self.assertIn("Removed user Sam", c.get("/activity")[1][0]["summary"])
+        self.assertEqual(c.delete(f"/users/{sam['id']}")[0], 404)
 
 
 class TestStageBolts(ServerCase):

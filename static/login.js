@@ -1,5 +1,6 @@
 // The sign-in page's script (kept in its own file so the page can forbid inline scripts).
-let mode = 'passcode', who = null;
+let mode = 'passcode';
+const REMEMBER_KEY = 'het-username';
 const $ = (id) => document.getElementById(id);
 fetch('/api/login-options').then((r) => r.json()).then((o) => {
   const name = o.app_name || 'Horan Event Tracking';
@@ -11,36 +12,34 @@ fetch('/api/login-options').then((r) => r.json()).then((o) => {
   $('intro').textContent = 'Enter the passcode set on the computer running ' + name + '.';
   if (o.mode !== 'users') { $('intro').textContent = 'This device is connecting over the network. Enter the passcode set on the computer running ' + name + '.'; return; }
   mode = 'users';
-  $('intro').textContent = 'Choose your name and enter your password.';
+  $('intro').textContent = 'Enter your username and password.';
   $('pc-label').textContent = 'Password';
   $('pc').autocomplete = 'current-password';
   $('who').hidden = false;
-  let last = null;
-  try { last = localStorage.getItem('het-last-user'); } catch (e) {}
-  const pick = (b) => {
-    who = Number(b.dataset.id);
-    for (const x of $('people').children) x.setAttribute('aria-checked', String(x === b));
-    $('pc').value = ''; $('pc').focus();
-  };
-  for (const u of o.users) {
-    const b = document.createElement('button');
-    b.type = 'button'; b.textContent = u.name; b.dataset.id = u.id; b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', 'false');
-    b.onclick = () => pick(b);
-    $('people').appendChild(b);
-    if (String(u.id) === last || o.users.length === 1) pick(b);
-  }
+  $('rem-row').hidden = false;
+  $('un').required = true;
+  if (o.name_hint) $('name-hint').hidden = false;
+  // "Remember my username": this device fills it in next time, so you only type your password
+  let saved = '';
+  try { saved = localStorage.getItem(REMEMBER_KEY) || ''; } catch (e) {}
+  if (saved) { $('un').value = saved; $('rem').checked = true; $('pc').focus(); } else { $('un').focus(); }
 }).catch(() => {});
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = document.getElementById('go'), err = document.getElementById('err');
-  if (mode === 'users' && !who) { err.textContent = 'Choose your name first'; return; }
+  const username = mode === 'users' ? $('un').value.trim() : '';
+  if (mode === 'users' && !username) { err.textContent = 'Enter your username'; $('un').focus(); return; }
   btn.disabled = true; err.textContent = '';
   try {
     const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'horan-rms' },
-      body: JSON.stringify(mode === 'users' ? { user_id: who, password: $('pc').value } : { passcode: $('pc').value }) });
+      body: JSON.stringify(mode === 'users' ? { username, password: $('pc').value } : { passcode: $('pc').value }) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Sign-in failed');
-    try { if (who) localStorage.setItem('het-last-user', String(who)); } catch (e2) {}
+    try {
+      if (mode === 'users' && $('rem').checked) localStorage.setItem(REMEMBER_KEY, (data.username || username).toLowerCase());
+      else if (mode === 'users') localStorage.removeItem(REMEMBER_KEY);
+      localStorage.removeItem('het-last-user');   // from before usernames
+    } catch (e2) {}
     // Signed in with an old short PIN: the app will suggest choosing a proper password.
     try { if (data.weak) sessionStorage.setItem('het-weak-password', '1'); } catch (e3) {}
     location.reload();

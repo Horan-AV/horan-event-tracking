@@ -27,10 +27,10 @@
     background: var(--green); color: #fff; cursor: pointer; }
   button[disabled] { opacity: .6; }
   .err { color: #c0392b; font-size: 14px; min-height: 20px; margin-top: 10px; }
-  .people { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-  .people button { width: auto; margin: 0; padding: 9px 14px; font-size: 15px; font-weight: 600; border-radius: 999px;
-    background: transparent; color: inherit; border: 1px solid var(--line); }
-  .people button[aria-checked="true"] { background: var(--green); border-color: var(--green); color: #fff; }
+  .gap { height: 14px; }
+  .hint { font-size: 13px; margin: 6px 0 0; }
+  .remember { display: flex; align-items: center; gap: 8px; font-weight: 400; font-size: 14px; color: var(--grey); margin: 12px 0 0; cursor: pointer; }
+  .remember input { width: 18px; height: 18px; margin: 0; accent-color: var(--green); }
 </style>
 </head>
 <body>
@@ -39,11 +39,14 @@
   <p id="intro">Enter the passcode.</p>
   <form id="f">
     <div id="who" hidden>
-      <label>Who are you?</label>
-      <div class="people" id="people" role="radiogroup" aria-label="Who are you?"></div>
+      <label for="un">Username</label>
+      <input id="un" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="80">
+      <p class="hint" id="name-hint" hidden>Not chosen a username yet? Type your name, as you did before — you’ll choose one once you’re in.</p>
+      <div class="gap"></div>
     </div>
     <label for="pc" id="pc-label">Passcode</label>
     <input id="pc" type="password" autocomplete="current-password" required autofocus>
+    <label class="remember" id="rem-row" hidden><input type="checkbox" id="rem"> Remember my username on this device</label>
     <button id="go" type="submit">Sign in</button>
     <div class="err" id="err" role="alert"></div>
   </form>

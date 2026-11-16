@@ -18,9 +18,11 @@ Horan Event Tracking is built to run on your own computer or a server on a netwo
   - **From another device, only on a server with no screen**, and only when all of these hold: server mode, an HTTPS connection, and a named admin user (the shared passcode isn't enough). The admin types the server's `sudo` password, which is checked, passed once to `sudo`, and never stored or logged. Wrong passwords are limited to five in 15 minutes.
   - The app downloads only Tailscale's official installer, over verified `https`, from `tailscale.com`.
   - Anything needing admin rights goes through the computer's own password prompt. The app never sees or stores that password.
-- **Sign-in:** other devices need a passcode, or a user name and password.
+- **Sign-in:** other devices need a passcode, or a username and password.
+  - The sign-in page doesn't list who uses the app, and a wrong username gets the same answer, taking the same time, as a wrong password — so it doesn't reveal which usernames exist.
   - After five wrong attempts, that device waits five minutes.
-  - After ten wrong passwords for one person, from any devices, that person waits fifteen minutes.
+  - After ten wrong passwords for one username, from any devices, it waits fifteen minutes.
+  - **Remember my username** keeps only the username in that browser, never the password.
 - **Passwords are never stored.** The app keeps only a salted hash of each password and of the network passcode (PBKDF2-HMAC-SHA256, 600,000 rounds), which can't be turned back into the password. Nobody, including admins, can read them, and they aren't in exports.
   - New passwords need at least 8 characters, and very common ones are refused.
   - Short PINs set before version 1.27 still work, and the app asks their owner to choose a password.
