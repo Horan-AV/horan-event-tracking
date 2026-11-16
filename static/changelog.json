@@ -2,6 +2,21 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.35.1",
+      "date": "2026-11-16",
+      "title": "Choosing an analogue box keeps the input you've picked",
+      "changes": [
+        {
+          "text": "Choosing an analogue box channel for a line that already has an input (or output) no longer changes it: the box channel is plugged into what's already selected. The same goes for the routing matrix."
+        },
+        {
+          "text": "Taking a line off an analogue box (choosing — or clicking its square again) leaves its input as it was."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.35.0",
       "date": "2026-11-16",
       "title": "Analogue stage boxes with inputs, outputs and a label",

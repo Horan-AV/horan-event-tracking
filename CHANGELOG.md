@@ -2,6 +2,13 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.35.1 — 2026-11-16 · Choosing an analogue box keeps the input you've picked
+
+- Choosing an analogue box channel for a line that already has an input (or output) no longer changes it: the box channel is plugged into what's already selected. The same goes for the routing matrix.
+- Taking a line off an analogue box (choosing — or clicking its square again) leaves its input as it was.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.35.0 — 2026-11-16 · Analogue stage boxes with inputs, outputs and a label
 
 - Analogue stage boxes and multicores now have a label (e.g. Drum sub) and a number of inputs and outputs, instead of “channels” and “1 into”.
