@@ -1219,6 +1219,82 @@ class TestPatch(ServerCase):
             self.assertEqual(self.c.put(f"/jobs/{job['id']}/patch", bad)[0], 400, bad)
 
 
+class TestAudioPatch(ServerCase):
+    def test_desk_stage_boxes_and_mics_from_stock(self):
+        c = self.c
+        sq5 = {"role": "desk", "channels": 48, "buses": {"aux": 12, "group": 0, "matrix": 3, "fx": 8},
+               "ports": [{"name": "Local", "dir": "in", "type": "XLR", "count": 16}, {"name": "ST", "dir": "in", "type": "Stereo line", "count": 2},
+                         {"name": "Local out", "dir": "out", "type": "XLR", "count": 12}, {"name": "AES out", "dir": "out", "type": "AES", "count": 1}]}
+        _, desk = c.post("/products", {"name": "Test SQ5", "sku": "T-SQ5", "quantity": 1, "console": sq5})
+        _, box = c.post("/products", {"name": "Test AR2412", "sku": "T-AR2412", "quantity": 2,
+                                      "console": {"role": "stagebox", "ports": [{"name": "In", "dir": "in", "count": 24}, {"name": "Out", "dir": "out", "count": 12}]}})
+        _, mic = c.post("/products", {"name": "Test SM58", "sku": "T-SM58", "quantity": 20, "day_rate": 5})
+        saved = json.loads(desk["console"])
+        self.assertEqual((saved["channels"], saved["buses"]["matrix"], len(saved["ports"])), (48, 3, 4))
+        # checked: a socket count out of range, and an item that isn't a desk or box
+        self.assertEqual(c.put(f"/products/{desk['id']}", {"console": {"role": "desk", "ports": [{"name": "x", "count": 999}]}})[0], 400)
+        self.assertEqual(c.put(f"/products/{mic['id']}", {"console": {"role": "toaster"}})[1]["console"], "")
+        job = self.new_job()
+        for pid, q in ((desk["id"], 1), (box["id"], 1), (mic["id"], 2)):   # the job already has 2 SM58s
+            job = c.post(f"/jobs/{job['id']}/items", {"product_id": pid, "quantity": q})[1]
+        line = {it["product_id"]: it["id"] for it in job["items"]}
+        p = c.get(f"/jobs/{job['id']}/patch")[1]
+        self.assertEqual(sorted(x["console"]["role"] for x in p["consoles"]), ["desk", "stagebox"])
+        audio = {"desk": line[desk["id"]], "boxes": [{"id": "b1", "item_id": line[box["id"]], "label": "SB1"}],
+                 "analogue": [{"id": "a1", "name": "Stage box A", "channels": 8, "into": "b1:0:12"}],
+                 "inputs": [{"ch": str(n), "source": f"Vox {n}", "mic": "Test SM58", "mic_pid": mic["id"], "phys": f"d:0:{n}"} for n in range(1, 6)]
+                 + [{"ch": "6", "source": "Kick", "mic": "Beta 91", "phys": "a1:0:3"}],
+                 "outputs": [{"out": "aux:1", "phys": "d:2:1", "dest": "Wedge 1"}]}
+        status, p = c.put(f"/jobs/{job['id']}/patch", {"audio": audio})
+        self.assertEqual(status, 200, p)
+        self.assertEqual((p["audio"]["desk"], p["audio"]["boxes"][0]["label"], p["audio"]["analogue"][0]["into"]), (line[desk["id"]], "SB1", "b1:0:12"))
+        self.assertEqual(p["audio"]["inputs"][0]["mic_pid"], mic["id"])
+        self.assertNotIn("mic_pid", p["audio"]["inputs"][5])          # typed, not from stock
+        # 5 SM58s in the patch, 2 already on the job: 3 more go on the job (and so the prep list)
+        def patch_line():
+            items = c.get(f"/jobs/{job['id']}")[1]["items"]
+            return [it for it in items if it["product_id"] == mic["id"] and json.loads(it.get("meta") or "{}").get("role") == "patch-mic"]
+        self.assertEqual([it["quantity"] for it in patch_line()], [3])
+        self.assertEqual(patch_line()[0]["unit_price"], 5)
+        picks = c.get(f"/jobs/{job['id']}/check?dir=out")[1]["lines"]
+        self.assertEqual(next(l["needed"] for l in picks if l["product_id"] == mic["id"]), 5)
+        # it follows the patch: fewer mics, then none beyond what the job has
+        audio["inputs"] = audio["inputs"][:3] + audio["inputs"][5:]
+        c.put(f"/jobs/{job['id']}/patch", {"audio": audio})
+        self.assertEqual([it["quantity"] for it in patch_line()], [1])
+        audio["inputs"] = audio["inputs"][:2]
+        c.put(f"/jobs/{job['id']}/patch", {"audio": audio})
+        self.assertEqual(patch_line(), [])
+        # a stage box that isn't on the job is dropped
+        audio["boxes"].append({"id": "b2", "item_id": 999999})
+        p = c.put(f"/jobs/{job['id']}/patch", {"audio": audio})[1]
+        self.assertEqual([b["id"] for b in p["audio"]["boxes"]], ["b1"])
+
+
+class TestRemoveUser(ServerCase):
+    def test_remove_a_user(self):
+        c = self.c
+        _, admin = c.post("/users", {"name": "Admin", "password": "correct horse"})
+        _, sam = c.post("/users", {"name": "Sam", "password": "battery staple"})
+        s = Client(self.port)
+        self.assertEqual(s.post("/login", {"username": "sam", "password": "battery staple"})[0], 200)
+        s.post("/jobs", {"name": "Sam's job", "start_date": "2030-03-01", "end_date": "2030-03-02"})
+        self.assertEqual(s.delete(f"/users/{admin['id']}")[0], 403)          # only admins
+        self.assertEqual(c.delete(f"/users/{admin['id']}")[0], 400)          # not yourself
+        status, r = c.delete(f"/users/{sam['id']}")
+        self.assertEqual((status, r["name"]), (200, "Sam"))
+        self.assertEqual(s.get("/jobs")[0], 401)                             # signed out everywhere
+        self.assertNotIn("Sam", [u["name"] for u in c.get("/users")[1]])
+        self.assertEqual(Client(self.port).post("/login", {"username": "sam", "password": "battery staple"})[0], 401)
+        # their name stays on what they did, and nothing points at the old account
+        jobs = c.get("/jobs")[1]
+        mine = next(j for j in jobs if j["name"] == "Sam's job")
+        self.assertEqual((mine["created_by"], mine["created_by_id"]), ("Sam", None))
+        self.assertTrue(any(a["user_name"] == "Sam" and a["user_id"] is None for a in c.get("/activity")[1]))
+        self.assertIn("Removed user Sam", c.get("/activity")[1][0]["summary"])
+        self.assertEqual(c.delete(f"/users/{sam['id']}")[0], 404)
+
+
 class TestStageBolts(ServerCase):
     def test_bolted_decks(self):
         decks = self.c.get("/stage-decks")[1]

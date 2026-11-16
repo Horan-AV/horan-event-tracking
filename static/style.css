@@ -1026,3 +1026,15 @@ tr.foldable:hover td { background: color-mix(in srgb, var(--brand) 6%, var(--sur
 .check-table.linked tr.acc td:first-child { padding-left: calc(10px + (var(--depth, 1) - 1) * 18px); }
 .check-table.linked tr.acc strong { font-weight: 600; }
 .check-page .card > header .actions { flex-wrap: wrap; }
+/* audio patch: desk, stage boxes, analogue boxes; mics from stock; column menus */
+.patch-table .w-m { width: 230px; }
+.patch-table select { width: 100%; min-width: 0; padding: 5px 6px; }
+.rig-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.rig-row > input, .rig-row > select { flex: 1; min-width: 140px; }
+.rig-row label select { width: auto; max-width: 220px; }
+.mic-cell { display: flex; align-items: center; gap: 4px; }
+.mic-cell input { flex: 1; min-width: 0; }
+.from-stock { color: var(--ok, #1f7a4a); font-weight: 700; cursor: help; }
+.card > header .cols-menu .more-panel { min-width: 200px; }
+.cols-menu .more-panel .check { padding: 4px 6px; font-size: 14px; }
+@media print { .cols-menu { display: none; } }

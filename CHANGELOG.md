@@ -2,6 +2,19 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.33.0 — 2026-11-16 · Audio patch with desks and stage boxes, and removing users
+
+- Audio patch: pick mics and DIs from your stock. When you save, they're added to the job — and so the prep list — as many as the patch uses beyond what the job already has, on a line that follows the patch as you change it.
+- Mixing desks and stage boxes: on their page in Stock, the new Inputs & outputs card lists their sockets (e.g. 16 XLR in “Local”, 2 stereo line in, 12 XLR out, 1 AES out) and, for a desk, its input channels and Aux, Group, Matrix and FX outputs. Presets for the Allen & Heath SQ-5, AR2412 and AB168 fill it in for you to check.
+- On a job's patch, choose the desk and stage boxes, and each channel's physical input from a list (Ch 1 = Local 1, Ch 2 = SB1 In 2…), and each output's bus and physical output. Patch in order fills in the rest; an input used twice is flagged.
+- Analogue stage boxes and multicores: say where one plugs in — e.g. 8 channels into AR2412 In 12 — and its channels can be chosen as inputs, showing where they land.
+- Hide any column on the patch page with its Columns menu. It's remembered for you on that device, and the printed patch sheet leaves the same columns out.
+- Remove a user: Settings → Users → Edit → Remove user. Their name stays on what they did, and they're signed out everywhere.
+- Patrick is now able to remove daddy
+- Fix: on the patch page, clicking a button straight after typing in a box (e.g. Save after typing a DMX address) could need a second click.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.32.0 — 2026-11-15 · Sign in with a username
 
 - Everyone now signs in with a username and password, instead of picking their name from a list. The sign-in page no longer shows who uses the app.

@@ -1255,7 +1255,7 @@ function lineRow(job, it, rental) {
   const cdays = job.totals.charge_days;
   return `<tr data-item="${it.id}" class="${it.parent_item_id ? 'acc' : ''}" style="--depth:${it._depth || 0}">
       <td class="desc">${it.parent_item_id ? '<span class="acc-mark" aria-hidden="true">↳</span>' : ''}<input data-f="description" value="${esc(it.description)}" aria-label="Description">
-        <small>${patchChip(job, it)}${it.added_by && !it.parent_item_id ? `<span class="by-note" title="Added by ${esc(it.added_by)}">${esc(initials(it.added_by))}</span> ` : ''}${it.product_brand ? `<span class="line-brand">${esc(it.product_brand)}</span> · ` : ''}${it.product_id ? `<a href="/product/${it.product_id}">${esc(it.product_sku || 'View stock item')}</a>` : ''}${it.parent_item_id ? ` <span class="muted">· ${job.items.some((x) => x.id === it.parent_item_id && isRun(x)) ? `part of ${groupWord(job.items.find((x) => x.id === it.parent_item_id))}` : (metaOf(it).role === 'package' ? 'in package' : `linked accessory${isIncluded(it) ? ', included' : ''}`)}</span>` : ''}</small></td>
+        <small>${patchChip(job, it)}${metaOf(it).role === 'patch-mic' ? `<a class="patch-chip" href="/patch/${job.id}" title="Added by the audio patch: its quantity follows the patch">from the audio patch</a> ` : ''}${it.added_by && !it.parent_item_id ? `<span class="by-note" title="Added by ${esc(it.added_by)}">${esc(initials(it.added_by))}</span> ` : ''}${it.product_brand ? `<span class="line-brand">${esc(it.product_brand)}</span> · ` : ''}${it.product_id ? `<a href="/product/${it.product_id}">${esc(it.product_sku || 'View stock item')}</a>` : ''}${it.parent_item_id ? ` <span class="muted">· ${job.items.some((x) => x.id === it.parent_item_id && isRun(x)) ? `part of ${groupWord(job.items.find((x) => x.id === it.parent_item_id))}` : (metaOf(it).role === 'package' ? 'in package' : `linked accessory${isIncluded(it) ? ', included' : ''}`)}</span>` : ''}</small></td>
       <td class="n"><input data-f="quantity" type="number" step="any" min="0" value="${num(it.quantity)}" aria-label="Quantity"></td>
       <td class="n"><input data-f="unit_price" type="number" step="0.01" min="0" value="${num(it.unit_price)}" aria-label="Price"></td>
       ${rental ? `<td class="n"><input data-f="days" type="number" step="any" min="0" placeholder="${num(cdays)}" value="${it.days ?? ''}" aria-label="Days" title="Blank = job's chargeable days"></td>` : ''}
@@ -2908,6 +2908,72 @@ async function renderCable(view, p) {
   view.onkeydown = (e) => { if (e.key === 'Enter' && e.target.closest('.add-bar')) { e.preventDefault(); $('[data-len-add]', view).click(); } };
 }
 
+/* ---- mixing desks and stage boxes: their sockets and (for a desk) its channels and outputs */
+const PORT_TYPES = ['XLR', 'TRS jack', 'Stereo line', 'AES', 'ADAT', 'Dante', 'MADI', 'Link (e.g. SLink)', 'Headphones', 'Other'];
+const BUS_TYPES = [['aux', 'Aux'], ['group', 'Groups'], ['matrix', 'Matrix'], ['fx', 'FX']];
+// starting points: check them against the manual, then adjust
+const CONSOLE_PRESETS = {
+  'Allen & Heath SQ-5': { role: 'desk', channels: 48, buses: { aux: 12, group: 0, matrix: 3, fx: 8 },
+    ports: [{ name: 'Local', dir: 'in', type: 'XLR', count: 16 }, { name: 'ST', dir: 'in', type: 'Stereo line', count: 2 },
+      { name: 'Local out', dir: 'out', type: 'XLR', count: 12 }, { name: 'AES out', dir: 'out', type: 'AES', count: 1 }] },
+  'Allen & Heath AR2412': { role: 'stagebox', ports: [{ name: 'In', dir: 'in', type: 'XLR', count: 24 }, { name: 'Out', dir: 'out', type: 'XLR', count: 12 }] },
+  'Allen & Heath AB168': { role: 'stagebox', ports: [{ name: 'In', dir: 'in', type: 'XLR', count: 16 }, { name: 'Out', dir: 'out', type: 'XLR', count: 8 }] },
+};
+function parseConsole(v) { try { const c = typeof v === 'string' ? JSON.parse(v || 'null') : v; return c && c.role ? c : null; } catch { return null; } }
+
+function drawConsoleCard(view, p, onSaved) {
+  const box = $('[data-console-card]', view);
+  if (!box) return;
+  let c = parseConsole(p.console) || { role: '', channels: 0, buses: { aux: 0, group: 0, matrix: 0, fx: 0 }, ports: [] };
+  c.buses ||= { aux: 0, group: 0, matrix: 0, fx: 0 };
+  const draw = () => {
+    const desk = c.role === 'desk';
+    box.innerHTML = `<div class="card"><header><h2>Inputs &amp; outputs</h2><span class="muted">for the audio patch</span></header><div class="body">
+      <p class="muted small" style="margin-top:0">For a mixing desk or stage box: its sockets, so a job’s audio patch can say which physical input each channel uses (e.g. Ch 1 = Local 1, Ch 2 = AR2412 In 2).</p>
+      <div class="form-grid tight" style="padding:0">
+        <label class="field half"><span>This is</span><select data-con="role">${[['', 'Not a desk or stage box'], ['desk', 'A mixing desk'], ['stagebox', 'A stage box (digital or analogue)']].map(([v, l]) => `<option value="${v}" ${c.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="field half"><span>Start from</span><select data-con="preset"><option value="">— a preset (check against the manual) —</option>${Object.keys(CONSOLE_PRESETS).map((k) => `<option>${esc(k)}</option>`).join('')}</select></label>
+        ${desk ? `<label class="field third"><span>Input channels</span><input data-con="channels" type="number" min="0" max="512" value="${num(c.channels || 0)}"></label>
+          ${BUS_TYPES.map(([k, l]) => `<label class="field third"><span>${l}</span><input data-con-bus="${k}" type="number" min="0" max="128" value="${num(c.buses[k] || 0)}"></label>`).join('')}
+          <p class="muted small" style="flex-basis:100%;margin:0">Outputs are Main L/R plus these. Leave a type at 0 if the desk hasn’t got it.</p>` : ''}
+      </div>
+      ${c.role ? `<h3 class="net-h">Sockets</h3>
+        <div class="table-wrap"><table class="table compact"><thead><tr><th>In / out</th><th>Name</th><th>Type</th><th class="n">How many</th><th></th></tr></thead><tbody>
+          ${c.ports.map((x, i) => `<tr><td><select data-port="${i}" data-k="dir"><option value="in" ${x.dir === 'in' ? 'selected' : ''}>In</option><option value="out" ${x.dir === 'out' ? 'selected' : ''}>Out</option></select></td>
+            <td><input data-port="${i}" data-k="name" value="${esc(x.name)}" placeholder="e.g. Local" style="min-width:90px"></td>
+            <td><select data-port="${i}" data-k="type">${PORT_TYPES.map((t) => `<option ${x.type === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></td>
+            <td class="n"><input data-port="${i}" data-k="count" type="number" min="1" max="256" value="${num(x.count)}" style="width:72px"></td>
+            <td><button class="icon-btn" data-port-del="${i}" aria-label="Remove">×</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty">No sockets yet.</td></tr>'}
+        </tbody></table></div>
+        <div class="actions" style="margin-top:8px"><button class="btn small" data-port-add>+ Add sockets</button></div>
+        <p class="muted small">The name is how they’re labelled on the patch: “Local” gives Local 1, Local 2…; on a stage box, “In” gives AR2412 In 1…</p>` : ''}
+      <div class="actions" style="margin-top:10px"><button class="btn primary small" data-con-save>Save inputs &amp; outputs</button></div></div></div>`;
+  };
+  box.oninput = (e) => {
+    const t = e.target;
+    if (t.dataset.port !== undefined) { const x = c.ports[Number(t.dataset.port)]; x[t.dataset.k] = t.dataset.k === 'count' ? Number(t.value) || 0 : t.value; }
+    else if (t.dataset.conBus) c.buses[t.dataset.conBus] = Number(t.value) || 0;
+    else if (t.dataset.con === 'channels') c.channels = Number(t.value) || 0;
+  };
+  box.onchange = (e) => {
+    const t = e.target;
+    if (t.dataset.con === 'role') { c.role = t.value; if (c.role && !c.ports.length) c.ports = [{ name: c.role === 'desk' ? 'Local' : 'In', dir: 'in', type: 'XLR', count: 16 }]; draw(); }
+    if (t.dataset.con === 'preset' && t.value) { c = JSON.parse(JSON.stringify(CONSOLE_PRESETS[t.value])); c.buses ||= { aux: 0, group: 0, matrix: 0, fx: 0 }; c.channels ||= 0; draw(); toast('Preset filled in — check it against the manual, then Save'); }
+  };
+  box.onclick = async (e) => {
+    if (e.target.closest('[data-port-add]')) { c.ports.push({ name: '', dir: 'in', type: 'XLR', count: 8 }); draw(); return; }
+    const d = e.target.closest('[data-port-del]');
+    if (d) { c.ports.splice(Number(d.dataset.portDel), 1); draw(); return; }
+    if (e.target.closest('[data-con-save]')) {
+      try {
+        const res = await put(`/products/${p.id}`, { console: c.role ? c : '' });
+        p.console = res.console; toast('Saved', 'ok'); if (onSaved) onSaved(res);
+      } catch (ex) { toast(ex.message, 'error'); }
+    }
+  };
+  draw();
+}
+
 async function renderProduct(view, id) {
   const p = await get(`/products/${id}`);
   if (p.parent_id) { go(`/product/${p.parent_id}`, true); return; }
@@ -2948,7 +3014,7 @@ async function renderProduct(view, id) {
         ${p.archived ? '<button class="btn" data-unarchive>Restore</button>' : '<button class="btn danger" data-remove>Delete</button>'}
       </div></div>
     <div class="grid-2">
-      <div class="stack">${p.sub_hire ? subHireCard(p) : unitsCard(p)}${accCard}${altCard(p, all)}
+      <div class="stack">${p.sub_hire ? subHireCard(p) : unitsCard(p)}${accCard}${p.item_type === 'equipment' ? '<div data-console-card></div>' : ''}${altCard(p, all)}
       <div class="card"><header><h2>Upcoming bookings</h2></header>
         ${p.bookings.length ? `<table class="table"><thead><tr><th>Job</th><th>Dates</th><th>Status</th><th class="n">Qty</th></tr></thead>
           <tbody>${p.bookings.map((b) => `<tr class="click" data-href="/job/${b.id}">
@@ -2995,6 +3061,7 @@ async function renderProduct(view, id) {
     if (box) box.innerHTML = historyCard(list, `/activity/product/${id}`);
   }).catch(() => {});
   wireImages(view, p, () => renderProduct(view, id));
+  drawConsoleCard(view, p);
   rowLinks(view);
   const base = view.onclick;
   view.onclick = async (e) => {
@@ -5424,7 +5491,7 @@ async function drawUsersCard(view) {
         <br><span class="muted small">${u.last_activity ? `${esc(u.last_activity.summary)} · ${esc(fmtDate(u.last_activity.at.slice(0, 10)))} ${esc(u.last_activity.at.slice(11, 16))}` : 'No activity yet'}</span></span></span>
         ${canEdit ? `<button type="button" class="btn small" data-user-edit="${u.id}">Edit</button>` : ''}</li>`).join('')}</ul>
        ${canEdit ? '<div class="actions" style="margin-top:10px"><button type="button" class="btn primary small" data-user-add>Add user</button></div>' : ''}
-       <p class="muted small" style="margin-bottom:0">${num(active.length)} active. Disabling someone signs them out and keeps their history. Passwords are stored scrambled (hashed), so nobody — not even an admin — can read them. Forgotten the only admin password? On the computer running it: <code>horan-rms reset-password username --admin</code>.</p>`;
+       <p class="muted small" style="margin-bottom:0">${num(active.length)} active. Disabling someone signs them out and keeps their history; <strong>Remove user</strong> (under Edit) takes them off the list for good, keeping their name on what they did. Passwords are stored scrambled (hashed), so nobody — not even an admin — can read them. Forgotten the only admin password? On the computer running it: <code>horan-rms reset-password username --admin</code>.</p>`;
   card.onclick = async (e) => {
     try {
       if (e.target.closest('[data-user-add]')) {
@@ -5462,8 +5529,17 @@ async function drawUsersCard(view) {
             { name: 'active', label: 'Can sign in (untick to disable — their history is kept)', type: 'checkbox' },
           ],
           values: { name: u.name, username: u.username, is_admin: u.is_admin, active: u.active },
-          onSubmit: (vals) => put(`/users/${u.id}`, { name: vals.name, username: vals.username.trim(), password: vals.password || undefined, is_admin: !!Number(vals.is_admin), active: !!Number(vals.active) }),
+          extraButton: me && me.id === u.id ? null : { label: 'Remove user', value: 'remove' },
+          onSubmit: async (vals, extra) => {
+            if (extra === 'remove') {
+              if (!await confirmModal(`Remove ${u.name}? They're signed out and can't sign in again. Their name stays on everything they did — Activity, jobs and scans. To keep them but stop them signing in, untick “Can sign in” instead.`,
+                { title: `Remove ${u.name}?`, okLabel: 'Remove user' })) return null;
+              return del(`/users/${u.id}`);
+            }
+            return put(`/users/${u.id}`, { name: vals.name, username: vals.username.trim(), password: vals.password || undefined, is_admin: !!Number(vals.is_admin), active: !!Number(vals.active) });
+          },
         });
+        if (v && v.ok) { toast(`${u.name} removed`, 'ok'); drawUsersCard(view); return; }
         if (v) { toast('Saved', 'ok'); if (me && me.id === u.id && !v.active) location.reload(); else drawUsersCard(view); }
       }
     } catch (ex) { toast(ex.message, 'error'); }
@@ -7093,10 +7169,6 @@ async function renderPrint(id, doc) {
 /* ---------------------------------------------------------------- patch: DMX, radio frequencies, audio lines */
 
 const DMX_SLOTS = 512;
-const AUDIO_IN = [['ch', 'Ch', 'w-xs'], ['source', 'Source / name', ''], ['mic', 'Mic / DI', ''], ['stand', 'Stand', 'w-s'],
-  ['box', 'Stagebox / input', 'w-s'], ['phantom', '48V', 'w-xs'], ['notes', 'Notes', '']];
-const AUDIO_OUT = [['out', 'Out', 'w-xs'], ['dest', 'Destination / mix', ''], ['notes', 'Notes', '']];
-
 /** Overlapping DMX addresses in a universe, and units that run past 512. Returns a set of "item:unit" keys. */
 function dmxClashes(dmx) {
   const bad = new Map();
@@ -7137,56 +7209,181 @@ function rfClashes(rf, spacing = 0.3) {
   return bad;
 }
 
+const AUDIO_IN = [['ch', 'Ch', 'w-xs'], ['source', 'Source / name', ''], ['mic', 'Mic / DI', ''], ['stand', 'Stand', 'w-s'],
+  ['phys', 'Input', 'w-m'], ['phantom', '48V', 'w-xs'], ['notes', 'Notes', '']];
+const AUDIO_OUT = [['out', 'Output', 'w-m'], ['phys', 'Physical out', 'w-m'], ['dest', 'Destination', ''], ['notes', 'Notes', '']];
+// every table's columns, for the Columns menus (and the patch sheet)
+const PATCH_COLS = {
+  dmx: [['fixture', 'Fixture'], ['unit', 'Unit'], ['label', 'Label'], ['universe', 'Universe'], ['address', 'Address'], ['to', 'Channels']],
+  rf: [['item', 'Item'], ['unit', 'Unit'], ['label', 'Label'], ['mhz', 'MHz'], ['band', 'Band']],
+  inputs: AUDIO_IN.map(([k, l]) => [k, l]),
+  outputs: AUDIO_OUT.map(([k, l]) => [k, l]),
+};
+
+/* Hidden columns: each person's choice on this device, for the patch page and the patch sheet alike. */
+function patchColsKey() { return 'het-patch-cols:' + ((S.meta && S.meta.user && S.meta.user.id) || 'device'); }
+function hiddenCols() { try { const v = JSON.parse(localStorage.getItem(patchColsKey()) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } }
+function setHiddenCols(v) { try { localStorage.setItem(patchColsKey(), JSON.stringify(v)); } catch { /* not kept */ } }
+function hiddenColsCSS(scope) {
+  const h = hiddenCols();
+  return Object.entries(h).flatMap(([t, cols]) => (cols || []).map((c) => `${scope} [data-tbl="${t}"] [data-col="${c}"]`)).join(',') + (Object.values(h).some((c) => c && c.length) ? '{display:none}' : '');
+}
+function colsMenu(tbl) {
+  const hid = new Set(hiddenCols()[tbl] || []);
+  return `<details class="more-menu cols-menu" data-menu="${tbl}"><summary class="btn small" title="Choose which columns to show here and on the patch sheet">Columns ▾</summary>
+    <div class="more-panel">${PATCH_COLS[tbl].map(([k, l]) => `<label class="check"><input type="checkbox" data-col-toggle="${tbl}:${k}" ${hid.has(k) ? '' : 'checked'}> ${esc(l)}</label>`).join('')}
+    <p class="muted small" style="margin:6px 4px 0">Remembered for you on this device. Also used on the printed patch sheet.</p></div></details>`;
+}
+
+/* ---- physical patching: the desk's own sockets, the stage boxes on it, and analogue boxes plugged into those */
+const BUS_LABEL = { aux: 'Aux', group: 'Group', matrix: 'Matrix', fx: 'FX' };
+function audioRig(P) {
+  const a = P.audio, cons = new Map((P.consoles || []).map((c) => [c.item_id, c]));
+  const desk = cons.get(a.desk) && cons.get(a.desk).console.role === 'desk' ? cons.get(a.desk) : null;
+  const ins = [], outs = [], label = new Map();
+  const add = (list, ref, text) => { list.push({ ref, label: text }); label.set(ref, text); };
+  const sockets = (con, dev, prefix) => (con.ports || []).forEach((pt, pi) => {
+    for (let n = 1; n <= pt.count; n++) {
+      const text = `${prefix}${pt.name}${pt.count > 1 ? ' ' + n : ''}`;
+      add(pt.dir === 'out' ? outs : ins, `${dev}:${pi}:${n}`, text);
+    }
+  });
+  if (desk) sockets(desk.console, 'd', '');
+  for (const b of a.boxes || []) {
+    const c = cons.get(b.item_id);
+    if (c) sockets(c.console, b.id, `${b.label || c.name} `);
+  }
+  const direct = ins.slice();   // where an analogue box can plug in
+  for (const x of a.analogue || []) {
+    const m = /^(.+):(\d+):(\d+)$/.exec(x.into || '');
+    for (let n = 1; n <= x.channels; n++) {
+      const target = m ? `${m[1]}:${m[2]}:${Number(m[3]) + n - 1}` : '';
+      const text = `${x.name} ${n}`;
+      ins.push({ ref: `${x.id}:0:${n}`, label: text, target, hint: label.get(target) ? `→ ${label.get(target)}` : '' });
+      label.set(`${x.id}:0:${n}`, text + (label.get(target) ? ` → ${label.get(target)}` : ''));
+    }
+  }
+  const buses = desk ? [['main:LR', 'Main L/R'], ['main:L', 'Main L'], ['main:R', 'Main R'],
+    ...Object.entries(desk.console.buses || {}).flatMap(([k, n]) => Array.from({ length: n }, (_, i) => [`${k}:${i + 1}`, `${BUS_LABEL[k] || k} ${i + 1}`]))] : [];
+  return { desk, ins, outs, direct, label, buses, busLabel: new Map(buses) };
+}
+/** Physical inputs used twice (counting an analogue box channel as the socket it's plugged into). */
+function physClashes(P, rig) {
+  const bad = new Map(), seen = new Map();
+  const target = new Map(rig.ins.filter((x) => x.target).map((x) => [x.ref, x.target]));
+  P.audio.inputs.forEach((r, i) => {
+    if (!r.phys) return;
+    for (const ref of new Set([r.phys, target.get(r.phys)].filter(Boolean))) {
+      if (seen.has(ref)) { bad.set(i, `also on ch ${P.audio.inputs[seen.get(ref)].ch || seen.get(ref) + 1}`); bad.set(seen.get(ref), `also on ch ${r.ch || i + 1}`); }
+      else seen.set(ref, i);
+    }
+  });
+  return bad;
+}
+
 async function renderPatch(view, jid) {
   let P = await get(`/jobs/${jid}/patch`);
+  const stock = (await get('/products?flat=1').catch(() => [])).filter((x) => x.item_type === 'equipment' && !x.archived)
+    .sort((a, b) => (/audio|mic/i.test(b.category || '') - /audio|mic/i.test(a.category || '')) || a.name.localeCompare(b.name));
+  const byName = new Map(stock.map((x) => [x.name.toLowerCase(), x]));
   const job = P.job;
   let dirty = false;
+  const norm = () => {
+    P.audio.inputs ||= []; P.audio.outputs ||= []; P.audio.boxes ||= []; P.audio.analogue ||= [];
+  };
+  norm();
   const markDirty = () => { dirty = true; const b = $('[data-save]', view); if (b) { b.disabled = false; b.textContent = 'Save changes'; } };
+  const nextId = (prefix, list) => prefix + (Math.max(0, ...list.map((x) => Number(String(x.id).slice(1)) || 0)) + 1);
   const draw = () => {
-    const dc = dmxClashes(P.dmx), rc = rfClashes(P.rf);
+    const dc = dmxClashes(P.dmx), rc = rfClashes(P.rf), rig = audioRig(P), pc = physClashes(P, rig);
+    const desks = (P.consoles || []).filter((c) => c.console.role === 'desk'), boxes = (P.consoles || []).filter((c) => c.console.role === 'stagebox');
     const dmxRows = P.dmx.map((line) => line.units.map((u, i) => {
       const key = `${line.item_id}:${i}`, end = u.a ? Number(u.a) + (line.footprint || 1) - 1 : null;
-      return `<tr class="${dc.has(key) ? 'clash' : ''}"><td>${i === 0 ? `<strong>${esc(line.name)}</strong>` : ''}</td><td class="n muted">#${i + 1}</td>
-        <td><input data-dmx="${key}" data-k="n" value="${esc(u.n || '')}" placeholder="e.g. FOH wash ${i + 1}" aria-label="Label"></td>
-        <td class="n"><input data-dmx="${key}" data-k="u" type="number" min="1" step="1" value="${u.u ?? ''}" placeholder="1" aria-label="Universe"></td>
-        <td class="n"><input data-dmx="${key}" data-k="a" type="number" min="1" max="512" step="1" value="${u.a ?? ''}" aria-label="Start address"></td>
-        <td class="n muted">${end ? `–${end}` : ''}</td>
+      return `<tr class="${dc.has(key) ? 'clash' : ''}"><td data-col="fixture">${i === 0 ? `<strong>${esc(line.name)}</strong>` : ''}</td><td class="n muted" data-col="unit">#${i + 1}</td>
+        <td data-col="label"><input data-dmx="${key}" data-k="n" value="${esc(u.n || '')}" placeholder="e.g. FOH wash ${i + 1}" aria-label="Label"></td>
+        <td class="n" data-col="universe"><input data-dmx="${key}" data-k="u" type="number" min="1" step="1" value="${u.u ?? ''}" placeholder="1" aria-label="Universe"></td>
+        <td class="n" data-col="address"><input data-dmx="${key}" data-k="a" type="number" min="1" max="512" step="1" value="${u.a ?? ''}" aria-label="Start address"></td>
+        <td class="n muted" data-col="to">${end ? `–${end}` : ''}</td>
         <td class="small">${dc.has(key) ? `<span class="badge warn">${esc(dc.get(key))}</span>` : ''}</td></tr>`;
     }).join('') + `<tr class="fp-row"><td colspan="7" class="small muted">${esc(line.name)}: <label>footprint <input data-fp="${line.item_id}" type="number" min="1" max="512" step="1" value="${line.footprint}" aria-label="Footprint"> channels</label>
         ${line.footprint !== line.product_footprint ? ` <span class="muted">(stock item: ${num(line.product_footprint)})</span>` : ''}</td></tr>`).join('');
     const rfRows = P.rf.map((line) => line.units.map((u, i) => {
       const key = `${line.item_id}:${i}`;
-      return `<tr class="${rc.has(key) ? 'clash' : ''}"><td>${i === 0 ? `<strong>${esc(line.name)}</strong>${line.band ? `<br><span class="muted small">${esc(line.band)}</span>` : ''}` : ''}</td><td class="n muted">#${i + 1}</td>
-        <td><input data-rf="${key}" data-k="n" value="${esc(u.n || '')}" placeholder="e.g. Presenter ${i + 1}" aria-label="Label"></td>
-        <td class="n"><input data-rf="${key}" data-k="f" inputmode="decimal" value="${esc(u.f || '')}" placeholder="606.500" aria-label="Frequency (MHz)"></td>
+      return `<tr class="${rc.has(key) ? 'clash' : ''}"><td data-col="item">${i === 0 ? `<strong>${esc(line.name)}</strong>${line.band ? `<span data-col="band"><br><span class="muted small">${esc(line.band)}</span></span>` : ''}` : ''}</td><td class="n muted" data-col="unit">#${i + 1}</td>
+        <td data-col="label"><input data-rf="${key}" data-k="n" value="${esc(u.n || '')}" placeholder="e.g. Presenter ${i + 1}" aria-label="Label"></td>
+        <td class="n" data-col="mhz"><input data-rf="${key}" data-k="f" inputmode="decimal" value="${esc(u.f || '')}" placeholder="606.500" aria-label="Frequency (MHz)"></td>
         <td class="small">${rc.has(key) ? `<span class="badge warn">${esc(rc.get(key))}</span>` : ''}</td></tr>`;
     }).join('')).join('');
+    // one cell of an audio line
+    const cell = (kind, i, r, k, c) => {
+      const at = `data-au="${kind}:${i}" data-k="${k}"`;
+      if (k === 'phys' && kind === 'inputs' && rig.ins.length) {
+        return `<select ${at} aria-label="Input"><option value="">—</option>${rig.ins.map((x) => `<option value="${esc(x.ref)}" ${r.phys === x.ref ? 'selected' : ''}>${esc(x.label)}${x.hint ? ' ' + esc(x.hint) : ''}</option>`).join('')}</select>`;
+      }
+      if (k === 'phys' && kind === 'inputs') return `<input data-au="${kind}:${i}" data-k="box" value="${esc(r.box || '')}" placeholder="e.g. SB1 4" aria-label="Input">`;
+      if (k === 'phys' && kind === 'outputs' && rig.outs.length) {
+        return `<select ${at} aria-label="Physical output"><option value="">—</option>${rig.outs.map((x) => `<option value="${esc(x.ref)}" ${r.phys === x.ref ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>`;
+      }
+      if (k === 'out' && rig.buses.length && (!r.out || rig.busLabel.has(r.out))) {
+        return `<select ${at} aria-label="Output"><option value="">—</option>${rig.buses.map(([v, l]) => `<option value="${esc(v)}" ${r.out === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+      }
+      if (k === 'mic') {
+        return `<span class="mic-cell"><input ${at} value="${esc(r.mic || '')}" list="patch-mics" placeholder="Type to pick from stock" aria-label="Mic / DI">${r.mic_pid ? '<span class="from-stock" title="From stock: it’s on the job, so it’s on the prep list">✓</span>' : ''}</span>`;
+      }
+      return `<input ${at} value="${esc(r[k] || '')}" ${k === 'source' ? 'list="patch-sources"' : ''} aria-label="${esc(k)}">`;
+    };
     const audioTable = (kind, cols) => {
       const list = P.audio[kind];
-      return `<div class="table-wrap"><table class="table patch-table"><thead><tr>${cols.map(([, l, c]) => `<th class="${c}">${l}</th>`).join('')}<th></th></tr></thead><tbody>
-        ${list.map((r, i) => `<tr>${cols.map(([k, , c]) => `<td class="${c}"><input data-au="${kind}:${i}" data-k="${k}" value="${esc(r[k] || '')}" ${k === 'mic' || k === 'source' ? 'list="patch-sources"' : ''} aria-label="${esc(k)}"></td>`).join('')}
-          <td class="nowrap"><button class="icon-btn" data-au-up="${kind}:${i}" title="Move up" aria-label="Move up">↑</button><button class="icon-btn" data-au-del="${kind}:${i}" title="Remove" aria-label="Remove">×</button></td></tr>`).join('')
+      return `<div class="table-wrap"><table class="table patch-table" data-tbl="${kind}"><thead><tr>${cols.map(([k, l, c]) => `<th class="${c}" data-col="${k}">${l}</th>`).join('')}<th></th></tr></thead><tbody>
+        ${list.map((r, i) => `<tr class="${kind === 'inputs' && pc.has(i) ? 'clash' : ''}">${cols.map(([k, , c]) => `<td class="${c}" data-col="${k}">${cell(kind, i, r, k, c)}</td>`).join('')}
+          <td class="nowrap">${kind === 'inputs' && pc.has(i) ? `<span class="badge warn" title="This input is used twice">${esc(pc.get(i))}</span> ` : ''}<button class="icon-btn" data-au-up="${kind}:${i}" title="Move up" aria-label="Move up">↑</button><button class="icon-btn" data-au-del="${kind}:${i}" title="Remove" aria-label="Remove">×</button></td></tr>`).join('')
           || `<tr><td colspan="${cols.length + 1}" class="empty">No ${kind} yet.</td></tr>`}</tbody></table></div>
         <div class="actions" style="margin-top:8px"><button class="btn small" data-au-add="${kind}">+ Add ${kind === 'inputs' ? 'an input' : 'an output'}</button>
-          ${kind === 'inputs' ? '<button class="btn small" data-au-add5="inputs">+ Add 8</button>' : ''}</div>`;
+          ${kind === 'inputs' ? '<button class="btn small" data-au-add5="inputs">+ Add 8</button>' : ''}
+          ${kind === 'inputs' && rig.ins.length ? '<button class="btn small" data-au-autopatch title="Give each line without an input the next free one, in order">Patch in order</button>' : ''}</div>`;
     };
-    view.innerHTML = `<div class="page">
+    const used = P.audio.inputs.filter((r) => r.mic_pid).length;
+    const overDesk = rig.desk && rig.desk.console.channels && P.audio.inputs.length > rig.desk.console.channels;
+    const setup = `<div class="card"><header><h2>Audio — desk &amp; stage boxes</h2></header><div class="body">
+      ${desks.length || boxes.length ? `<div class="form-grid tight" style="padding:0">
+        <label class="field half"><span>Mixing desk</span><select data-rig="desk"><option value="">— None —</option>${desks.map((c) => `<option value="${c.item_id}" ${P.audio.desk === c.item_id ? 'selected' : ''}>${esc(c.name)}${c.console.channels ? ` (${num(c.console.channels)} channels)` : ''}</option>`).join('')}</select></label></div>
+        <h3 class="net-h">Stage boxes</h3>
+        ${P.audio.boxes.map((b, i) => `<div class="rig-row"><select data-box="${i}" data-k="item_id" aria-label="Stage box">${boxes.map((c) => `<option value="${c.item_id}" ${b.item_id === c.item_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+          <input data-box="${i}" data-k="label" value="${esc(b.label || '')}" placeholder="Label, e.g. SB1 or Stage left" aria-label="Label">
+          <button class="icon-btn" data-box-del="${i}" aria-label="Remove">×</button></div>`).join('') || '<p class="muted small" style="margin:0">None.</p>'}
+        ${boxes.length ? '<button class="btn small" data-box-add>+ Add a stage box</button>' : '<p class="muted small">No stage boxes on this job. Give one <b>Inputs &amp; outputs</b> in Stock and add it to the job.</p>'}
+        <h3 class="net-h">Analogue stage boxes &amp; multicores</h3>
+        <p class="muted small" style="margin:0 0 6px">Passive boxes plugged into the desk or a stage box, e.g. 8 channels into AR2412 In 12–19. Their channels can then be chosen as inputs.</p>
+        ${P.audio.analogue.map((x, i) => `<div class="rig-row"><input data-an="${i}" data-k="name" value="${esc(x.name)}" placeholder="e.g. Stage box A" aria-label="Name">
+          <label class="small">channels <input data-an="${i}" data-k="channels" type="number" min="1" max="128" value="${num(x.channels)}" style="width:64px"></label>
+          <label class="small">1 into <select data-an="${i}" data-k="into"><option value="">—</option>${rig.direct.map((d) => `<option value="${esc(d.ref)}" ${x.into === d.ref ? 'selected' : ''}>${esc(d.label)}</option>`).join('')}</select></label>
+          <button class="icon-btn" data-an-del="${i}" aria-label="Remove">×</button></div>`).join('')}
+        <button class="btn small" data-an-add>+ Add an analogue box</button>`
+        : '<p class="muted" style="margin:0">Add the mixing desk (and any stage boxes) to this job, and give them <b>Inputs &amp; outputs</b> on their page in Stock, to choose each channel’s physical input from a list. Until then, type it.</p>'}
+      </div></div>`;
+    view.innerHTML = `<div class="page patch-page">
+      <style>${hiddenColsCSS('.patch-page')}</style>
       <div class="page-head"><div><a class="crumb" href="/job/${job.id}">← ${esc(job.number)} ${esc(job.name)}</a><h1>Patch</h1>
         <div class="sub">${esc(jobWhen(job))}${job.venue ? ' · ' + esc(job.venue) : ''}</div></div>
         <div class="actions"><a class="btn" href="/print/${job.id}/patch">Print patch sheet</a>
           <button class="btn primary" data-save ${dirty ? '' : 'disabled'}>${dirty ? 'Save changes' : 'Saved'}</button></div></div>
       <datalist id="patch-sources">${P.audio_sources.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
-      <div class="card"><header><h2>Lighting — DMX addresses</h2>${P.dmx.length ? '<button class="btn small" data-auto-dmx>Auto-address</button>' : ''}</header><div class="body">
+      <datalist id="patch-mics">${stock.map((x) => `<option value="${esc(x.name)}">${esc([x.brand, x.sku].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
+      <div class="card"><header><h2>Lighting — DMX addresses</h2><div class="actions">${P.dmx.length ? `${colsMenu('dmx')}<button class="btn small" data-auto-dmx>Auto-address</button>` : ''}</div></header><div class="body">
         ${P.dmx.length ? `<p class="muted small" style="margin-top:0">Each unit’s universe and start address. Overlaps and units that run past 512 are flagged. <b>Auto-address</b> fills the empty ones in order, after any you’ve set.</p>
-          <div class="table-wrap"><table class="table patch-table"><thead><tr><th>Fixture</th><th class="n">Unit</th><th>Label</th><th class="n w-s">Universe</th><th class="n w-s">Address</th><th class="n w-xs">To</th><th></th></tr></thead>
+          <div class="table-wrap"><table class="table patch-table" data-tbl="dmx"><thead><tr><th data-col="fixture">Fixture</th><th class="n" data-col="unit">Unit</th><th data-col="label">Label</th><th class="n w-s" data-col="universe">Universe</th><th class="n w-s" data-col="address">Address</th><th class="n w-xs" data-col="to">To</th><th></th></tr></thead>
           <tbody>${dmxRows}</tbody></table></div>`
           : '<p class="muted" style="margin:0">No DMX lighting on this job. Give a stock item a <b>DMX footprint</b> (on its page → Edit) and its lines appear here.</p>'}</div></div>
-      <div class="card"><header><h2>Radio frequencies</h2></header><div class="body">
+      <div class="card"><header><h2>Radio frequencies</h2>${P.rf.length ? colsMenu('rf') : ''}</header><div class="body">
         ${P.rf.length ? `<p class="muted small" style="margin-top:0">A frequency in MHz for each wireless unit. The same frequency twice, two closer than 300 kHz, or one outside the item’s band is flagged — check intermodulation with your manufacturer’s tools.</p>
-          <div class="table-wrap"><table class="table patch-table"><thead><tr><th>Item</th><th class="n">Unit</th><th>Label</th><th class="n w-s">MHz</th><th></th></tr></thead><tbody>${rfRows}</tbody></table></div>`
+          <div class="table-wrap"><table class="table patch-table" data-tbl="rf"><thead><tr><th data-col="item">Item</th><th class="n" data-col="unit">Unit</th><th data-col="label">Label</th><th class="n w-s" data-col="mhz">MHz</th><th></th></tr></thead><tbody>${rfRows}</tbody></table></div>`
           : '<p class="muted" style="margin:0">No wireless kit on this job. Tick <b>Wireless</b> on a stock item (on its page → Edit) and its lines appear here.</p>'}</div></div>
-      <div class="card"><header><h2>Audio inputs</h2></header><div class="body">${audioTable('inputs', AUDIO_IN)}</div></div>
-      <div class="card"><header><h2>Audio outputs</h2></header><div class="body">${audioTable('outputs', AUDIO_OUT)}
+      ${setup}
+      <div class="card"><header><h2>Audio inputs</h2>${colsMenu('inputs')}</header><div class="body">
+        ${overDesk ? `<p class="banner warn">${num(P.audio.inputs.length)} inputs, but ${esc(rig.desk.name)} has ${num(rig.desk.console.channels)} channels.</p>` : ''}
+        ${audioTable('inputs', AUDIO_IN)}
+        <p class="muted small" style="margin:8px 0 0">Pick a mic or DI from your stock (start typing its name) and it’s added to the job — and the prep list — when you save: as many as the patch uses beyond what’s already on the job.${used ? ` ${num(used)} line${used === 1 ? '' : 's'} use stock items.` : ''}</p></div></div>
+      <div class="card"><header><h2>Audio outputs</h2>${colsMenu('outputs')}</header><div class="body">${audioTable('outputs', AUDIO_OUT)}
         ${P.audio_updated ? `<p class="muted small" style="margin:10px 0 0">Audio patch last changed ${esc(fmtDate(P.audio_updated.at.slice(0, 10)))} ${esc(P.audio_updated.at.slice(11, 16))}${P.audio_updated.by ? ` by ${esc(P.audio_updated.by)}` : ''}.</p>` : ''}</div></div>
     </div>`;
   };
@@ -7195,12 +7392,14 @@ async function renderPatch(view, jid) {
     const b = $('[data-save]', view);
     if (b) b.disabled = true;
     try {
+      const mics = P.audio.inputs.filter((r) => r.mic_pid).length;
       P = await put(`/jobs/${jid}/patch`, {
         dmx: P.dmx.map((l) => ({ item_id: l.item_id, footprint: l.footprint, units: l.units })),
         rf: P.rf.map((l) => ({ item_id: l.item_id, units: l.units })),
         audio: P.audio,
       });
-      dirty = false; draw(); toast('Patch saved', 'ok');
+      norm();
+      dirty = false; draw(); toast(mics ? 'Patch saved — mics and DIs from stock are on the job' : 'Patch saved', 'ok');
     } catch (ex) { toast(ex.message, 'error'); if (b) b.disabled = false; }
   };
   view.oninput = (e) => {
@@ -7208,12 +7407,55 @@ async function renderPatch(view, jid) {
     if (t.dataset.dmx) { const { line, i } = find(P.dmx, t.dataset.dmx); const v = t.value.trim(); line.units[i][t.dataset.k] = t.dataset.k === 'n' ? v : (v === '' ? null : Number(v)); markDirty(); }
     else if (t.dataset.rf) { const { line, i } = find(P.rf, t.dataset.rf); line.units[i][t.dataset.k] = t.value.trim(); markDirty(); }
     else if (t.dataset.fp) { const line = P.dmx.find((l) => String(l.item_id) === t.dataset.fp); line.footprint = Math.max(1, Number(t.value) || 1); markDirty(); }
-    else if (t.dataset.au) { const [k, i] = t.dataset.au.split(':'); P.audio[k][Number(i)][t.dataset.k] = t.value; markDirty(); }
+    else if (t.dataset.au) {
+      const [k, i] = t.dataset.au.split(':'); const r = P.audio[k][Number(i)];
+      r[t.dataset.k] = t.value;
+      if (t.dataset.k === 'mic') { const hit = byName.get(t.value.trim().toLowerCase()); if (hit) r.mic_pid = hit.id; else delete r.mic_pid; }
+      markDirty();
+    }
+    else if (t.dataset.box !== undefined) { const b = P.audio.boxes[Number(t.dataset.box)]; b[t.dataset.k] = t.dataset.k === 'item_id' ? Number(t.value) : t.value; markDirty(); }
+    else if (t.dataset.an !== undefined) { const x = P.audio.analogue[Number(t.dataset.an)]; x[t.dataset.k] = t.dataset.k === 'channels' ? Math.max(1, Number(t.value) || 1) : t.value; markDirty(); }
   };
-  // redraw on change (not every key), so warnings update without losing your place
-  view.onchange = (e) => { if (e.target.dataset.dmx || e.target.dataset.rf || e.target.dataset.fp) { const f = e.target.dataset; const sel = Object.entries(f).map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase())}="${v}"]`).join(''); draw(); const el = $(sel, view); if (el) el.focus(); } };
+  // Redraw after a change so warnings and lists update. A box you type in changes when you leave it - often by
+  // clicking a button - so redraw only once that click has happened (a redraw under it would swallow it), and keep
+  // your place: where the cursor is, and any open Columns menu.
+  let stale = false;
+  const redraw = () => {
+    stale = false;
+    const open = $$('details.cols-menu[open]', view).map((d) => d.dataset.menu);
+    const f = document.activeElement;
+    const sel = f && view.contains(f) && f.dataset ? Object.entries(f.dataset).map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase())}="${v}"]`).join('') : '';
+    draw();
+    for (const m of open) { const d = $(`details.cols-menu[data-menu="${m}"]`, view); if (d) d.open = true; }
+    const el = sel && $(sel, view); if (el && el.tagName !== 'SELECT') el.focus();
+  };
+  const later = () => { if (stale) setTimeout(() => { if (stale) redraw(); }, 0); };
+  view.addEventListener('pointerup', later);
+  view.addEventListener('keyup', (e) => { if (e.key === 'Tab' || e.key === 'Enter') later(); });
+  view.onchange = (e) => {
+    const t = e.target;
+    if (t.dataset.colToggle) {
+      const [tbl, col] = t.dataset.colToggle.split(':'); const h = hiddenCols(); const set = new Set(h[tbl] || []);
+      if (t.checked) set.delete(col); else set.add(col);
+      h[tbl] = [...set]; setHiddenCols(h);
+      const st = $('.patch-page > style', view); if (st) st.textContent = hiddenColsCSS('.patch-page');
+      return;
+    }
+    if (t.dataset.rig === 'desk') { P.audio.desk = t.value ? Number(t.value) : null; markDirty(); draw(); return; }
+    if (t.dataset.dmx || t.dataset.rf || t.dataset.fp || t.dataset.au || t.dataset.box !== undefined || t.dataset.an !== undefined) {
+      if (t.tagName === 'SELECT') { redraw(); return; }   // a choice from a list: nothing to click through
+      if (t.dataset.k === 'mic') {   // the "from stock" tick, straight away
+        const r = P.audio.inputs[Number(t.dataset.au.split(':')[1])];
+        const cellEl = t.closest('.mic-cell'); const tick = cellEl && $('.from-stock', cellEl);
+        if (r && r.mic_pid && !tick) cellEl.insertAdjacentHTML('beforeend', '<span class="from-stock" title="From stock: it’s on the job, so it’s on the prep list">✓</span>');
+        if (r && !r.mic_pid && tick) tick.remove();
+      }
+      stale = true;
+    }
+  };
   view.onclick = async (e) => {
     const t = e.target;
+    if (t.closest('.cols-menu')) return;
     if (t.closest('[data-save]')) { await save(); return; }
     if (t.closest('[data-auto-dmx]')) {
       // fill empty units in order, after the highest address already used in universe 1 (or the next universe)
@@ -7235,13 +7477,40 @@ async function renderPatch(view, jid) {
       markDirty(); draw(); toast('Addresses filled in — check them, then Save', 'ok');
       return;
     }
+    if (t.closest('[data-au-autopatch]')) {
+      // each line without an input gets the next free one: the desk's own, then the stage boxes', in order
+      const rig = audioRig(P);
+      const target = new Map(rig.ins.filter((x) => x.target).map((x) => [x.ref, x.target]));
+      const taken = new Set(P.audio.inputs.flatMap((r) => [r.phys, target.get(r.phys)]).filter(Boolean));
+      const free = rig.direct.map((x) => x.ref).filter((ref) => !taken.has(ref));
+      let n = 0;
+      for (const r of P.audio.inputs) if (!r.phys && free.length) { r.phys = free.shift(); n++; }
+      if (n) { markDirty(); draw(); toast(`${n} input${n === 1 ? '' : 's'} patched — check them, then Save`, 'ok'); } else toast('Every line already has an input (or none are free)');
+      return;
+    }
+    if (t.closest('[data-box-add]')) {
+      const first = (P.consoles || []).find((c) => c.console.role === 'stagebox');
+      const same = P.audio.boxes.filter((b) => b.item_id === first.item_id).length;
+      P.audio.boxes.push({ id: nextId('b', P.audio.boxes.concat(P.audio.analogue)), item_id: first.item_id, label: same ? `${first.name} ${same + 1}` : '' });
+      markDirty(); draw(); return;
+    }
+    if (t.closest('[data-an-add]')) {
+      P.audio.analogue.push({ id: nextId('a', P.audio.boxes.concat(P.audio.analogue)), name: `Stage box ${String.fromCharCode(65 + P.audio.analogue.length)}`, channels: 8, into: '' });
+      markDirty(); draw(); return;
+    }
+    const bd = t.closest('[data-box-del]');
+    if (bd) { P.audio.boxes.splice(Number(bd.dataset.boxDel), 1); markDirty(); draw(); return; }
+    const ad = t.closest('[data-an-del]');
+    if (ad) { P.audio.analogue.splice(Number(ad.dataset.anDel), 1); markDirty(); draw(); return; }
     const add = t.closest('[data-au-add], [data-au-add5]');
     if (add) {
       const kind = add.dataset.auAdd || add.dataset.auAdd5, n = add.dataset.auAdd5 ? 8 : 1;
       for (let k = 0; k < n; k++) {
         const list = P.audio[kind];
-        const last = list.length ? Number(list[list.length - 1][kind === 'inputs' ? 'ch' : 'out']) : 0;
-        list.push(kind === 'inputs' ? { ch: String((last || 0) + 1), source: '', mic: '', stand: '', box: '', phantom: '', notes: '' } : { out: String((last || 0) + 1), dest: '', notes: '' });
+        if (kind === 'inputs') {
+          const last = list.length ? Number(list[list.length - 1].ch) : 0;
+          list.push({ ch: String((last || 0) + 1), source: '', mic: '', stand: '', phys: '', box: '', phantom: '', notes: '' });
+        } else list.push({ out: '', phys: '', dest: '', notes: '' });
       }
       markDirty(); draw(); return;
     }
@@ -7262,22 +7531,33 @@ async function renderPatch(view, jid) {
 
 function patchDocBody(P) {
   if (!P) return '';
+  const a = P.audio || {};
   const dmx = P.dmx.filter((l) => l.units.some((u) => u.a));
   const rf = P.rf.filter((l) => l.units.some((u) => u.f));
-  const ins = P.audio.inputs || [], outs = P.audio.outputs || [];
+  const ins = a.inputs || [], outs = a.outputs || [];
   if (!dmx.length && !rf.length && !ins.length && !outs.length) {
     return '<div class="doc-block"><p>Nothing patched yet. Open the job and choose <strong>Patch</strong> to add DMX addresses, frequencies and audio lines.</p></div>';
   }
+  const rig = audioRig({ ...P, audio: { inputs: [], outputs: [], boxes: [], analogue: [], ...a } });
   const rowsDmx = dmx.flatMap((l) => l.units.map((u, i) => (u.a ? { l, u, i } : null)).filter(Boolean))
-    .sort((a, b) => (a.u.u || 1) - (b.u.u || 1) || a.u.a - b.u.a);
-  const rowsRf = rf.flatMap((l) => l.units.map((u, i) => (u.f ? { l, u, i } : null)).filter(Boolean)).sort((a, b) => Number(a.u.f) - Number(b.u.f));
-  const tbl = (head, body) => `<table class="doc-table"><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
-  return `${rowsDmx.length ? `<div class="doc-block"><h3>DMX</h3>${tbl(['Universe', 'Address', 'Fixture', 'Unit', 'Label', 'Channels'],
-      rowsDmx.map(({ l, u, i }) => `<tr><td>${num(u.u || 1)}</td><td><strong>${String(u.a).padStart(3, '0')}</strong>–${String(Number(u.a) + l.footprint - 1).padStart(3, '0')}</td><td>${esc(l.name)}</td><td>#${i + 1}</td><td>${esc(u.n || '')}</td><td>${num(l.footprint)}</td></tr>`).join(''))}</div>` : ''}
-    ${rowsRf.length ? `<div class="doc-block"><h3>Radio frequencies</h3>${tbl(['MHz', 'Item', 'Unit', 'Label', 'Band'],
-      rowsRf.map(({ l, u, i }) => `<tr><td><strong>${esc(u.f)}</strong></td><td>${esc(l.name)}</td><td>#${i + 1}</td><td>${esc(u.n || '')}</td><td>${esc(l.band || '')}</td></tr>`).join(''))}</div>` : ''}
-    ${ins.length ? `<div class="doc-block"><h3>Audio inputs</h3>${tbl(AUDIO_IN.map((c) => c[1]), ins.map((r) => `<tr>${AUDIO_IN.map(([k]) => `<td>${esc(r[k] || '')}</td>`).join('')}</tr>`).join(''))}</div>` : ''}
-    ${outs.length ? `<div class="doc-block"><h3>Audio outputs</h3>${tbl(AUDIO_OUT.map((c) => c[1]), outs.map((r) => `<tr>${AUDIO_OUT.map(([k]) => `<td>${esc(r[k] || '')}</td>`).join('')}</tr>`).join(''))}</div>` : ''}`;
+    .sort((x, y) => (x.u.u || 1) - (y.u.u || 1) || x.u.a - y.u.a);
+  const rowsRf = rf.flatMap((l) => l.units.map((u, i) => (u.f ? { l, u, i } : null)).filter(Boolean)).sort((x, y) => Number(x.u.f) - Number(y.u.f));
+  // the same columns as chosen on the patch page
+  const tbl = (key, cols, body) => `<table class="doc-table" data-tbl="${key}"><thead><tr>${cols.map(([k, l]) => `<th data-col="${k}">${l}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
+  const td = (k, v) => `<td data-col="${k}">${v}</td>`;
+  const inVal = (r, k) => (k === 'phys' ? esc(rig.label.get(r.phys) || r.box || '') : esc(r[k] || ''));
+  const outVal = (r, k) => (k === 'out' ? esc(rig.busLabel.get(r.out) || r.out || '') : k === 'phys' ? esc(rig.label.get(r.phys) || '') : esc(r[k] || ''));
+  const setup = [rig.desk && `Desk: <strong>${esc(rig.desk.name)}</strong>`,
+    ...(a.boxes || []).map((b) => { const c = (P.consoles || []).find((x) => x.item_id === b.item_id); return c && `Stage box: <strong>${esc(b.label || c.name)}</strong>${b.label ? ` (${esc(c.name)})` : ''}`; }),
+    ...(a.analogue || []).map((x) => `Analogue: <strong>${esc(x.name)}</strong> — ${num(x.channels)} ch${rig.label.get(x.into) ? `, 1 into ${esc(rig.label.get(x.into))}` : ''}`)].filter(Boolean);
+  return `<style>${hiddenColsCSS('.sheet')}</style>
+    ${rowsDmx.length ? `<div class="doc-block"><h3>DMX</h3>${tbl('dmx', [['universe', 'Universe'], ['address', 'Address'], ['fixture', 'Fixture'], ['unit', 'Unit'], ['label', 'Label'], ['to', 'Channels']],
+      rowsDmx.map(({ l, u, i }) => `<tr>${td('universe', num(u.u || 1))}${td('address', `<strong>${String(u.a).padStart(3, '0')}</strong>–${String(Number(u.a) + l.footprint - 1).padStart(3, '0')}`)}${td('fixture', esc(l.name))}${td('unit', '#' + (i + 1))}${td('label', esc(u.n || ''))}${td('to', num(l.footprint))}</tr>`).join(''))}</div>` : ''}
+    ${rowsRf.length ? `<div class="doc-block"><h3>Radio frequencies</h3>${tbl('rf', [['mhz', 'MHz'], ['item', 'Item'], ['unit', 'Unit'], ['label', 'Label'], ['band', 'Band']],
+      rowsRf.map(({ l, u, i }) => `<tr>${td('mhz', `<strong>${esc(u.f)}</strong>`)}${td('item', esc(l.name))}${td('unit', '#' + (i + 1))}${td('label', esc(u.n || ''))}${td('band', esc(l.band || ''))}</tr>`).join(''))}</div>` : ''}
+    ${setup.length ? `<div class="doc-block"><h3>Audio setup</h3><p>${setup.join('<br>')}</p></div>` : ''}
+    ${ins.length ? `<div class="doc-block"><h3>Audio inputs</h3>${tbl('inputs', AUDIO_IN, ins.map((r) => `<tr>${AUDIO_IN.map(([k]) => td(k, inVal(r, k))).join('')}</tr>`).join(''))}</div>` : ''}
+    ${outs.length ? `<div class="doc-block"><h3>Audio outputs</h3>${tbl('outputs', AUDIO_OUT, outs.map((r) => `<tr>${AUDIO_OUT.map(([k]) => td(k, outVal(r, k))).join('')}</tr>`).join(''))}</div>` : ''}`;
 }
 
 /** The terms of hire sheet: your terms from Settings, filled in for this job, with lines to sign. */

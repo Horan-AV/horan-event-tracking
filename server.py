@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.32.0"
+VERSION = "1.33.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -572,7 +572,47 @@ PRODUCT_SPEC = {
     "size_w": float_or_none, "size_d": float_or_none, "size_h": float_or_none, "plan_shape": as_str,
     "inner_w": float_or_none, "inner_d": float_or_none, "inner_h": float_or_none, "case_for_id": int_or_none,
     "dmx_channels": as_int, "wireless": bool_int, "rf_band": as_str,
+    "console": lambda v, f: console_field(v),
 }
+CONSOLE_PORT_TYPES = ("XLR", "TRS jack", "Stereo line", "AES", "ADAT", "Dante", "MADI", "Link (e.g. SLink)", "Headphones", "Other")
+CONSOLE_BUSES = ("main", "aux", "group", "matrix", "fx")
+
+
+def console_field(v):
+    """A mixing desk's or stage box's inputs and outputs (stored as JSON on the item), or '' for neither:
+    {role: desk|stagebox, channels, buses: {aux, group, matrix, fx}, ports: [{name, dir: in|out, type, count}]}"""
+    if not v:
+        return ""
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except ValueError:
+            raise ApiError(400, "That isn't a list of inputs and outputs")
+    if not isinstance(v, dict) or v.get("role") not in ("desk", "stagebox"):
+        return ""
+    def count(x, what, hi):
+        n = as_int(x or 0, what)
+        if not 0 <= n <= hi:
+            raise ApiError(400, f"{what} is 0 to {hi}")
+        return n
+    out = {"role": v["role"], "ports": []}
+    if v["role"] == "desk":
+        out["channels"] = count(v.get("channels"), "Input channels", 512)
+        b = v.get("buses") or {}
+        out["buses"] = {k: count(b.get(k), k.title() + " outputs", 128) for k in CONSOLE_BUSES if k != "main"}
+    ports = v.get("ports") or []
+    if not isinstance(ports, list) or len(ports) > 40:
+        raise ApiError(400, "Up to 40 kinds of socket")
+    for x in ports:
+        if not isinstance(x, dict):
+            continue
+        name = as_str(x.get("name"), "name")[:30]
+        n = count(x.get("count"), "Number of sockets", 256)
+        if not name or not n:
+            continue
+        typ = x.get("type") if x.get("type") in CONSOLE_PORT_TYPES else "Other"
+        out["ports"].append({"name": name, "dir": "out" if x.get("dir") == "out" else "in", "type": typ, "count": n})
+    return json.dumps(out)
 CASE_FIELDS = {"inner_w", "inner_d", "inner_h", "case_for_id"}
 SIZE_FIELDS = {"size_w", "size_d", "size_h", "plan_shape"}
 # Equipment comes in kinds; each kind only keeps the fields that make sense for it.
@@ -843,6 +883,7 @@ def load_items(conn, job_ids):
                        p.sku AS product_sku, p.sub_hire AS product_sub_hire, p.vendor_id AS product_vendor_id,
                        v.name AS vendor_name, p.sub_hire_cost AS product_sub_hire_cost,
                        p.dmx_channels AS product_dmx_channels, p.wireless AS product_wireless, p.rf_band AS product_rf_band,
+                       p.console AS product_console,
                        COALESCE(sv.name, CASE WHEN ji.sub_vendor_id IS NULL THEN v.name END) AS sub_vendor_name
                 FROM job_items ji LEFT JOIN products p ON p.id = ji.product_id
                 LEFT JOIN vendors v ON v.id = p.vendor_id
@@ -1882,6 +1923,32 @@ def api_user_put(req, conn, uid):
     return user_row(one(conn.execute("SELECT * FROM users WHERE id = ?", (uid,))))
 
 
+@route("DELETE", r"/api/users/(\d+)")
+def api_user_delete(req, conn, uid):
+    """Remove someone. Their name stays on what they did (activity, jobs, scans and requests keep it as text), but
+    nothing points at their account any more - so a new user can never inherit their history or job permissions."""
+    require_admin(req, conn)
+    uid = int(uid)
+    u = one(conn.execute("SELECT * FROM users WHERE id = ?", (uid,)))
+    if not u:
+        raise ApiError(404, "User not found")
+    me = current_user(conn, req)
+    if me and me["id"] == uid:
+        raise ApiError(400, "You can't remove yourself — ask another admin to")
+    if u["is_admin"] and u["active"] and not conn.execute(
+            "SELECT 1 FROM users WHERE is_admin = 1 AND active = 1 AND id != ?", (uid,)).fetchone():
+        raise ApiError(400, "Keep at least one active admin, or nobody could change settings")
+    conn.execute("DELETE FROM sessions WHERE user_id = ?", (uid,))   # signed out everywhere
+    for table, col in (("activity", "user_id"), ("job_checks", "user_id"), ("requests", "user_id"), ("jobs", "created_by_id")):
+        conn.execute(f"UPDATE {table} SET {col} = NULL WHERE {col} = ?", (uid,))
+    for j in rows(conn.execute("SELECT id, editors FROM jobs WHERE editors LIKE ?", (f"%{uid}%",))):
+        eds = [e for e in job_editors(j) if e != uid]
+        conn.execute("UPDATE jobs SET editors = ? WHERE id = ?", (json.dumps(eds), j["id"]))
+    conn.execute("DELETE FROM users WHERE id = ?", (uid,))
+    conn.commit()
+    return {"ok": True, "name": u["name"]}
+
+
 @route("GET", "/api/login-options")
 def api_login_options(req, conn):
     """What the sign-in page should ask for: a username and password, or the network passcode. Public, so it names
@@ -2154,6 +2221,8 @@ def describe(fn_name, conn, req, groups, body, result, pre):
     if fn_name == "api_patch_put":
         what = [w for w, k in (("DMX addresses", "dmx"), ("frequencies", "rf"), ("the audio patch", "audio")) if body.get(k)]
         return ("job", "Changed " + (" and ".join(what) or "the patch"), g[0], None)
+    if fn_name == "api_user_delete":
+        return ("user", f"Removed user {r.get('name', '')}", None, None)
     if fn_name == "api_my_username":
         return ("user", f"Chose the username {r.get('username', '')}", None, None)
     if fn_name == "api_my_password":
@@ -4826,8 +4895,8 @@ def calendar_feed_response(conn, token):
 # (both kept on the job line, so they follow it). The audio input and output lists are kept per job.
 
 DMX_SLOTS = 512
-AUDIO_IN_COLS = ("ch", "source", "mic", "stand", "box", "phantom", "notes")
-AUDIO_OUT_COLS = ("out", "dest", "notes")
+AUDIO_IN_COLS = ("ch", "source", "mic", "stand", "phys", "box", "phantom", "notes")
+AUDIO_OUT_COLS = ("out", "phys", "dest", "notes")
 
 
 def item_patch(it):
@@ -4868,14 +4937,25 @@ def job_patch(conn, jid):
                        "band": it.get("product_rf_band") or "", "range": rf_band_range(it.get("product_rf_band")),
                        "units": units})
     row = one(conn.execute("SELECT * FROM job_audio_patch WHERE job_id = ?", (jid,)))
-    audio = {"inputs": [], "outputs": []}
+    audio = {"inputs": [], "outputs": [], "desk": None, "boxes": [], "analogue": []}
     if row:
         try:
             audio.update(json.loads(row["data"]))
         except ValueError:
             pass
+    # the desks and stage boxes on this job, with their sockets (from Stock)
+    consoles = []
+    for it in job["items"]:
+        try:
+            con = json.loads(it.get("product_console") or "") if it.get("product_console") else None
+        except ValueError:
+            con = None
+        if con and it["kind"] == "rental":
+            consoles.append({"item_id": it["id"], "product_id": it["product_id"], "name": it["description"] or it["product_name"],
+                             "quantity": max(1, int(round(it["quantity"] or 1))), "console": con})
     return {"job": {k: job[k] for k in ("id", "number", "name", "start_date", "end_date", "start_time", "end_time", "venue")},
-            "dmx": dmx, "rf": rf, "audio": audio, "audio_updated": row and {"at": row["updated_at"], "by": row["updated_by"]},
+            "dmx": dmx, "rf": rf, "audio": audio, "consoles": consoles,
+            "audio_updated": row and {"at": row["updated_at"], "by": row["updated_by"]},
             "audio_sources": sorted({it["description"] for it in job["items"] if it["kind"] == "rental" and it.get("description")})}
 
 
@@ -4886,7 +4966,7 @@ def api_patch(req, conn, jid):
     return job_patch(conn, int(jid))
 
 
-def _clean_rows(rows_, cols, what):
+def _clean_rows(rows_, cols, what, products=None):
     if not isinstance(rows_, list) or len(rows_) > 500:
         raise ApiError(400, f"The {what} list is up to 500 lines")
     out = []
@@ -4894,9 +4974,73 @@ def _clean_rows(rows_, cols, what):
         if not isinstance(r, dict):
             continue
         row = {c: str(r.get(c) if r.get(c) is not None else "").strip()[:200] for c in cols}
-        if any(row.values()):
+        if products is not None:   # a mic / DI chosen from stock
+            pid = int_or_none(r.get("mic_pid"), "mic")
+            if pid and pid in products:
+                row["mic_pid"] = pid
+        if any(v for k, v in row.items()):
             out.append(row)
     return out
+
+
+def _clean_audio_setup(a, items):
+    """The desk and stage boxes (lines on this job) and any analogue boxes, for the audio patch."""
+    desk = int_or_none(a.get("desk"), "desk")
+    if desk and desk not in items:
+        desk = None
+    boxes, seen = [], set()
+    for b in (a.get("boxes") or [])[:32]:
+        bid, iid = str(b.get("id") or "")[:8], int_or_none(b.get("item_id"), "stage box")
+        if not re.match(r"^b\d{1,4}$", bid) or bid in seen or iid not in items:
+            continue
+        seen.add(bid)
+        boxes.append({"id": bid, "item_id": iid, "label": as_str(b.get("label"), "label")[:40]})
+    analogue = []
+    for x in (a.get("analogue") or [])[:32]:
+        aid = str(x.get("id") or "")[:8]
+        if not re.match(r"^a\d{1,4}$", aid) or aid in seen:
+            continue
+        seen.add(aid)
+        n = as_int(x.get("channels") or 0, "channels")
+        if not 1 <= n <= 128:
+            raise ApiError(400, "An analogue stage box has 1 to 128 channels")
+        analogue.append({"id": aid, "name": as_str(x.get("name"), "name")[:40] or "Stage box", "channels": n,
+                         "into": str(x.get("into") or "")[:24]})
+    return {"desk": desk, "boxes": boxes, "analogue": analogue}
+
+
+def sync_patch_mics(conn, jid, inputs):
+    """Mics and DIs chosen from stock in the audio patch go on the job (and so the prep list): as many as the patch
+    uses beyond what the job already has, on a line of their own that follows the patch."""
+    from collections import Counter
+    want = Counter(r["mic_pid"] for r in inputs if r.get("mic_pid"))
+    normal, mine = Counter(), {}
+    for it in rows(conn.execute("SELECT id, product_id, quantity, meta FROM job_items WHERE job_id = ? AND kind = 'rental' "
+                                "AND product_id IS NOT NULL", (jid,))):
+        try:
+            role = (json.loads(it["meta"]) if it["meta"] else {}).get("role")
+        except ValueError:
+            role = None
+        if role == "patch-mic":
+            mine[it["product_id"]] = it
+        else:
+            normal[it["product_id"]] += it["quantity"] or 0
+    for pid in set(want) | set(mine):
+        need = max(0, want[pid] - normal[pid])
+        line = mine.get(pid)
+        if need and line:
+            if line["quantity"] != need:
+                conn.execute("UPDATE job_items SET quantity = ? WHERE id = ?", (need, line["id"]))
+                sync_accessories(conn, line["id"])
+        elif need:
+            p = one(conn.execute("SELECT name, day_rate FROM products WHERE id = ?", (pid,)))
+            sort = (conn.execute("SELECT COALESCE(MAX(sort), 0) FROM job_items WHERE job_id = ?", (jid,)).fetchone()[0] or 0) + 1
+            new = insert(conn, "job_items", {"job_id": jid, "product_id": pid, "kind": "rental", "description": p["name"],
+                                             "quantity": need, "unit_price": p["day_rate"], "sort": sort,
+                                             "meta": json.dumps({"role": "patch-mic"})})
+            add_accessories(conn, new)
+        elif line:
+            conn.execute("DELETE FROM job_items WHERE id = ? OR parent_item_id = ?", (line["id"], line["id"]))
 
 
 @route("PUT", r"/api/jobs/(\d+)/patch")
@@ -4957,8 +5101,11 @@ def api_patch_put(req, conn, jid):
         it["patch"] = json.dumps(p)
     if isinstance(d.get("audio"), dict):
         a = d["audio"]
-        data = {"inputs": _clean_rows(a.get("inputs") or [], AUDIO_IN_COLS, "input"),
-                "outputs": _clean_rows(a.get("outputs") or [], AUDIO_OUT_COLS, "output")}
+        stock = {r[0] for r in conn.execute("SELECT id FROM products WHERE archived = 0")}
+        data = {"inputs": _clean_rows(a.get("inputs") or [], AUDIO_IN_COLS, "input", stock),
+                "outputs": _clean_rows(a.get("outputs") or [], AUDIO_OUT_COLS, "output"),
+                **_clean_audio_setup(a, set(items))}
+        sync_patch_mics(conn, jid, data["inputs"])
         conn.execute("INSERT INTO job_audio_patch(job_id, data, updated_at, updated_by) VALUES(?, ?, ?, ?) "
                      "ON CONFLICT(job_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, "
                      "updated_by = excluded.updated_by", (jid, json.dumps(data), now_iso(), actor_name()))
@@ -9045,7 +9192,8 @@ def init_db():
                              ("jobs", "invoice_due", "TEXT"),
                              ("jobs", "invoice_terms", "TEXT"),
                              ("users", "username", "TEXT"),
-                             ("users", "username_chosen", "INTEGER NOT NULL DEFAULT 0")):
+                             ("users", "username_chosen", "INTEGER NOT NULL DEFAULT 0"),
+                             ("products", "console", "TEXT NOT NULL DEFAULT ''")):
         if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():

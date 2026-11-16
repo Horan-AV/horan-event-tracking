@@ -380,6 +380,7 @@ Add the people who use Horan Event Tracking in **Settings → Users**. Each has 
 - Tick **Remember my username on this device** when signing in, and next time it's filled in so you only type your password. Untick it to forget it. The sign-in page doesn't list anyone's names.
 - **Admins** can change settings, logos, network access, Zoho Books and software updates, and add, edit or disable users. Everyone else can do everything else: jobs, stock, scanning, clients and vendors.
 - **Switch user** at the bottom of the sidebar signs out so someone else can sign in. Disabling someone signs them out everywhere and keeps their history.
+- **Remove user** (under **Edit**) takes someone off for good. Their name stays on everything they did — Activity, jobs and scans — and they're signed out everywhere. You can't remove yourself or the last admin.
 - **Locked out?** On the computer running it, run `horan-rms reset-password username --admin` (on a Mac: `python3 ~/Library/Application\ Support/Horan\ Event\ Tracking/app/server.py --reset-password username --admin`). Their name works too. `horan-rms users` lists everyone's usernames.
 
 **Activity** (in the sidebar) records who did what, newest first, and can be filtered by person, by kind or by searching. It covers:
@@ -643,7 +644,13 @@ On a job, **Documents → Terms of hire** prints your terms for that job, with t
 On a job, **Documents → Patch** (or the **DMX** / **RF** tag on a line) opens the job's patch:
 - **Lighting:** every unit of each DMX fixture gets a universe, a start address and a label. Give the stock item its **DMX footprint** (channels in its usual mode) first; you can change the footprint for one job if a fixture runs in another mode. **Auto-address** fills the empty ones in order, moving to the next universe when one is full. Overlaps, and units that would run past 512, are flagged.
 - **Radio frequencies:** tick **Wireless** on radio mics, in-ears and transmitters in Stock (and add their **Radio band**, e.g. `K51 606–670 MHz`). Each unit gets a frequency in MHz and a label. The same frequency twice, two closer than 300 kHz, or one outside the band is flagged. It doesn't work out intermodulation — use your manufacturer's tools for that.
-- **Audio inputs and outputs:** a list of channels with the source, mic/DI, stand, stagebox input, 48V and notes, and the outputs and where they go. **+ Add 8** adds eight channels at a time, numbered on from the last.
+- **Audio inputs and outputs:** a list of channels with the source, mic/DI, stand, input, 48V and notes, and the outputs and where they go. **+ Add 8** adds eight channels at a time, numbered on from the last.
+  - **Mics and DIs from stock:** start typing in **Mic / DI** and pick from your stock (a ✓ shows it's a stock item). When you save, they go on the job — and so the prep list — as many as the patch uses beyond what's already on the job, on a line marked **from the audio patch** that follows the patch as you change it. They're charged at the item's day rate; change the price on the line if you like.
+  - **The desk and stage boxes:** give them **Inputs & outputs** in Stock (see below), add them to the job, then choose them under **Audio — desk & stage boxes**. Each input then has a list of physical inputs — e.g. Ch 1 = Local 1, Ch 2 = SB1 In 2 — and each output a list of the desk's outputs (Main L/R, Aux, Group, Matrix, FX) and its physical outputs. **Patch in order** gives every line without an input the next free one. An input used twice is flagged, as is having more inputs than the desk has channels.
+  - **Analogue stage boxes and multicores:** add one with its number of channels and the input its channel 1 plugs into — e.g. Stage box A, 8 channels, into SB1 In 12. Its channels can then be chosen as inputs, and show where they land (Stage box A 3 → SB1 In 14).
+  - **Columns:** each table has a **Columns** menu to hide what you don't need. It's remembered for you on that device, and the printed patch sheet leaves the same columns out.
+
+**Inputs & outputs (Stock).** On a mixing desk's or stage box's page, the **Inputs & outputs** card says what it is and lists its sockets: in or out, a name (e.g. "Local", or "In" on a stage box), the type (XLR, stereo line, AES…) and how many. A desk also has its number of input channels and of Aux, Group, Matrix and FX outputs (plus Main L/R). **Start from** fills in a preset — Allen & Heath SQ-5, AR2412 or AB168 — to check against the manual and adjust.
 - **Print patch sheet** prints it all, sorted by universe and address, and by frequency. The lines on the job show what's set, e.g. **DMX 1.001…** or **RF · 2 to set**.
 
 ## Calendar feed
@@ -872,4 +879,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.32.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.33.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
