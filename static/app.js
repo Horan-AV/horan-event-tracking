@@ -2934,6 +2934,7 @@ function drawConsoleCard(view, p, onSaved) {
         <label class="field half"><span>This is</span><select data-con="role">${[['', 'Not a desk or stage box'], ['desk', 'A mixing desk'], ['stagebox', 'A stage box (digital or analogue)']].map(([v, l]) => `<option value="${v}" ${c.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <label class="field half"><span>Start from</span><select data-con="preset"><option value="">— a preset (check against the manual) —</option>${Object.keys(CONSOLE_PRESETS).map((k) => `<option>${esc(k)}</option>`).join('')}</select></label>
         ${desk ? `<label class="field third"><span>Input channels</span><input data-con="channels" type="number" min="0" max="512" value="${num(c.channels || 0)}"></label>
+          <label class="field third"><span>Scribble strip characters</span><input data-con="scribble" type="number" min="0" max="64" value="${num(c.scribble || 0)}" title="How many characters a channel name can have on the desk. 0 for no limit."></label>
           ${BUS_TYPES.map(([k, l]) => `<label class="field third"><span>${l}</span><input data-con-bus="${k}" type="number" min="0" max="128" value="${num(c.buses[k] || 0)}"></label>`).join('')}
           <p class="muted small" style="flex-basis:100%;margin:0">Outputs are Main L/R plus these. Leave a type at 0 if the desk hasn’t got it.</p>` : ''}
       </div>
@@ -2954,6 +2955,7 @@ function drawConsoleCard(view, p, onSaved) {
     if (t.dataset.port !== undefined) { const x = c.ports[Number(t.dataset.port)]; x[t.dataset.k] = t.dataset.k === 'count' ? Number(t.value) || 0 : t.value; }
     else if (t.dataset.conBus) c.buses[t.dataset.conBus] = Number(t.value) || 0;
     else if (t.dataset.con === 'channels') c.channels = Number(t.value) || 0;
+    else if (t.dataset.con === 'scribble') c.scribble = Number(t.value) || 0;
   };
   box.onchange = (e) => {
     const t = e.target;
@@ -7209,8 +7211,8 @@ function rfClashes(rf, spacing = 0.3) {
   return bad;
 }
 
-const AUDIO_IN = [['ch', 'Ch', 'w-xs'], ['source', 'Source / name', ''], ['mic', 'Mic / DI', ''], ['stand', 'Stand', 'w-s'],
-  ['phys', 'Input', 'w-m'], ['phantom', '48V', 'w-xs'], ['notes', 'Notes', '']];
+const AUDIO_IN = [['ch', 'Ch', 'w-xs'], ['source', 'Source / name', ''], ['scribble', 'Scribble strip', 'w-s'], ['mic', 'Mic / DI', ''], ['stand', 'Stand', 'w-s'],
+  ['abox', 'Analogue box', 'w-m'], ['phys', 'Input', 'w-m'], ['phantom', '48V', 'w-xs'], ['notes', 'Notes', '']];
 const AUDIO_OUT = [['out', 'Output', 'w-m'], ['phys', 'Physical out', 'w-m'], ['dest', 'Destination', ''], ['notes', 'Notes', '']];
 // every table's columns, for the Columns menus (and the patch sheet)
 const PATCH_COLS = {
@@ -7240,12 +7242,12 @@ const BUS_LABEL = { aux: 'Aux', group: 'Group', matrix: 'Matrix', fx: 'FX' };
 function audioRig(P) {
   const a = P.audio, cons = new Map((P.consoles || []).map((c) => [c.item_id, c]));
   const desk = cons.get(a.desk) && cons.get(a.desk).console.role === 'desk' ? cons.get(a.desk) : null;
-  const ins = [], outs = [], label = new Map();
-  const add = (list, ref, text) => { list.push({ ref, label: text }); label.set(ref, text); };
+  const ins = [], outs = [], an = [], label = new Map(), target = new Map();
+  const add = (list, ref, text, group, n) => { list.push({ ref, label: text, group, n }); label.set(ref, text); };
   const sockets = (con, dev, prefix) => (con.ports || []).forEach((pt, pi) => {
     for (let n = 1; n <= pt.count; n++) {
       const text = `${prefix}${pt.name}${pt.count > 1 ? ' ' + n : ''}`;
-      add(pt.dir === 'out' ? outs : ins, `${dev}:${pi}:${n}`, text);
+      add(pt.dir === 'out' ? outs : ins, `${dev}:${pi}:${n}`, text, `${prefix}${pt.name}`, n);
     }
   });
   if (desk) sockets(desk.console, 'd', '');
@@ -7253,32 +7255,116 @@ function audioRig(P) {
     const c = cons.get(b.item_id);
     if (c) sockets(c.console, b.id, `${b.label || c.name} `);
   }
-  const direct = ins.slice();   // where an analogue box can plug in
+  // analogue boxes: each channel lands on the socket its channel 1 is plugged into, plus the channel number - 1
   for (const x of a.analogue || []) {
     const m = /^(.+):(\d+):(\d+)$/.exec(x.into || '');
     for (let n = 1; n <= x.channels; n++) {
-      const target = m ? `${m[1]}:${m[2]}:${Number(m[3]) + n - 1}` : '';
-      const text = `${x.name} ${n}`;
-      ins.push({ ref: `${x.id}:0:${n}`, label: text, target, hint: label.get(target) ? `→ ${label.get(target)}` : '' });
-      label.set(`${x.id}:0:${n}`, text + (label.get(target) ? ` → ${label.get(target)}` : ''));
+      const to = m ? `${m[1]}:${m[2]}:${Number(m[3]) + n - 1}` : '';
+      add(an, `${x.id}:0:${n}`, `${x.name} ${n}`, x.name, n);
+      target.set(`${x.id}:0:${n}`, label.has(to) ? to : '');
     }
   }
   const buses = desk ? [['main:LR', 'Main L/R'], ['main:L', 'Main L'], ['main:R', 'Main R'],
     ...Object.entries(desk.console.buses || {}).flatMap(([k, n]) => Array.from({ length: n }, (_, i) => [`${k}:${i + 1}`, `${BUS_LABEL[k] || k} ${i + 1}`]))] : [];
-  return { desk, ins, outs, direct, label, buses, busLabel: new Map(buses) };
+  return { desk, ins, outs, an, target, label, buses, busLabel: new Map(buses), scribble: desk ? Number(desk.console.scribble) || 0 : 0 };
 }
+/** A line on an analogue box is plugged into whatever that box channel lands on: keep its Input in step. */
+function settleAnalogue(inputs, rig) {
+  for (const r of inputs) {
+    if (!r.abox && /^a\d+:0:\d+$/.test(r.phys || '')) { r.abox = r.phys; r.phys = ''; }   // saved before 1.34
+    if (r.abox && !rig.label.has(r.abox)) r.abox = '';   // that box is gone
+    if (r.abox) r.phys = rig.target.get(r.abox) || '';
+  }
+}
+
+/* Scribble strips: a shorter name when the source's is too long for the desk. */
+const SCRIBBLE_WORDS = { vocal: 'Vox', vocals: 'Vox', guitar: 'Gtr', acoustic: 'Ac', electric: 'El', keyboard: 'Keys', keyboards: 'Keys',
+  piano: 'Pno', drums: 'Drm', drum: 'Drm', snare: 'Snr', 'hi-hat': 'HH', hihat: 'HH', overhead: 'OH', overheads: 'OH', floor: 'Flr',
+  left: 'L', right: 'R', presenter: 'Pres', lectern: 'Lect', microphone: 'Mic', radio: 'Rad', handheld: 'HH', lapel: 'Lav', lavalier: 'Lav',
+  headset: 'HS', playback: 'PB', laptop: 'Lptp', computer: 'PC', backing: 'Bk', lead: 'Ld', trumpet: 'Tpt', saxophone: 'Sax',
+  trombone: 'Tbn', violin: 'Vln', cello: 'Clo', ambient: 'Amb', audience: 'Aud', stereo: 'St', track: 'Trk', video: 'Vid',
+  spare: 'Spr', talkback: 'TB', announcer: 'Ann', choir: 'Chr', podium: 'Pod', speaker: 'Spk', guest: 'Gst', panel: 'Pnl' };
+function scribbleSuggest(src, limit) {
+  const s = String(src || '').trim().replace(/\s+/g, ' ');
+  if (!limit || s.length <= limit) return '';
+  const m = /^(.*?)[\s#-]*(\d+)$/.exec(s);   // keep a number at the end: Radio Mic 12 -> RadMic12
+  const tail = m && m[1] ? m[2] : '', room = Math.max(1, limit - tail.length);
+  const words = (tail ? m[1] : s).split(/[\s/_]+/).filter(Boolean);
+  const cap = (w) => w.charAt(0).toUpperCase() + w.slice(1);
+  const abbr = words.map((w) => SCRIBBLE_WORDS[w.toLowerCase()] || w);
+  const squeezed = abbr.map((w) => (w.length > 3 ? w[0] + w.slice(1).replace(/[aeiou]/gi, '') : w));
+  const tries = [words.join(' '), abbr.join(' '), abbr.map(cap).join(''), squeezed.map(cap).join('')];
+  let body = tries.find((x) => x.length <= room);
+  if (!body) {   // still too long: trim the longest words a letter at a time
+    const ws = squeezed.map(cap);
+    while (ws.join('').length > room && ws.some((w) => w.length > 1)) {
+      const i = ws.reduce((b, w, k) => (w.length > ws[b].length ? k : b), 0); ws[i] = ws[i].slice(0, -1);
+    }
+    body = ws.join('').slice(0, room);
+  }
+  return body + (tail && body.length + tail.length < limit && /\d$/.test(body) ? ' ' : '') + tail;
+}
+const scribbleOf = (r, limit) => r.scribble || scribbleSuggest(r.source, limit);
 /** Physical inputs used twice (counting an analogue box channel as the socket it's plugged into). */
 function physClashes(P, rig) {
   const bad = new Map(), seen = new Map();
-  const target = new Map(rig.ins.filter((x) => x.target).map((x) => [x.ref, x.target]));
   P.audio.inputs.forEach((r, i) => {
-    if (!r.phys) return;
-    for (const ref of new Set([r.phys, target.get(r.phys)].filter(Boolean))) {
+    for (const ref of [r.abox, r.phys].filter(Boolean)) {
       if (seen.has(ref)) { bad.set(i, `also on ch ${P.audio.inputs[seen.get(ref)].ch || seen.get(ref) + 1}`); bad.set(seen.get(ref), `also on ch ${r.ch || i + 1}`); }
       else seen.set(ref, i);
     }
   });
   return bad;
+}
+
+/* The routing matrix: lines against inputs, and buses against physical outputs. Clicking a square changes the patch list. */
+function matrixPref(set) {
+  let v = { open: false, view: 'inputs' };
+  try { v = { ...v, ...JSON.parse(localStorage.getItem('het-patch-matrix') || '{}') }; } catch { /* default */ }
+  if (set) { v = { ...v, ...set }; try { localStorage.setItem('het-patch-matrix', JSON.stringify(v)); } catch { /* not kept */ } }
+  return v;
+}
+function matrixCard(P, rig, pc) {
+  if (!rig.ins.length && !rig.outs.length) return '';
+  const pref = matrixPref(), kind = pref.view === 'outputs' ? 'outputs' : 'inputs';
+  const groups = (cols) => {
+    const g = [];
+    for (const c of cols) { const last = g[g.length - 1]; if (last && last.name === c.group) last.n++; else g.push({ name: c.group, n: 1 }); }
+    return g;
+  };
+  const head = (cols, corner) => `<thead><tr><th class="mx-corner" rowspan="2">${corner}</th>${groups(cols).map((x) => `<th class="mx-group" colspan="${x.n}">${esc(x.name)}</th>`).join('')}</tr>
+    <tr>${cols.map((c, i) => `<th class="mx-n ${i && cols[i - 1].group !== c.group ? 'mx-start' : ''}">${c.n}</th>`).join('')}</tr></thead>`;
+  let grid = '';
+  if (kind === 'inputs') {
+    const cols = [...rig.ins, ...rig.an], ins = P.audio.inputs;
+    const usedBy = new Map();
+    ins.forEach((r, i) => { if (r.abox) usedBy.set(r.abox, i); if (r.phys) usedBy.set(r.phys, i); });
+    grid = !ins.length ? '<p class="muted" style="margin:0">Add input lines (above), then route them here.</p>'
+      : `<table class="mx-grid">${head(cols, 'Ch')}<tbody>${ins.map((r, i) => `<tr class="${pc.has(i) ? 'clash' : ''}"><th class="mx-row">${esc(r.ch || String(i + 1))} <span class="muted">${esc(scribbleOf(r, rig.scribble) || r.source || '')}</span></th>
+        ${cols.map((c, k) => {
+          const isAn = rig.target.has(c.ref), on = isAn ? r.abox === c.ref : r.phys === c.ref && !r.abox, via = !isAn && r.abox && r.phys === c.ref;
+          const other = !on && !via && usedBy.has(c.ref) ? ins[usedBy.get(c.ref)] : null;
+          return `<td class="mx ${on ? 'on' : via ? 'via' : other ? 'taken' : ''} ${k && cols[k - 1].group !== c.group ? 'mx-start' : ''}" data-mx-in="${i}" data-ref="${esc(c.ref)}"
+            title="${esc(`Ch ${r.ch || i + 1} → ${c.label}${via ? ` (through ${rig.label.get(r.abox)})` : ''}${other ? ` — now ch ${other.ch}` : ''}`)}">${on ? '●' : via ? '○' : ''}</td>`;
+        }).join('')}</tr>`).join('')}</tbody></table>`;
+  } else {
+    const cols = rig.outs, outs = P.audio.outputs;
+    grid = !rig.buses.length ? '<p class="muted" style="margin:0">Choose the mixing desk (above) to route its outputs.</p>'
+      : !cols.length ? '<p class="muted" style="margin:0">The desk and stage boxes have no outputs in Stock.</p>'
+      : `<table class="mx-grid">${head(cols, 'Bus')}<tbody>${rig.buses.map(([bus, name]) => `<tr><th class="mx-row">${esc(name)}</th>
+        ${cols.map((c, k) => {
+          const on = outs.some((o) => o.out === bus && o.phys === c.ref), other = !on && outs.find((o) => o.phys === c.ref && o.out);
+          return `<td class="mx ${on ? 'on' : other ? 'taken' : ''} ${k && cols[k - 1].group !== c.group ? 'mx-start' : ''}" data-mx-out="${esc(bus)}" data-ref="${esc(c.ref)}"
+            title="${esc(`${name} → ${c.label}${other ? ` — now ${rig.busLabel.get(other.out) || other.out}` : ''}`)}">${on ? '●' : ''}</td>`;
+        }).join('')}</tr>`).join('')}</tbody></table>`;
+  }
+  return `<div class="card"><header><h2>Routing matrix</h2><div class="actions">
+      ${pref.open ? ['inputs', 'outputs'].map((k) => `<button class="btn small ${kind === k ? 'primary' : ''}" data-mx-view="${k}">${k === 'inputs' ? 'Inputs' : 'Outputs'}</button>`).join('') : ''}
+      <button class="btn small" data-mx-toggle>${pref.open ? 'Hide' : 'Show'}</button></div></header>
+    ${pref.open ? `<div class="body"><p class="muted small" style="margin-top:0">${kind === 'inputs'
+      ? 'Click a square to patch that line to that input — the lists above change to match. Click it again to unpatch. ○ shows the input an analogue box channel lands on.'
+      : 'Click a square to send that bus to that output — a line is added to Audio outputs (or changed). A socket carries one bus.'}</p>
+      <div class="mx-wrap">${grid}</div></div>` : ''}</div>`;
 }
 
 async function renderPatch(view, jid) {
@@ -7295,7 +7381,8 @@ async function renderPatch(view, jid) {
   const markDirty = () => { dirty = true; const b = $('[data-save]', view); if (b) { b.disabled = false; b.textContent = 'Save changes'; } };
   const nextId = (prefix, list) => prefix + (Math.max(0, ...list.map((x) => Number(String(x.id).slice(1)) || 0)) + 1);
   const draw = () => {
-    const dc = dmxClashes(P.dmx), rc = rfClashes(P.rf), rig = audioRig(P), pc = physClashes(P, rig);
+    const rig = audioRig(P); settleAnalogue(P.audio.inputs, rig);
+    const dc = dmxClashes(P.dmx), rc = rfClashes(P.rf), pc = physClashes(P, rig);
     const desks = (P.consoles || []).filter((c) => c.console.role === 'desk'), boxes = (P.consoles || []).filter((c) => c.console.role === 'stagebox');
     const dmxRows = P.dmx.map((line) => line.units.map((u, i) => {
       const key = `${line.item_id}:${i}`, end = u.a ? Number(u.a) + (line.footprint || 1) - 1 : null;
@@ -7317,8 +7404,19 @@ async function renderPatch(view, jid) {
     // one cell of an audio line
     const cell = (kind, i, r, k, c) => {
       const at = `data-au="${kind}:${i}" data-k="${k}"`;
+      if (k === 'abox') {
+        return rig.an.length ? `<select ${at} aria-label="Analogue box"><option value="">—</option>${rig.an.map((x) => `<option value="${esc(x.ref)}" ${r.abox === x.ref ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>` : '<span class="muted small">—</span>';
+      }
+      if (k === 'phys' && kind === 'inputs' && r.abox) {
+        return `<span class="via" title="Through ${esc(rig.label.get(r.abox) || '')}">${r.phys ? esc(rig.label.get(r.phys)) : '<span class="muted">Say where the box is plugged in</span>'}</span>`;
+      }
       if (k === 'phys' && kind === 'inputs' && rig.ins.length) {
-        return `<select ${at} aria-label="Input"><option value="">—</option>${rig.ins.map((x) => `<option value="${esc(x.ref)}" ${r.phys === x.ref ? 'selected' : ''}>${esc(x.label)}${x.hint ? ' ' + esc(x.hint) : ''}</option>`).join('')}</select>`;
+        return `<select ${at} aria-label="Input"><option value="">—</option>${rig.ins.map((x) => `<option value="${esc(x.ref)}" ${r.phys === x.ref ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>`;
+      }
+      if (k === 'scribble') {
+        const auto = !r.scribble && scribbleSuggest(r.source, rig.scribble), long = rig.scribble && (r.scribble || '').length > rig.scribble;
+        return `<input ${at} value="${esc(r.scribble || auto || '')}" class="${auto ? 'auto' : ''}" ${rig.scribble ? `maxlength="${rig.scribble}"` : ''}
+          placeholder="${rig.scribble ? `${rig.scribble} max` : ''}" title="${auto ? 'A suggestion: the name is too long for the desk. Type to change it.' : rig.scribble ? `Up to ${rig.scribble} characters. Leave empty to use the name.` : 'The channel’s name on the desk'}" aria-label="Scribble strip">${long ? `<span class="badge warn">over ${rig.scribble}</span>` : ''}`;
       }
       if (k === 'phys' && kind === 'inputs') return `<input data-au="${kind}:${i}" data-k="box" value="${esc(r.box || '')}" placeholder="e.g. SB1 4" aria-label="Input">`;
       if (k === 'phys' && kind === 'outputs' && rig.outs.length) {
@@ -7328,9 +7426,9 @@ async function renderPatch(view, jid) {
         return `<select ${at} aria-label="Output"><option value="">—</option>${rig.buses.map(([v, l]) => `<option value="${esc(v)}" ${r.out === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
       }
       if (k === 'mic') {
-        return `<span class="mic-cell"><input ${at} value="${esc(r.mic || '')}" list="patch-mics" placeholder="Type to pick from stock" aria-label="Mic / DI">${r.mic_pid ? '<span class="from-stock" title="From stock: it’s on the job, so it’s on the prep list">✓</span>' : ''}</span>`;
+        return `<span class="mic-cell"><input ${at} value="${esc(r.mic || '')}" list="patch-mics" placeholder="From stock…" aria-label="Mic / DI">${r.mic_pid ? '<span class="from-stock" title="From stock: it’s on the job, so it’s on the prep list">✓</span>' : ''}</span>`;
       }
-      return `<input ${at} value="${esc(r[k] || '')}" ${k === 'source' ? 'list="patch-sources"' : ''} aria-label="${esc(k)}">`;
+      return `<input ${at} value="${esc(r[k] || '')}" aria-label="${esc(k)}">`;
     };
     const audioTable = (kind, cols) => {
       const list = P.audio[kind];
@@ -7353,21 +7451,22 @@ async function renderPatch(view, jid) {
           <button class="icon-btn" data-box-del="${i}" aria-label="Remove">×</button></div>`).join('') || '<p class="muted small" style="margin:0">None.</p>'}
         ${boxes.length ? '<button class="btn small" data-box-add>+ Add a stage box</button>' : '<p class="muted small">No stage boxes on this job. Give one <b>Inputs &amp; outputs</b> in Stock and add it to the job.</p>'}
         <h3 class="net-h">Analogue stage boxes &amp; multicores</h3>
-        <p class="muted small" style="margin:0 0 6px">Passive boxes plugged into the desk or a stage box, e.g. 8 channels into AR2412 In 12–19. Their channels can then be chosen as inputs.</p>
+        <p class="muted small" style="margin:0 0 6px">Passive boxes plugged into the desk or a stage box, e.g. 8 channels into AR2412 In 12–19. Choose a line’s channel in the <b>Analogue box</b> column and its <b>Input</b> follows.</p>
         ${P.audio.analogue.map((x, i) => `<div class="rig-row"><input data-an="${i}" data-k="name" value="${esc(x.name)}" placeholder="e.g. Stage box A" aria-label="Name">
           <label class="small">channels <input data-an="${i}" data-k="channels" type="number" min="1" max="128" value="${num(x.channels)}" style="width:64px"></label>
-          <label class="small">1 into <select data-an="${i}" data-k="into"><option value="">—</option>${rig.direct.map((d) => `<option value="${esc(d.ref)}" ${x.into === d.ref ? 'selected' : ''}>${esc(d.label)}</option>`).join('')}</select></label>
+          <label class="small">1 into <select data-an="${i}" data-k="into"><option value="">—</option>${rig.ins.map((d) => `<option value="${esc(d.ref)}" ${x.into === d.ref ? 'selected' : ''}>${esc(d.label)}</option>`).join('')}</select></label>
           <button class="icon-btn" data-an-del="${i}" aria-label="Remove">×</button></div>`).join('')}
         <button class="btn small" data-an-add>+ Add an analogue box</button>`
         : '<p class="muted" style="margin:0">Add the mixing desk (and any stage boxes) to this job, and give them <b>Inputs &amp; outputs</b> on their page in Stock, to choose each channel’s physical input from a list. Until then, type it.</p>'}
       </div></div>`;
+    const mx = matrixCard(P, rig, pc);
+    const scroll = $('.mx-wrap', view); const sx = scroll ? [scroll.scrollLeft, scroll.scrollTop] : null;
     view.innerHTML = `<div class="page patch-page">
       <style>${hiddenColsCSS('.patch-page')}</style>
       <div class="page-head"><div><a class="crumb" href="/job/${job.id}">← ${esc(job.number)} ${esc(job.name)}</a><h1>Patch</h1>
         <div class="sub">${esc(jobWhen(job))}${job.venue ? ' · ' + esc(job.venue) : ''}</div></div>
         <div class="actions"><a class="btn" href="/print/${job.id}/patch">Print patch sheet</a>
           <button class="btn primary" data-save ${dirty ? '' : 'disabled'}>${dirty ? 'Save changes' : 'Saved'}</button></div></div>
-      <datalist id="patch-sources">${P.audio_sources.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
       <datalist id="patch-mics">${stock.map((x) => `<option value="${esc(x.name)}">${esc([x.brand, x.sku].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
       <div class="card"><header><h2>Lighting — DMX addresses</h2><div class="actions">${P.dmx.length ? `${colsMenu('dmx')}<button class="btn small" data-auto-dmx>Auto-address</button>` : ''}</div></header><div class="body">
         ${P.dmx.length ? `<p class="muted small" style="margin-top:0">Each unit’s universe and start address. Overlaps and units that run past 512 are flagged. <b>Auto-address</b> fills the empty ones in order, after any you’ve set.</p>
@@ -7385,7 +7484,9 @@ async function renderPatch(view, jid) {
         <p class="muted small" style="margin:8px 0 0">Pick a mic or DI from your stock (start typing its name) and it’s added to the job — and the prep list — when you save: as many as the patch uses beyond what’s already on the job.${used ? ` ${num(used)} line${used === 1 ? '' : 's'} use stock items.` : ''}</p></div></div>
       <div class="card"><header><h2>Audio outputs</h2>${colsMenu('outputs')}</header><div class="body">${audioTable('outputs', AUDIO_OUT)}
         ${P.audio_updated ? `<p class="muted small" style="margin:10px 0 0">Audio patch last changed ${esc(fmtDate(P.audio_updated.at.slice(0, 10)))} ${esc(P.audio_updated.at.slice(11, 16))}${P.audio_updated.by ? ` by ${esc(P.audio_updated.by)}` : ''}.</p>` : ''}</div></div>
+      ${mx}
     </div>`;
+    const sc = sx && $('.mx-wrap', view); if (sc) [sc.scrollLeft, sc.scrollTop] = sx;
   };
   const find = (list, key) => { const [id, i] = key.split(':'); return { line: list.find((l) => String(l.item_id) === id), i: Number(i) }; };
   const save = async () => {
@@ -7410,6 +7511,7 @@ async function renderPatch(view, jid) {
     else if (t.dataset.au) {
       const [k, i] = t.dataset.au.split(':'); const r = P.audio[k][Number(i)];
       r[t.dataset.k] = t.value;
+      if (t.dataset.k === 'scribble') t.classList.remove('auto');
       if (t.dataset.k === 'mic') { const hit = byName.get(t.value.trim().toLowerCase()); if (hit) r.mic_pid = hit.id; else delete r.mic_pid; }
       markDirty();
     }
@@ -7477,14 +7579,35 @@ async function renderPatch(view, jid) {
       markDirty(); draw(); toast('Addresses filled in — check them, then Save', 'ok');
       return;
     }
+    const mv = t.closest('[data-mx-view]');
+    if (mv) { matrixPref({ view: mv.dataset.mxView, open: true }); draw(); return; }
+    if (t.closest('[data-mx-toggle]')) { matrixPref({ open: !matrixPref().open }); draw(); return; }
+    const mi = t.closest('[data-mx-in]');
+    if (mi) {   // route a line to an input (or an analogue box channel): one per line, and it moves off any other line
+      const rig = audioRig(P), r = P.audio.inputs[Number(mi.dataset.mxIn)], ref = mi.dataset.ref, isAn = rig.target.has(ref);
+      const on = isAn ? r.abox === ref : r.phys === ref && !r.abox;
+      for (const o of P.audio.inputs) if (o !== r && (isAn ? o.abox === ref : o.phys === ref && !o.abox)) { if (isAn) o.abox = ''; o.phys = ''; }
+      if (on) { r.abox = ''; r.phys = ''; } else if (isAn) r.abox = ref; else { r.abox = ''; r.phys = ref; }
+      markDirty(); draw(); return;
+    }
+    const mo = t.closest('[data-mx-out]');
+    if (mo) {   // a bus to a physical output: a socket carries one bus, so it moves from any other
+      const outs = P.audio.outputs, bus = mo.dataset.mxOut, ref = mo.dataset.ref;
+      const here = outs.findIndex((o) => o.out === bus && o.phys === ref);
+      if (here >= 0) { const o = outs[here]; if (!o.dest && !o.notes) outs.splice(here, 1); else o.phys = ''; }
+      else {
+        const other = outs.find((o) => o.phys === ref), blank = outs.find((o) => o.out === bus && !o.phys);
+        if (other) other.out = bus; else if (blank) blank.phys = ref; else outs.push({ out: bus, phys: ref, dest: '', notes: '' });
+      }
+      markDirty(); draw(); return;
+    }
     if (t.closest('[data-au-autopatch]')) {
       // each line without an input gets the next free one: the desk's own, then the stage boxes', in order
       const rig = audioRig(P);
-      const target = new Map(rig.ins.filter((x) => x.target).map((x) => [x.ref, x.target]));
-      const taken = new Set(P.audio.inputs.flatMap((r) => [r.phys, target.get(r.phys)]).filter(Boolean));
-      const free = rig.direct.map((x) => x.ref).filter((ref) => !taken.has(ref));
+      const taken = new Set(P.audio.inputs.flatMap((r) => [r.phys, r.abox]).filter(Boolean));
+      const free = rig.ins.map((x) => x.ref).filter((ref) => !taken.has(ref));
       let n = 0;
-      for (const r of P.audio.inputs) if (!r.phys && free.length) { r.phys = free.shift(); n++; }
+      for (const r of P.audio.inputs) if (!r.phys && !r.abox && free.length) { r.phys = free.shift(); n++; }
       if (n) { markDirty(); draw(); toast(`${n} input${n === 1 ? '' : 's'} patched — check them, then Save`, 'ok'); } else toast('Every line already has an input (or none are free)');
       return;
     }
@@ -7509,7 +7632,7 @@ async function renderPatch(view, jid) {
         const list = P.audio[kind];
         if (kind === 'inputs') {
           const last = list.length ? Number(list[list.length - 1].ch) : 0;
-          list.push({ ch: String((last || 0) + 1), source: '', mic: '', stand: '', phys: '', box: '', phantom: '', notes: '' });
+          list.push({ ch: String((last || 0) + 1), source: '', scribble: '', mic: '', stand: '', abox: '', phys: '', box: '', phantom: '', notes: '' });
         } else list.push({ out: '', phys: '', dest: '', notes: '' });
       }
       markDirty(); draw(); return;
@@ -7539,13 +7662,15 @@ function patchDocBody(P) {
     return '<div class="doc-block"><p>Nothing patched yet. Open the job and choose <strong>Patch</strong> to add DMX addresses, frequencies and audio lines.</p></div>';
   }
   const rig = audioRig({ ...P, audio: { inputs: [], outputs: [], boxes: [], analogue: [], ...a } });
+  settleAnalogue(ins, rig);
   const rowsDmx = dmx.flatMap((l) => l.units.map((u, i) => (u.a ? { l, u, i } : null)).filter(Boolean))
     .sort((x, y) => (x.u.u || 1) - (y.u.u || 1) || x.u.a - y.u.a);
   const rowsRf = rf.flatMap((l) => l.units.map((u, i) => (u.f ? { l, u, i } : null)).filter(Boolean)).sort((x, y) => Number(x.u.f) - Number(y.u.f));
   // the same columns as chosen on the patch page
   const tbl = (key, cols, body) => `<table class="doc-table" data-tbl="${key}"><thead><tr>${cols.map(([k, l]) => `<th data-col="${k}">${l}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
   const td = (k, v) => `<td data-col="${k}">${v}</td>`;
-  const inVal = (r, k) => (k === 'phys' ? esc(rig.label.get(r.phys) || r.box || '') : esc(r[k] || ''));
+  const inVal = (r, k) => (k === 'phys' ? esc(rig.label.get(r.phys) || r.box || '') : k === 'abox' ? esc(rig.label.get(r.abox) || '')
+    : k === 'scribble' ? esc(scribbleOf(r, rig.scribble)) : esc(r[k] || ''));
   const outVal = (r, k) => (k === 'out' ? esc(rig.busLabel.get(r.out) || r.out || '') : k === 'phys' ? esc(rig.label.get(r.phys) || '') : esc(r[k] || ''));
   const setup = [rig.desk && `Desk: <strong>${esc(rig.desk.name)}</strong>`,
     ...(a.boxes || []).map((b) => { const c = (P.consoles || []).find((x) => x.item_id === b.item_id); return c && `Stage box: <strong>${esc(b.label || c.name)}</strong>${b.label ? ` (${esc(c.name)})` : ''}`; }),
