@@ -2,6 +2,16 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.35.0 — 2026-11-16 · Analogue stage boxes with inputs, outputs and a label
+
+- Analogue stage boxes and multicores now have a label (e.g. Drum sub) and a number of inputs and outputs, instead of “channels” and “1 into”.
+- Each of their channels is plugged in on its own: on the patch list, choose the box channel in the Analogue box column and the desk or stage box socket in the Input column next to it — or click it in the routing matrix.
+- Audio outputs have an Analogue box column too, for sends down a multicore (e.g. Aux 1 on Drum sub Out 1, fed from Local out 5).
+- The routing matrix has an Analogue boxes view: each box's inputs and outputs against the sockets they plug into. Patch in order also plugs in box channels that aren't yet.
+- The patch sheet lists where each analogue box channel is plugged in. Boxes set up the old way move across by themselves.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.34.0 — 2026-11-16 · Patch list: analogue box column, scribble strips and a routing matrix
 
 - Audio inputs have an Analogue box column of their own: choose the box channel (e.g. Stage box A 3) and the Input column shows where it's plugged in (SB1 In 14). Patches saved before move across by themselves.

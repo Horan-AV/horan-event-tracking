@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.34.0"
+VERSION = "1.35.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -4897,7 +4897,7 @@ def calendar_feed_response(conn, token):
 
 DMX_SLOTS = 512
 AUDIO_IN_COLS = ("ch", "source", "scribble", "mic", "stand", "abox", "phys", "box", "phantom", "notes")
-AUDIO_OUT_COLS = ("out", "phys", "dest", "notes")
+AUDIO_OUT_COLS = ("out", "abox", "phys", "dest", "notes")
 
 
 def item_patch(it):
@@ -4944,6 +4944,7 @@ def job_patch(conn, jid):
             audio.update(json.loads(row["data"]))
         except ValueError:
             pass
+    upgrade_audio(audio)
     # the desks and stage boxes on this job, with their sockets (from Stock)
     consoles = []
     for it in job["items"]:
@@ -4983,6 +4984,31 @@ def _clean_rows(rows_, cols, what, products=None):
     return out
 
 
+_OLD_ANALOGUE = re.compile(r"^(a\d{1,4}):0:(\d{1,3})$")
+
+
+def upgrade_audio(a):
+    """Analogue boxes saved by 1.33-1.34 had channels plugged in one run from one socket ("1 into"), and their
+    channels were a1:0:n. Now each box has inputs and outputs, each patched on its own, and channels are a1:i:n."""
+    for x in a.get("analogue") or []:
+        if not isinstance(x, dict) or "ins" in x:
+            continue
+        n = x.get("channels") if isinstance(x.get("channels"), int) else 0
+        x["ins"], x["outs"], x["map"] = n, 0, {}
+        x.setdefault("label", "")
+        m = re.match(r"^(.+):(\d+):(\d+)$", str(x.pop("into", "") or ""))
+        if m:
+            x["map"] = {f"i{k}": f"{m[1]}:{m[2]}:{int(m[3]) + k - 1}" for k in range(1, n + 1)}
+        x.pop("channels", None)
+    for r in a.get("inputs") or []:
+        if isinstance(r, dict):
+            for k in ("abox", "phys"):
+                m = _OLD_ANALOGUE.match(str(r.get(k) or ""))
+                if m:
+                    r["abox"], r["phys"] = f"{m[1]}:i:{m[2]}", r["phys"] if k == "abox" else ""
+    return a
+
+
 def _clean_audio_setup(a, items):
     """The desk and stage boxes (lines on this job) and any analogue boxes, for the audio patch."""
     desk = int_or_none(a.get("desk"), "desk")
@@ -5001,11 +5027,14 @@ def _clean_audio_setup(a, items):
         if not re.match(r"^a\d{1,4}$", aid) or aid in seen:
             continue
         seen.add(aid)
-        n = as_int(x.get("channels") or 0, "channels")
-        if not 1 <= n <= 128:
-            raise ApiError(400, "An analogue stage box has 1 to 128 channels")
-        analogue.append({"id": aid, "name": as_str(x.get("name"), "name")[:40] or "Stage box", "channels": n,
-                         "into": str(x.get("into") or "")[:24]})
+        ins, outs = as_int(x.get("ins") or 0, "inputs"), as_int(x.get("outs") or 0, "outputs")
+        if not (0 <= ins <= 128 and 0 <= outs <= 128) or not ins + outs:
+            raise ApiError(400, "An analogue stage box has 1 to 128 inputs or outputs")
+        m = x.get("map") if isinstance(x.get("map"), dict) else {}
+        keep = {k: str(v)[:24] for k, v in m.items() if v and re.match(r"^[io]\d{1,3}$", str(k))
+                and 1 <= int(str(k)[1:]) <= (ins if str(k)[0] == "i" else outs)}
+        analogue.append({"id": aid, "name": as_str(x.get("name"), "name")[:40] or "Stage box",
+                         "label": as_str(x.get("label"), "label")[:40], "ins": ins, "outs": outs, "map": keep})
     return {"desk": desk, "boxes": boxes, "analogue": analogue}
 
 
@@ -5100,7 +5129,7 @@ def api_patch_put(req, conn, jid):
         conn.execute("UPDATE job_items SET patch = ? WHERE id = ?", (json.dumps(p), it["id"]))
         it["patch"] = json.dumps(p)
     if isinstance(d.get("audio"), dict):
-        a = d["audio"]
+        a = upgrade_audio(d["audio"])
         stock = {r[0] for r in conn.execute("SELECT id FROM products WHERE archived = 0")}
         data = {"inputs": _clean_rows(a.get("inputs") or [], AUDIO_IN_COLS, "input", stock),
                 "outputs": _clean_rows(a.get("outputs") or [], AUDIO_OUT_COLS, "output"),
