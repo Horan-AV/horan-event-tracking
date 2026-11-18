@@ -630,9 +630,11 @@ function applyKindVisibility(form) {
   if (!kindEl) return;
   const kind = kindEl.value;
   const mode = form.elements.stand_height_mode ? form.elements.stand_height_mode.value : '';
+  const pk = form.elements.patch_kind ? form.elements.patch_kind.value : '';
   for (const el of form.querySelectorAll('[class*="grp-k-"]')) {
     let show = el.classList.contains('grp-k-' + kind);
     for (const m of ['fixed', 'range', 'stepped']) if (el.classList.contains('h-' + m) && mode !== m) show = false;
+    for (const k of ['audio', 'lighting']) if (el.classList.contains('pk-' + k) && pk !== k) show = false;
     el.hidden = !show;
   }
 }
@@ -766,12 +768,13 @@ function productFields(type, { cats, subcats = [], cableTypes, joinerOpts, track
       help: 'Counted when working out how many extension leads and sockets a job needs — even if you don’t know its power draw.' },
     { name: 'power_watts', label: 'Watts', type: 'number', min: 0, step: 'any', half: true, placeholder: 'e.g. 400', group: 'k-powered' },
     { name: 'power_amps', label: 'Amps', type: 'number', min: 0, step: 'any', half: true, placeholder: 'e.g. 1.7', group: 'k-powered' },
-    { type: 'heading', label: 'DMX and radio', help: 'For the patch sheet: lighting gets DMX addresses, wireless kit gets frequencies.', group: 'k-powered' },
-    { name: 'dmx_channels', label: 'DMX footprint (channels)', type: 'number', min: 0, max: 512, step: 1, half: true, placeholder: 'e.g. 16', group: 'k-powered',
-      help: 'How many DMX channels one unit uses in its usual mode. Leave blank if it isn’t DMX-controlled.' },
-    { name: 'rf_band', label: 'Radio band', half: true, placeholder: 'e.g. G50 470–534 MHz', group: 'k-powered',
+    { type: 'heading', label: 'Audio or lighting', help: 'For the patch: lighting gets DMX addresses, audio gets inputs, outputs and radio frequencies.', group: 'k-powered' },
+    { name: 'patch_kind', label: 'Is it audio or lighting?', type: 'select', group: 'k-powered',
+      options: [['', 'Neither'], ['audio', 'Audio'], ['lighting', 'Lighting']],
+      help: 'Lighting: give it its DMX channel modes on its page. Audio: a desk or stage box gets its inputs & outputs on its page.' },
+    { name: 'wireless', label: 'Wireless (radio mic, in-ear, transmitter…) — give each unit a frequency', type: 'checkbox', group: 'k-powered pk-audio' },
+    { name: 'rf_band', label: 'Radio band', half: true, placeholder: 'e.g. G50 470–534 MHz', group: 'k-powered pk-audio',
       help: 'Frequencies outside this range are flagged.' },
-    { name: 'wireless', label: 'Wireless (radio mic, in-ear, transmitter…) — give each unit a frequency', type: 'checkbox', group: 'k-powered' },
     ...size,
     { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 }];
 }
@@ -851,7 +854,7 @@ async function productModal(product, type, preset = {}) {
     onInput: (e, form) => {
       if (e.target.name === 'power_cable') { $$('.grp-pc', form).forEach((x) => (x.hidden = !e.target.checked)); return; }
       if (e.target.name === 'sub_hire') { $$('.grp-sh', form).forEach((x) => (x.hidden = !e.target.checked)); return; }
-      if (e.target.name === 'equip_kind' || e.target.name === 'stand_height_mode') {
+      if (e.target.name === 'equip_kind' || e.target.name === 'stand_height_mode' || e.target.name === 'patch_kind') {
         applyKindVisibility(form);
         if (e.target.name === 'equip_kind' && e.target.value === 'powered' && form.elements.plugs_in && !form.elements.power_watts.value) form.elements.plugs_in.checked = true;
         return;
@@ -995,11 +998,11 @@ function importModal(kind) {
 
 /* ---------------------------------------------------------------- router */
 
-const NAV_OF = { roi: 'stock', plan: 'jobs', patch: 'jobs', job: 'jobs', product: 'stock', contact: 'contacts', print: 'jobs', check: 'jobs', vendor: 'vendors' };
+const NAV_OF = { barcodes: 'stock', roi: 'stock', plan: 'jobs', patch: 'jobs', job: 'jobs', product: 'stock', contact: 'contacts', print: 'jobs', check: 'jobs', vendor: 'vendors' };
 
 // The app's pages, by the first part of the address.
 const APP_PAGES = new Set(['', 'dashboard', 'jobs', 'job', 'availability', 'stock', 'product', 'roi', 'contacts', 'contact', 'quarantine',
-  'activity', 'requests', 'changelog', 'scan', 'plan', 'patch', 'check', 'vendors', 'vendor', 'settings', 'print']);
+  'activity', 'requests', 'changelog', 'scan', 'plan', 'patch', 'check', 'vendors', 'vendor', 'settings', 'print', 'barcodes']);
 function isAppPath(href) {
   return typeof href === 'string' && href.startsWith('/') && !href.startsWith('//') && APP_PAGES.has(href.split(/[/?#]/)[1] || '');
 }
@@ -1037,7 +1040,8 @@ async function router() {
       case 'changelog': await renderChangelog(view); break;
       case 'scan': await renderScan(view); break;
       case 'plan': await renderPlan(view, Number(a)); break;
-      case 'patch': await renderPatch(view, Number(a)); break;
+      case 'patch': await renderPatch(view, Number(a), b === 'lighting' ? 'lighting' : 'audio'); break;
+      case 'barcodes': await renderBarcodes(view); break;
       case 'check': await renderCheck(view, Number(a), b === 'in' ? 'in' : 'out'); break;
       case 'contact': await renderContact(view, Number(a)); break;
       case 'vendors': await renderVendors(view); break;
@@ -1238,14 +1242,10 @@ function patchChip(job, it) {
   try { p = JSON.parse(it.patch || '{}') || {}; } catch { /* none yet */ }
   const qty = Math.round(it.quantity || 0);
   const out = [];
-  if (it.product_dmx_channels > 0) {
-    const set = (p.dmx || []).slice(0, qty).filter((u) => u && u.a);
-    const first = set[0];
-    out.push(`<a class="patch-chip ${set.length >= qty ? 'ok' : ''}" href="/patch/${job.id}" title="DMX addresses">DMX ${first ? `${first.u || 1}.${String(first.a).padStart(3, '0')}${set.length > 1 ? '…' : ''}` : '—'}${set.length < qty ? ` · ${num(qty - set.length)} to set` : ''}</a> `);
-  }
+  if (it.product_dmx_channels > 0) out.push(`<a class="patch-chip" href="/patch/${job.id}/lighting" title="DMX addresses, on the lighting patch">DMX</a> `);
   if (it.product_wireless) {
     const set = (p.rf || []).slice(0, qty).filter((u) => u && u.f);
-    out.push(`<a class="patch-chip ${set.length >= qty ? 'ok' : ''}" href="/patch/${job.id}" title="Radio frequencies">RF ${set.length ? `${set[0].f}${set.length > 1 ? '…' : ''}` : '—'}${set.length < qty ? ` · ${num(qty - set.length)} to set` : ''}</a> `);
+    out.push(`<a class="patch-chip ${set.length >= qty ? 'ok' : ''}" href="/patch/${job.id}/audio" title="Radio frequencies">RF ${set.length ? `${set[0].f}${set.length > 1 ? '…' : ''}` : '—'}${set.length < qty ? ` · ${num(qty - set.length)} to set` : ''}</a> `);
   }
   return out.join('');
 }
@@ -1255,7 +1255,7 @@ function lineRow(job, it, rental) {
   const cdays = job.totals.charge_days;
   return `<tr data-item="${it.id}" class="${it.parent_item_id ? 'acc' : ''}" style="--depth:${it._depth || 0}">
       <td class="desc">${it.parent_item_id ? '<span class="acc-mark" aria-hidden="true">↳</span>' : ''}<input data-f="description" value="${esc(it.description)}" aria-label="Description">
-        <small>${patchChip(job, it)}${metaOf(it).role === 'patch-mic' ? `<a class="patch-chip" href="/patch/${job.id}" title="Added by the audio patch: its quantity follows the patch">from the audio patch</a> ` : ''}${it.added_by && !it.parent_item_id ? `<span class="by-note" title="Added by ${esc(it.added_by)}">${esc(initials(it.added_by))}</span> ` : ''}${it.product_brand ? `<span class="line-brand">${esc(it.product_brand)}</span> · ` : ''}${it.product_id ? `<a href="/product/${it.product_id}">${esc(it.product_sku || 'View stock item')}</a>` : ''}${it.parent_item_id ? ` <span class="muted">· ${job.items.some((x) => x.id === it.parent_item_id && isRun(x)) ? `part of ${groupWord(job.items.find((x) => x.id === it.parent_item_id))}` : (metaOf(it).role === 'package' ? 'in package' : `linked accessory${isIncluded(it) ? ', included' : ''}`)}</span>` : ''}</small></td>
+        <small>${patchChip(job, it)}${metaOf(it).role === 'patch-mic' ? `<a class="patch-chip" href="/patch/${job.id}/audio" title="Added by the audio patch: its quantity follows the patch">from the audio patch</a> ` : ''}${metaOf(it).role === 'patch-light' ? `<a class="patch-chip" href="/patch/${job.id}/lighting" title="Added by the lighting patch: its quantity follows the patch">from the lighting patch</a> ` : ''}${it.added_by && !it.parent_item_id ? `<span class="by-note" title="Added by ${esc(it.added_by)}">${esc(initials(it.added_by))}</span> ` : ''}${it.product_brand ? `<span class="line-brand">${esc(it.product_brand)}</span> · ` : ''}${it.product_id ? `<a href="/product/${it.product_id}">${esc(it.product_sku || 'View stock item')}</a>` : ''}${it.parent_item_id ? ` <span class="muted">· ${job.items.some((x) => x.id === it.parent_item_id && isRun(x)) ? `part of ${groupWord(job.items.find((x) => x.id === it.parent_item_id))}` : (metaOf(it).role === 'package' ? 'in package' : `linked accessory${isIncluded(it) ? ', included' : ''}`)}</span>` : ''}</small></td>
       <td class="n"><input data-f="quantity" type="number" step="any" min="0" value="${num(it.quantity)}" aria-label="Quantity"></td>
       <td class="n"><input data-f="unit_price" type="number" step="0.01" min="0" value="${num(it.unit_price)}" aria-label="Price"></td>
       ${rental ? `<td class="n"><input data-f="days" type="number" step="any" min="0" placeholder="${num(cdays)}" value="${it.days ?? ''}" aria-label="Days" title="Blank = job's chargeable days"></td>` : ''}
@@ -1476,7 +1476,8 @@ function drawJob(view) {
           <a class="btn" href="/print/${j.id}/picklist">Prep list</a>
           <a class="btn" href="/print/${j.id}/invoice">Invoice</a>
           <a class="btn" href="/print/${j.id}/terms">Terms of hire</a>
-          <a class="btn" href="/patch/${j.id}">Patch</a>
+          <a class="btn" href="/patch/${j.id}/lighting">Lighting patch</a>
+          <a class="btn" href="/patch/${j.id}/audio">Audio patch</a>
           <a class="btn" href="/plan/${j.id}">Room plan</a>
         </div>
         <div class="check-box">
@@ -2346,6 +2347,7 @@ async function renderStock(view) {
         <details class="more-menu"><summary class="btn">More ▾</summary><div class="more-panel" role="menu">
           <button type="button" data-cats>Rename &amp; arrange categories…</button>
           <button type="button" data-print-labels="" data-stock-labels>Print barcodes</button>
+          <a href="/barcodes">Every barcode in use</a>
           <button type="button" data-import>Import CSV</button>
           <button type="button" data-export>Export CSV</button>
           <a href="/roi">ROI calculator</a></div></details>
@@ -2976,6 +2978,50 @@ function drawConsoleCard(view, p, onSaved) {
   draw();
 }
 
+/* ---- a light's DMX channel modes, e.g. Standard 16 ch, Extended 24 ch: chosen per light on the lighting patch */
+function parseModes(p) {
+  let m = [];
+  try { m = JSON.parse(p.dmx_modes || '[]'); } catch { /* none */ }
+  m = Array.isArray(m) ? m.filter((x) => x && x.channels > 0) : [];
+  if (!m.length && p.dmx_channels > 0) m = [{ name: `${p.dmx_channels} ch`, channels: p.dmx_channels }];
+  return m;
+}
+function drawModesCard(view, p) {
+  const box = $('[data-modes-card]', view);
+  if (!box) return;
+  let modes = parseModes(p).map((x) => ({ ...x }));
+  if (!modes.length) modes = [{ name: '', channels: '' }];
+  const draw = () => {
+    box.innerHTML = `<div class="card"><header><h2>DMX channel modes</h2><span class="muted">for the lighting patch</span></header><div class="body">
+      <p class="muted small" style="margin-top:0">The modes it can run in and how many DMX channels each uses. The first is the one a light gets when it’s added to a patch — each light’s mode can be changed there.</p>
+      <div class="table-wrap"><table class="table compact"><thead><tr><th>Mode</th><th class="n">Channels</th><th></th></tr></thead><tbody>
+        ${modes.map((m, i) => `<tr><td><input data-mode="${i}" data-k="name" value="${esc(m.name)}" placeholder="e.g. Standard" style="min-width:140px"></td>
+          <td class="n"><input data-mode="${i}" data-k="channels" type="number" min="1" max="512" value="${m.channels}" style="width:80px"></td>
+          <td class="nowrap">${i ? `<button class="icon-btn" data-mode-up="${i}" title="Make it earlier" aria-label="Move up">↑</button>` : '<span class="badge">default</span> '}<button class="icon-btn" data-mode-del="${i}" aria-label="Remove">×</button></td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="actions" style="margin-top:8px"><button class="btn small" data-mode-add>+ Add a mode</button><button class="btn primary small" data-mode-save>Save channel modes</button></div></div></div>`;
+  };
+  box.oninput = (e) => {
+    const t = e.target; if (t.dataset.mode === undefined) return;
+    const m = modes[Number(t.dataset.mode)]; m[t.dataset.k] = t.dataset.k === 'channels' ? (Number(t.value) || '') : t.value;
+  };
+  box.onclick = async (e) => {
+    const t = e.target;
+    if (t.closest('[data-mode-add]')) { modes.push({ name: '', channels: '' }); draw(); return; }
+    const d = t.closest('[data-mode-del]'); if (d) { modes.splice(Number(d.dataset.modeDel), 1); if (!modes.length) modes.push({ name: '', channels: '' }); draw(); return; }
+    const u = t.closest('[data-mode-up]'); if (u) { const i = Number(u.dataset.modeUp); [modes[i - 1], modes[i]] = [modes[i], modes[i - 1]]; draw(); return; }
+    if (t.closest('[data-mode-save]')) {
+      const list = modes.filter((m) => Number(m.channels) > 0).map((m) => ({ name: m.name.trim() || `${m.channels} ch`, channels: Number(m.channels) }));
+      try {
+        const res = await put(`/products/${p.id}`, { dmx_modes: list.length ? list : '', ...(list.length ? {} : { dmx_channels: 0 }) });
+        Object.assign(p, res); modes = parseModes(p).map((x) => ({ ...x })); if (!modes.length) modes = [{ name: '', channels: '' }];
+        draw(); toast('Saved', 'ok');
+      } catch (ex) { toast(ex.message, 'error'); }
+    }
+  };
+  draw();
+}
+
 async function renderProduct(view, id) {
   const p = await get(`/products/${id}`);
   if (p.parent_id) { go(`/product/${p.parent_id}`, true); return; }
@@ -3016,7 +3062,7 @@ async function renderProduct(view, id) {
         ${p.archived ? '<button class="btn" data-unarchive>Restore</button>' : '<button class="btn danger" data-remove>Delete</button>'}
       </div></div>
     <div class="grid-2">
-      <div class="stack">${p.sub_hire ? subHireCard(p) : unitsCard(p)}${accCard}${p.item_type === 'equipment' ? '<div data-console-card></div>' : ''}${altCard(p, all)}
+      <div class="stack">${p.sub_hire ? subHireCard(p) : unitsCard(p)}${accCard}${p.item_type === 'equipment' && (p.patch_kind === 'audio' || p.console) ? '<div data-console-card></div>' : ''}${p.item_type === 'equipment' && (p.patch_kind === 'lighting' || p.dmx_channels > 0) ? '<div data-modes-card></div>' : ''}${altCard(p, all)}
       <div class="card"><header><h2>Upcoming bookings</h2></header>
         ${p.bookings.length ? `<table class="table"><thead><tr><th>Job</th><th>Dates</th><th>Status</th><th class="n">Qty</th></tr></thead>
           <tbody>${p.bookings.map((b) => `<tr class="click" data-href="/job/${b.id}">
@@ -3064,6 +3110,7 @@ async function renderProduct(view, id) {
   }).catch(() => {});
   wireImages(view, p, () => renderProduct(view, id));
   drawConsoleCard(view, p);
+  drawModesCard(view, p);
   rowLinks(view);
   const base = view.onclick;
   view.onclick = async (e) => {
@@ -7122,10 +7169,11 @@ async function renderPrint(id, doc) {
   S.settings = s;
   document.body.classList.add('printing');
   const root = $('#print-root');
-  const titles = { quote: 'Quotation', invoice: 'Invoice', picklist: 'Prep list', terms: 'Terms of hire', patch: 'Patch sheet', plan: 'Room plan' };
+  const titles = { quote: 'Quotation', invoice: 'Invoice', picklist: 'Prep list', terms: 'Terms of hire', lighting: 'Lighting patch', audio: 'Audio patch', plan: 'Room plan' };
+  if (doc === 'patch') doc = 'audio';   // before 1.36
   if (!titles[doc]) doc = 'quote';
   const sw = s.accounting_software;
-  const planData = doc === 'plan' ? await get(`/jobs/${id}/plan`) : doc === 'patch' ? await get(`/jobs/${id}/patch`) : null;
+  const planData = doc === 'plan' ? await get(`/jobs/${id}/plan`) : doc === 'lighting' || doc === 'audio' ? await get(`/jobs/${id}/patch`) : null;
   // A quote or invoice with an HTML template is shown in a sandboxed frame and printed from there.
   const tpl = (doc === 'quote' || doc === 'invoice') && docLayout(doc, s).method === 'html';
   root.innerHTML = `<div class="print-toolbar">
@@ -7172,24 +7220,96 @@ async function renderPrint(id, doc) {
 
 const DMX_SLOTS = 512;
 /** Overlapping DMX addresses in a universe, and units that run past 512. Returns a set of "item:unit" keys. */
-function dmxClashes(dmx) {
-  const bad = new Map();
-  const used = {};
-  for (const line of dmx) {
-    line.units.forEach((u, i) => {
-      if (!u.a) return;
-      const uni = u.u || 1, from = Number(u.a), to = from + (line.footprint || 1) - 1, key = `${line.item_id}:${i}`;
-      if (to > DMX_SLOTS) bad.set(key, `runs past ${DMX_SLOTS} (to ${to})`);
-      for (const o of (used[uni] ||= [])) {
-        if (from <= o.to && o.from <= to) {
-          bad.set(key, `overlaps ${o.name} at ${uni}.${String(o.from).padStart(3, '0')}`);
-          if (!bad.has(o.key)) bad.set(o.key, `overlaps ${line.name} #${i + 1}`);
-        }
+/* ---- the lighting patch: each light's universe, start address and channel mode */
+const dmxAt = (u, a) => `${u || 1}.${String(a).padStart(3, '0')}`;
+function lightFx(P, l) { return (P.fixtures || []).find((f) => f.id === l.product_id) || { name: 'Light', modes: [] }; }
+function lightFp(P, l) { const m = lightFx(P, l).modes; return (m[l.mode] || m[0] || { channels: 1 }).channels; }
+function lightLabel(P, l) {
+  if (l.n) return l.n;
+  const same = P.lights.filter((x) => x.product_id === l.product_id);
+  return `${lightFx(P, l).name}${same.length > 1 ? ` #${same.indexOf(l) + 1}` : ''}`;
+}
+/** Lights that overlap another, or run past 512, by id. */
+function lightClashes(P) {
+  const bad = new Map(), used = {};
+  for (const l of P.lights) {
+    if (!l.a) continue;
+    const uni = l.u || 1, from = Number(l.a), to = from + lightFp(P, l) - 1;
+    if (to > DMX_SLOTS) bad.set(l.id, `runs past ${DMX_SLOTS} (to ${to})`);
+    for (const o of (used[uni] ||= [])) {
+      if (from <= o.to && o.from <= to) {
+        bad.set(l.id, `overlaps ${o.name} at ${dmxAt(uni, o.from)}`);
+        if (!bad.has(o.id)) bad.set(o.id, `overlaps ${lightLabel(P, l)}`);
       }
-      used[uni].push({ from, to, key, name: `${line.name} #${i + 1}` });
-    });
+    }
+    used[uni].push({ from, to, id: l.id, name: lightLabel(P, l) });
   }
   return bad;
+}
+/** The first address in a universe, from `from` on, where `fp` channels are free (ignoring the light `skip`) - or null. */
+function freeAddress(P, uni, fp, from = 1, skip = null) {
+  const taken = P.lights.filter((l) => l !== skip && l.a && (l.u || 1) === uni).map((l) => [Number(l.a), Number(l.a) + lightFp(P, l) - 1]);
+  let a = Math.max(1, from);
+  for (;;) {
+    if (a + fp - 1 > DMX_SLOTS) return null;
+    const hit = taken.find(([f, t]) => a <= t && f <= a + fp - 1);
+    if (!hit) return a;
+    a = hit[1] + 1;
+  }
+}
+/** The first universe (other than `not`) with room for `fp` channels - the next new one if none has. */
+function universeWithRoom(P, fp, not, skip = null) {
+  const top = Math.max(1, ...P.lights.map((l) => l.u || 1));
+  for (let u = 1; u <= top; u++) if (u !== not && freeAddress(P, u, fp, 1, skip) !== null) return u;
+  return top + 1 === not ? top + 2 : top + 1;
+}
+/** A choice of a few buttons; resolves to the chosen value, or null. choices: [[value, label, primary]] */
+function choiceModal(title, message, choices) {
+  return new Promise((resolve) => {
+    const m = openModal(`<header><h2>${esc(title)}</h2></header><div class="modal-body"><p>${esc(message)}</p></div>
+      <footer class="choice-foot">${choices.map(([, l, primary], i) => `<button class="btn ${primary ? 'primary' : ''}" data-choice="${i}">${esc(l)}</button>`).join('')}</footer>`);
+    const done = (v) => { m.close(); resolve(v); };
+    m.wrap.addEventListener('cancel', () => done(null));
+    $$('[data-choice]', m.el).forEach((b) => (b.onclick = () => done(choices[Number(b.dataset.choice)][0])));
+    setTimeout(() => { const b = $('.btn.primary', m.el); if (b) b.focus(); }, 30);
+  });
+}
+/** A light now overlaps another (or runs past 512): offer the next free address, another universe, or leaving it. */
+async function settleLight(P, l) {
+  const why = lightClashes(P).get(l.id);
+  if (!why || !l.a) return;
+  const fp = lightFp(P, l), uni = l.u || 1;
+  const here = freeAddress(P, uni, fp, Number(l.a), l) ?? freeAddress(P, uni, fp, 1, l), other = universeWithRoom(P, fp, uni, l);
+  const v = await choiceModal('Channels overlap', `${lightLabel(P, l)} (${fp} channels at ${dmxAt(uni, l.a)}) ${why}.`, [
+    ...(here !== null ? [['here', `Use the next free address (${dmxAt(uni, here)})`, true]] : []),
+    ['move', `Move it to universe ${other}`, here === null], ['keep', 'Keep it here']]);
+  if (v === 'here') l.a = here;
+  if (v === 'move') { l.u = other; l.a = freeAddress(P, other, fp, 1, l); }
+}
+/** Ask which lights to add, and how. */
+function addLightsModal(P, preset = {}) {
+  const fx = (P.fixtures || []).filter((f) => f.modes.length);
+  if (!fx.length) { toast('No lighting in stock yet: set an item to Lighting and give it its channel modes, in Stock', 'error'); return null; }
+  const first = fx.find((f) => f.id === preset.product_id) || fx[0];
+  const last = P.lights.filter((l) => l.a).pop();
+  const modeOpts = (f) => f.modes.map((m, i) => [i, `${m.name} — ${m.channels} ch`]);
+  return formModal({
+    title: 'Add lights', submitLabel: 'Add',
+    intro: 'They’re given the next free addresses in the universe, in order. Change any of them afterwards.',
+    fields: [
+      { name: 'product_id', label: 'Light', type: 'select', options: fx.map((f) => [f.id, f.name + (f.brand ? ` (${f.brand})` : '')]) },
+      { name: 'count', label: 'How many', type: 'number', min: 1, half: true },
+      { name: 'mode', label: 'Channel mode', type: 'select', half: true, options: modeOpts(first) },
+      { name: 'u', label: 'Universe', type: 'number', min: 1, half: true },
+      { name: 'a', label: 'From address', type: 'number', min: 1, half: true, placeholder: 'the first free one' },
+      { name: 'n', label: 'Label (optional)', placeholder: 'e.g. FOH wash — numbered 1, 2, 3…' }],
+    values: { product_id: first.id, count: preset.count || 1, mode: 0, u: (last && last.u) || 1 },
+    onInput: (e, form) => {
+      if (e.target.name !== 'product_id') return;
+      const f = fx.find((x) => String(x.id) === e.target.value);
+      form.elements.mode.innerHTML = modeOpts(f).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
+    },
+  });
 }
 
 /** Duplicate frequencies, ones too close together (under 0.3 MHz apart) and ones outside the band. */
@@ -7216,7 +7336,7 @@ const AUDIO_IN = [['ch', 'Ch', 'w-xs'], ['source', 'Source / name', ''], ['scrib
 const AUDIO_OUT = [['out', 'Output', 'w-m'], ['abox', 'Analogue box', 'w-m'], ['phys', 'Physical out', 'w-m'], ['dest', 'Destination', ''], ['notes', 'Notes', '']];
 // every table's columns, for the Columns menus (and the patch sheet)
 const PATCH_COLS = {
-  dmx: [['fixture', 'Fixture'], ['unit', 'Unit'], ['label', 'Label'], ['universe', 'Universe'], ['address', 'Address'], ['to', 'Channels']],
+  dmx: [['fixture', 'Fixture'], ['label', 'Label'], ['mode', 'Mode'], ['universe', 'Universe'], ['address', 'Address'], ['to', 'To'], ['channels', 'Channels']],
   rf: [['item', 'Item'], ['unit', 'Unit'], ['label', 'Label'], ['mhz', 'MHz'], ['band', 'Band']],
   inputs: AUDIO_IN.map(([k, l]) => [k, l]),
   outputs: AUDIO_OUT.map(([k, l]) => [k, l]),
@@ -7393,7 +7513,37 @@ function matrixCard(P, rig, pc) {
       <div class="mx-wrap">${grid}</div></div>` : ''}</div>`;
 }
 
-async function renderPatch(view, jid) {
+/* ---- every barcode in use, and what it's on */
+async function renderBarcodes(view) {
+  const all = await get('/barcodes/all');
+  const KIND = { unit: 'Unit', item: 'Item code', close: 'Closes a flight case' };
+  let q = '', kind = '';
+  view.innerHTML = `<div class="page">
+    <div class="page-head"><div><a class="crumb" href="/stock">← Stock</a><h1>Barcodes</h1><div class="sub">Every barcode in use, and what it’s on.</div></div></div>
+    <div class="card"><div class="body">
+      <div class="filters"><input type="search" data-bc-q placeholder="Search a code or an item…" aria-label="Search" style="flex:1;min-width:200px">
+        <select data-bc-kind aria-label="Show"><option value="">Everything</option>${Object.entries(KIND).map(([k, l]) => `<option value="${k}">${l}s</option>`).join('')}</select>
+        <span class="muted small" data-bc-count></span></div>
+      <div class="table-wrap" data-bc-list style="margin-top:10px"></div></div></div></div>`;
+  const draw = () => {
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const list = all.filter((x) => (!kind || x.kind === kind) && words.every((w) => `${x.code} ${x.name} ${x.category || ''} ${x.notes}`.toLowerCase().includes(w)));
+    $('[data-bc-count]', view).textContent = `${num(list.length)} of ${num(all.length)}`;
+    $('[data-bc-list]', view).innerHTML = list.length ? `<table class="table"><thead><tr><th>Barcode</th><th>What it is</th><th>On</th><th>Category</th><th>Notes</th></tr></thead><tbody>
+      ${list.slice(0, 2000).map((x) => `<tr><td><strong class="mono">${esc(x.code)}</strong></td><td>${KIND[x.kind] || ''}</td>
+        <td>${x.product_id ? `<a href="/product/${x.product_id}">${esc(x.name)}</a>` : esc(x.name)}</td><td class="muted">${esc(x.category || '')}</td><td class="muted small">${esc(x.notes || '')}</td></tr>`).join('')}
+      </tbody></table>${list.length > 2000 ? '<p class="muted small">Showing the first 2,000 — search to narrow it down.</p>' : ''}`
+      : `<p class="empty">${all.length ? 'No barcodes match.' : 'No barcodes yet. Give an item a code, or its units barcodes, on its page in Stock.'}</p>`;
+  };
+  view.oninput = (e) => {
+    if (e.target.matches('[data-bc-q]')) { q = e.target.value; draw(); }
+    if (e.target.matches('[data-bc-kind]')) { kind = e.target.value; draw(); }
+  };
+  draw();
+  document.title = 'Barcodes';
+}
+
+async function renderPatch(view, jid, part = 'audio') {
   let P = await get(`/jobs/${jid}/patch`);
   const stock = (await get('/products?flat=1').catch(() => [])).filter((x) => x.item_type === 'equipment' && !x.archived)
     .sort((a, b) => (/audio|mic/i.test(b.category || '') - /audio|mic/i.test(a.category || '')) || a.name.localeCompare(b.name));
@@ -7401,25 +7551,39 @@ async function renderPatch(view, jid) {
   const job = P.job;
   let dirty = false;
   const norm = () => {
-    P.audio.inputs ||= []; P.audio.outputs ||= []; P.audio.boxes ||= []; P.audio.analogue ||= [];
+    P.audio.inputs ||= []; P.audio.outputs ||= []; P.audio.boxes ||= []; P.audio.analogue ||= []; P.lights ||= [];
   };
   norm();
   const markDirty = () => { dirty = true; const b = $('[data-save]', view); if (b) { b.disabled = false; b.textContent = 'Save changes'; } };
   const nextId = (prefix, list) => prefix + (Math.max(0, ...list.map((x) => Number(String(x.id).slice(1)) || 0)) + 1);
   const draw = () => {
     const rig = audioRig(P); settleAnalogue(P.audio.inputs, rig); settleAnalogue(P.audio.outputs, rig);
-    const dc = dmxClashes(P.dmx), rc = rfClashes(P.rf), pc = physClashes(P, rig);
+    const rc = rfClashes(P.rf), pc = physClashes(P, rig);
     const desks = (P.consoles || []).filter((c) => c.console.role === 'desk'), boxes = (P.consoles || []).filter((c) => c.console.role === 'stagebox');
-    const dmxRows = P.dmx.map((line) => line.units.map((u, i) => {
-      const key = `${line.item_id}:${i}`, end = u.a ? Number(u.a) + (line.footprint || 1) - 1 : null;
-      return `<tr class="${dc.has(key) ? 'clash' : ''}"><td data-col="fixture">${i === 0 ? `<strong>${esc(line.name)}</strong>` : ''}</td><td class="n muted" data-col="unit">#${i + 1}</td>
-        <td data-col="label"><input data-dmx="${key}" data-k="n" value="${esc(u.n || '')}" placeholder="e.g. FOH wash ${i + 1}" aria-label="Label"></td>
-        <td class="n" data-col="universe"><input data-dmx="${key}" data-k="u" type="number" min="1" step="1" value="${u.u ?? ''}" placeholder="1" aria-label="Universe"></td>
-        <td class="n" data-col="address"><input data-dmx="${key}" data-k="a" type="number" min="1" max="512" step="1" value="${u.a ?? ''}" aria-label="Start address"></td>
-        <td class="n muted" data-col="to">${end ? `–${end}` : ''}</td>
-        <td class="small">${dc.has(key) ? `<span class="badge warn">${esc(dc.get(key))}</span>` : ''}</td></tr>`;
-    }).join('') + `<tr class="fp-row"><td colspan="7" class="small muted">${esc(line.name)}: <label>footprint <input data-fp="${line.item_id}" type="number" min="1" max="512" step="1" value="${line.footprint}" aria-label="Footprint"> channels</label>
-        ${line.footprint !== line.product_footprint ? ` <span class="muted">(stock item: ${num(line.product_footprint)})</span>` : ''}</td></tr>`).join('');
+    const lc = lightClashes(P), counts = {};
+    for (const l of P.lights) counts[l.product_id] = (counts[l.product_id] || 0) + 1;
+    const missing = (P.on_job || []).map((x) => ({ ...x, left: x.count - (counts[x.product_id] || 0) })).filter((x) => x.left > 0);
+    const lightRows = P.lights.map((l, i) => {
+      const fx = lightFx(P, l), fp = lightFp(P, l);
+      return `<tr class="${lc.has(l.id) ? 'clash' : ''}"><td data-col="fixture"><strong>${esc(fx.name)}</strong></td>
+        <td data-col="label"><input data-lt="${i}" data-k="n" value="${esc(l.n || '')}" placeholder="${esc(lightLabel(P, l))}" aria-label="Label"></td>
+        <td data-col="mode">${fx.modes.length > 1 ? `<select data-lt="${i}" data-k="mode" aria-label="Channel mode">${fx.modes.map((m, k) => `<option value="${k}" ${Number(l.mode) === k ? 'selected' : ''}>${esc(m.name)} (${m.channels})</option>`).join('')}</select>`
+          : `<span class="muted small">${esc((fx.modes[0] || {}).name || '')}</span>`}</td>
+        <td class="n" data-col="universe"><input data-lt="${i}" data-k="u" type="number" min="1" step="1" value="${l.u ?? ''}" placeholder="1" aria-label="Universe"></td>
+        <td class="n" data-col="address"><input data-lt="${i}" data-k="a" type="number" min="1" max="512" step="1" value="${l.a ?? ''}" aria-label="Start address"></td>
+        <td class="n muted" data-col="to">${l.a ? `–${Number(l.a) + fp - 1}` : ''}</td>
+        <td class="n muted" data-col="channels">${num(fp)}</td>
+        <td class="nowrap">${lc.has(l.id) ? `<span class="badge warn">${esc(lc.get(l.id))}</span> ` : ''}<button class="icon-btn" data-lt-del="${i}" title="Take it off the patch" aria-label="Remove">×</button></td></tr>`;
+    }).join('');
+    const lightCard = `<div class="card"><header><h2>Lights — DMX addresses</h2><div class="actions">
+        ${P.lights.length ? `${colsMenu('dmx')}<button class="btn small" data-lt-sort>Sort by address</button><button class="btn small" data-auto-dmx title="Give the lights without an address the next free ones">Auto-address</button>` : ''}
+        <button class="btn primary small" data-lt-add>+ Add lights</button></div></header><div class="body">
+      ${missing.length ? `<div class="banner info" style="margin-bottom:10px">On the job but not on the patch yet: ${missing.map((x) => `<span class="nowrap"><b>${esc(x.name)}</b> ×${num(x.left)} <button class="btn small" data-lt-add="${x.product_id}" data-count="${x.left}">Patch</button></span>`).join(' ')}</div>` : ''}
+      ${P.lights.length ? `<div class="table-wrap"><table class="table patch-table" data-tbl="dmx"><thead><tr><th data-col="fixture">Light</th><th data-col="label">Label</th><th data-col="mode">Mode</th><th class="n w-s" data-col="universe">Universe</th><th class="n w-s" data-col="address">Address</th><th class="n w-xs" data-col="to">To</th><th class="n w-xs" data-col="channels">Ch</th><th></th></tr></thead>
+          <tbody>${lightRows}</tbody></table></div>
+        <p class="muted small" style="margin:8px 0 0">Change an address, universe or mode and you’re asked what to do if it overlaps another light. Lights added here that aren’t already on the job are added to it — and the prep list — when you save.</p>`
+        : '<p class="muted" style="margin:0">No lights on the patch yet. <b>+ Add lights</b> to choose them from your stock — set an item to <b>Lighting</b> and give it its channel modes, in Stock.</p>'}
+      ${P.lights_updated ? `<p class="muted small" style="margin:10px 0 0">Lighting patch last changed ${esc(fmtDate(P.lights_updated.at.slice(0, 10)))} ${esc(P.lights_updated.at.slice(11, 16))}${P.lights_updated.by ? ` by ${esc(P.lights_updated.by)}` : ''}.</p>` : ''}</div></div>`;
     const rfRows = P.rf.map((line) => line.units.map((u, i) => {
       const key = `${line.item_id}:${i}`;
       return `<tr class="${rc.has(key) ? 'clash' : ''}"><td data-col="item">${i === 0 ? `<strong>${esc(line.name)}</strong>${line.band ? `<span data-col="band"><br><span class="muted small">${esc(line.band)}</span></span>` : ''}` : ''}</td><td class="n muted" data-col="unit">#${i + 1}</td>
@@ -7493,17 +7657,13 @@ async function renderPatch(view, jid) {
     const scroll = $('.mx-wrap', view); const sx = scroll ? [scroll.scrollLeft, scroll.scrollTop] : null;
     view.innerHTML = `<div class="page patch-page">
       <style>${hiddenColsCSS('.patch-page')}</style>
-      <div class="page-head"><div><a class="crumb" href="/job/${job.id}">← ${esc(job.number)} ${esc(job.name)}</a><h1>Patch</h1>
+      <div class="page-head"><div><a class="crumb" href="/job/${job.id}">← ${esc(job.number)} ${esc(job.name)}</a><h1>${part === 'lighting' ? 'Lighting' : 'Audio'} patch</h1>
         <div class="sub">${esc(jobWhen(job))}${job.venue ? ' · ' + esc(job.venue) : ''}</div></div>
-        <div class="actions"><a class="btn" href="/print/${job.id}/patch">Print patch sheet</a>
+        <div class="actions"><span class="seg-tabs">${[['lighting', 'Lighting'], ['audio', 'Audio']].map(([k, l]) => `<button class="btn ${k === part ? 'primary' : ''}" data-part="${k}" ${k === part ? 'aria-current="page"' : ''}>${l}</button>`).join('')}</span>
+          <a class="btn" href="/print/${job.id}/${part}">Print ${part} sheet</a>
           <button class="btn primary" data-save ${dirty ? '' : 'disabled'}>${dirty ? 'Save changes' : 'Saved'}</button></div></div>
       <datalist id="patch-mics">${stock.map((x) => `<option value="${esc(x.name)}">${esc([x.brand, x.sku].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
-      <div class="card"><header><h2>Lighting — DMX addresses</h2><div class="actions">${P.dmx.length ? `${colsMenu('dmx')}<button class="btn small" data-auto-dmx>Auto-address</button>` : ''}</div></header><div class="body">
-        ${P.dmx.length ? `<p class="muted small" style="margin-top:0">Each unit’s universe and start address. Overlaps and units that run past 512 are flagged. <b>Auto-address</b> fills the empty ones in order, after any you’ve set.</p>
-          <div class="table-wrap"><table class="table patch-table" data-tbl="dmx"><thead><tr><th data-col="fixture">Fixture</th><th class="n" data-col="unit">Unit</th><th data-col="label">Label</th><th class="n w-s" data-col="universe">Universe</th><th class="n w-s" data-col="address">Address</th><th class="n w-xs" data-col="to">To</th><th></th></tr></thead>
-          <tbody>${dmxRows}</tbody></table></div>`
-          : '<p class="muted" style="margin:0">No DMX lighting on this job. Give a stock item a <b>DMX footprint</b> (on its page → Edit) and its lines appear here.</p>'}</div></div>
-      <div class="card"><header><h2>Radio frequencies</h2>${P.rf.length ? colsMenu('rf') : ''}</header><div class="body">
+      ${part === 'lighting' ? lightCard : `      <div class="card"><header><h2>Radio frequencies</h2>${P.rf.length ? colsMenu('rf') : ''}</header><div class="body">
         ${P.rf.length ? `<p class="muted small" style="margin-top:0">A frequency in MHz for each wireless unit. The same frequency twice, two closer than 300 kHz, or one outside the item’s band is flagged — check intermodulation with your manufacturer’s tools.</p>
           <div class="table-wrap"><table class="table patch-table" data-tbl="rf"><thead><tr><th data-col="item">Item</th><th class="n" data-col="unit">Unit</th><th data-col="label">Label</th><th class="n w-s" data-col="mhz">MHz</th><th></th></tr></thead><tbody>${rfRows}</tbody></table></div>`
           : '<p class="muted" style="margin:0">No wireless kit on this job. Tick <b>Wireless</b> on a stock item (on its page → Edit) and its lines appear here.</p>'}</div></div>
@@ -7514,7 +7674,7 @@ async function renderPatch(view, jid) {
         <p class="muted small" style="margin:8px 0 0">Pick a mic or DI from your stock (start typing its name) and it’s added to the job — and the prep list — when you save: as many as the patch uses beyond what’s already on the job.${used ? ` ${num(used)} line${used === 1 ? '' : 's'} use stock items.` : ''}</p></div></div>
       <div class="card"><header><h2>Audio outputs</h2>${colsMenu('outputs')}</header><div class="body">${audioTable('outputs', AUDIO_OUT)}
         ${P.audio_updated ? `<p class="muted small" style="margin:10px 0 0">Audio patch last changed ${esc(fmtDate(P.audio_updated.at.slice(0, 10)))} ${esc(P.audio_updated.at.slice(11, 16))}${P.audio_updated.by ? ` by ${esc(P.audio_updated.by)}` : ''}.</p>` : ''}</div></div>
-      ${mx}
+      ${mx}`}
     </div>`;
     const sc = sx && $('.mx-wrap', view); if (sc) [sc.scrollLeft, sc.scrollTop] = sx;
   };
@@ -7524,20 +7684,23 @@ async function renderPatch(view, jid) {
     if (b) b.disabled = true;
     try {
       const mics = P.audio.inputs.filter((r) => r.mic_pid).length;
-      P = await put(`/jobs/${jid}/patch`, {
-        dmx: P.dmx.map((l) => ({ item_id: l.item_id, footprint: l.footprint, units: l.units })),
-        rf: P.rf.map((l) => ({ item_id: l.item_id, units: l.units })),
-        audio: P.audio,
-      });
+      const extra = P.lights.length > (P.on_job || []).reduce((n, x) => n + Math.min(x.count, P.lights.filter((l) => l.product_id === x.product_id).length), 0);
+      P = await put(`/jobs/${jid}/patch`, part === 'lighting' ? { lights: P.lights }
+        : { rf: P.rf.map((l) => ({ item_id: l.item_id, units: l.units })), audio: P.audio });
       norm();
-      dirty = false; draw(); toast(mics ? 'Patch saved — mics and DIs from stock are on the job' : 'Patch saved', 'ok');
+      dirty = false; draw();
+      toast(part === 'lighting' ? (extra ? 'Patch saved — lights that weren’t on the job are on it now' : 'Patch saved')
+        : (mics ? 'Patch saved — mics and DIs from stock are on the job' : 'Patch saved'), 'ok');
     } catch (ex) { toast(ex.message, 'error'); if (b) b.disabled = false; }
   };
   view.oninput = (e) => {
     const t = e.target;
-    if (t.dataset.dmx) { const { line, i } = find(P.dmx, t.dataset.dmx); const v = t.value.trim(); line.units[i][t.dataset.k] = t.dataset.k === 'n' ? v : (v === '' ? null : Number(v)); markDirty(); }
+    if (t.dataset.lt !== undefined) {
+      const l = P.lights[Number(t.dataset.lt)], k = t.dataset.k, v = t.value.trim();
+      l[k] = k === 'n' ? v : k === 'mode' ? Number(v) || 0 : (v === '' ? null : Math.max(1, Math.round(Number(v)) || 1));
+      markDirty();
+    }
     else if (t.dataset.rf) { const { line, i } = find(P.rf, t.dataset.rf); line.units[i][t.dataset.k] = t.value.trim(); markDirty(); }
-    else if (t.dataset.fp) { const line = P.dmx.find((l) => String(l.item_id) === t.dataset.fp); line.footprint = Math.max(1, Number(t.value) || 1); markDirty(); }
     else if (t.dataset.au) {
       const [k, i] = t.dataset.au.split(':'); const r = P.audio[k][Number(i)];
       r[t.dataset.k] = t.value;
@@ -7582,7 +7745,14 @@ async function renderPatch(view, jid) {
       return;
     }
     if (t.dataset.rig === 'desk') { P.audio.desk = t.value ? Number(t.value) : null; markDirty(); draw(); return; }
-    if (t.dataset.dmx || t.dataset.rf || t.dataset.fp || t.dataset.au || t.dataset.anmap || t.dataset.box !== undefined || t.dataset.an !== undefined) {
+    if (t.dataset.lt !== undefined && t.dataset.k !== 'n') {
+      // a new address, universe or mode: if it now overlaps another light, ask what to do
+      const l = P.lights[Number(t.dataset.lt)];
+      if (!lightClashes(P).has(l.id)) { if (t.tagName === 'SELECT') redraw(); else stale = true; return; }
+      settleLight(P, l).then(() => { markDirty(); redraw(); });
+      return;
+    }
+    if (t.dataset.lt !== undefined || t.dataset.rf || t.dataset.au || t.dataset.anmap || t.dataset.box !== undefined || t.dataset.an !== undefined) {
       if (t.tagName === 'SELECT') { redraw(); return; }   // a choice from a list: nothing to click through
       if (t.dataset.k === 'mic') {   // the "from stock" tick, straight away
         const r = P.audio.inputs[Number(t.dataset.au.split(':')[1])];
@@ -7597,24 +7767,56 @@ async function renderPatch(view, jid) {
     const t = e.target;
     if (t.closest('.cols-menu')) return;
     if (t.closest('[data-save]')) { await save(); return; }
-    if (t.closest('[data-auto-dmx]')) {
-      // fill empty units in order, after the highest address already used in universe 1 (or the next universe)
-      const taken = {};
-      for (const l of P.dmx) l.units.forEach((u) => { if (u.a) (taken[u.u || 1] ||= []).push([Number(u.a), Number(u.a) + l.footprint - 1]); });
-      let uni = 1, next = 1;
-      const free = (a, fp) => !(taken[uni] || []).some(([f, t2]) => a <= t2 && f <= a + fp - 1);
-      for (const l of P.dmx) {
-        for (const u of l.units) {
-          if (u.a) continue;
-          while (next + l.footprint - 1 > DMX_SLOTS || !free(next, l.footprint)) {
-            if (next + l.footprint - 1 > DMX_SLOTS) { uni += 1; next = 1; } else next += 1;
-          }
-          u.u = uni; u.a = next;
-          (taken[uni] ||= []).push([next, next + l.footprint - 1]);
-          next += l.footprint;
+    const pt = t.closest('[data-part]');
+    if (pt) {
+      if (pt.dataset.part === part) return;
+      if (dirty && !(await confirmModal('You’ve changes that aren’t saved. Leave them?', { title: 'Not saved', okLabel: 'Leave without saving' }))) return;
+      dirty = false; go(`/patch/${jid}/${pt.dataset.part}`); return;
+    }
+    const la = t.closest('[data-lt-add]');
+    if (la) {   // add lights: the next free addresses in the universe, in order - and ask when they don't fit
+      const v = await addLightsModal(P, { product_id: Number(la.dataset.ltAdd) || null, count: Number(la.dataset.count) || 1 });
+      if (!v) return;
+      const pid = Number(v.product_id), mode = Number(v.mode) || 0, n = Math.min(500, Math.max(1, Math.round(Number(v.count)) || 1));
+      const fp = lightFp(P, { product_id: pid, mode });
+      let uni = Math.max(1, Math.round(Number(v.u)) || 1), from = Math.max(1, Math.round(Number(v.a)) || 1), noAddr = false;
+      const fresh = [];
+      for (let k = 0; k < n; k++) {
+        const l = { id: nextId('L', P.lights), product_id: pid, mode, u: uni, a: null, n: v.n.trim() ? `${v.n.trim()}${n > 1 ? ' ' + (k + 1) : ''}` : '' };
+        P.lights.push(l); fresh.push(l);
+        if (noAddr) continue;
+        let a = freeAddress(P, uni, fp, from, l);
+        if (a === null) {
+          const left = n - k, other = universeWithRoom(P, fp, uni, l);
+          const c = await choiceModal('No room in this universe', `Universe ${uni} has no room for ${left === n ? (n === 1 ? 'this light' : 'these lights') : `the last ${left} of these lights`} (${fp} channels each).`,
+            [['move', `Put ${left === 1 ? 'it' : 'them'} in universe ${other}`, true], ['none', 'Add without an address'], ['cancel', 'Cancel']]);
+          if (!c || c === 'cancel') { P.lights = P.lights.filter((x) => !fresh.includes(x)); return; }
+          if (c === 'none') { noAddr = true; continue; }
+          uni = other; l.u = uni; a = freeAddress(P, uni, fp, 1, l);
         }
+        l.a = a; from = a + fp;
       }
-      markDirty(); draw(); toast('Addresses filled in — check them, then Save', 'ok');
+      markDirty(); draw();
+      toast(`${plural(n, 'light')} added${fresh[0].a ? ` from ${dmxAt(fresh[0].u, fresh[0].a)}` : ''} — check them, then Save`, 'ok');
+      return;
+    }
+    const ld = t.closest('[data-lt-del]');
+    if (ld) { P.lights.splice(Number(ld.dataset.ltDel), 1); markDirty(); draw(); return; }
+    if (t.closest('[data-lt-sort]')) {
+      P.lights.sort((x, y) => (x.a ? 0 : 1) - (y.a ? 0 : 1) || (x.u || 1) - (y.u || 1) || (x.a || 0) - (y.a || 0));
+      markDirty(); draw(); return;
+    }
+    if (t.closest('[data-auto-dmx]')) {
+      // lights without an address get the next free one: in the universe of the light before them, or the next with room
+      let uni = 1, n = 0;
+      for (const l of P.lights) {
+        if (l.a) { uni = l.u || 1; continue; }
+        const fp = lightFp(P, l);
+        let a = freeAddress(P, l.u || uni, fp, 1, l);
+        if (a === null) { l.u = universeWithRoom(P, fp, l.u || uni, l); a = freeAddress(P, l.u, fp, 1, l); } else l.u = l.u || uni;
+        l.a = a; uni = l.u; n++;
+      }
+      if (n) { markDirty(); draw(); toast(`${plural(n, 'light')} given an address — check them, then Save`, 'ok'); } else toast('Every light already has an address');
       return;
     }
     const mv = t.closest('[data-mx-view]');
@@ -7702,22 +7904,33 @@ async function renderPatch(view, jid) {
   const stop = () => { window.removeEventListener('beforeunload', leave); window.removeEventListener('het:navigate', stop); };
   window.addEventListener('het:navigate', stop);
   draw();
-  document.title = `Patch ${job.number} - ${job.name}`;
+  document.title = `${part === 'lighting' ? 'Lighting' : 'Audio'} patch ${job.number} - ${job.name}`;
+}
+
+function lightingDocBody(P) {
+  if (!P) return '';
+  P.lights ||= [];
+  const set = P.lights.filter((l) => l.a).sort((x, y) => (x.u || 1) - (y.u || 1) || x.a - y.a), unset = P.lights.filter((l) => !l.a);
+  if (!P.lights.length) return '<div class="doc-block"><p>No lights patched yet. Open the job and choose <strong>Lighting patch</strong>.</p></div>';
+  const td = (k, v) => `<td data-col="${k}">${v}</td>`;
+  const cols = [['universe', 'Universe'], ['address', 'Address'], ['fixture', 'Light'], ['mode', 'Mode'], ['label', 'Label'], ['channels', 'Channels']];
+  const modeOf = (l) => { const m = lightFx(P, l).modes; return (m[l.mode] || m[0] || {}).name || ''; };
+  return `<style>${hiddenColsCSS('.sheet')}</style>
+    <div class="doc-block"><h3>DMX</h3><table class="doc-table" data-tbl="dmx"><thead><tr>${cols.map(([k, l]) => `<th data-col="${k}">${l}</th>`).join('')}</tr></thead><tbody>
+      ${set.map((l) => { const fp = lightFp(P, l); return `<tr>${td('universe', num(l.u || 1))}${td('address', `<strong>${String(l.a).padStart(3, '0')}</strong>–${String(Number(l.a) + fp - 1).padStart(3, '0')}`)}${td('fixture', esc(lightFx(P, l).name))}${td('mode', esc(modeOf(l)))}${td('label', esc(l.n || ''))}${td('channels', num(fp))}</tr>`; }).join('')}
+    </tbody></table>${unset.length ? `<p class="small">Not addressed yet: ${unset.map((l) => esc(lightLabel(P, l))).join(', ')}</p>` : ''}</div>`;
 }
 
 function patchDocBody(P) {
   if (!P) return '';
   const a = P.audio || {};
-  const dmx = P.dmx.filter((l) => l.units.some((u) => u.a));
   const rf = P.rf.filter((l) => l.units.some((u) => u.f));
   const ins = a.inputs || [], outs = a.outputs || [];
-  if (!dmx.length && !rf.length && !ins.length && !outs.length) {
-    return '<div class="doc-block"><p>Nothing patched yet. Open the job and choose <strong>Patch</strong> to add DMX addresses, frequencies and audio lines.</p></div>';
+  if (!rf.length && !ins.length && !outs.length) {
+    return '<div class="doc-block"><p>Nothing patched yet. Open the job and choose <strong>Audio patch</strong> to add frequencies and audio lines.</p></div>';
   }
   const rig = audioRig({ ...P, audio: { inputs: [], outputs: [], boxes: [], analogue: [], ...a } });
   settleAnalogue(ins, rig); settleAnalogue(outs, rig);
-  const rowsDmx = dmx.flatMap((l) => l.units.map((u, i) => (u.a ? { l, u, i } : null)).filter(Boolean))
-    .sort((x, y) => (x.u.u || 1) - (y.u.u || 1) || x.u.a - y.u.a);
   const rowsRf = rf.flatMap((l) => l.units.map((u, i) => (u.f ? { l, u, i } : null)).filter(Boolean)).sort((x, y) => Number(x.u.f) - Number(y.u.f));
   // the same columns as chosen on the patch page
   const tbl = (key, cols, body) => `<table class="doc-table" data-tbl="${key}"><thead><tr>${cols.map(([k, l]) => `<th data-col="${k}">${l}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
@@ -7733,8 +7946,6 @@ function patchDocBody(P) {
       return `Analogue: <strong>${esc(x.label || x.name)}</strong>${x.label ? ` (${esc(x.name)})` : ''} — ${[x.ins && `${num(x.ins)} in`, x.outs && `${num(x.outs)} out`].filter(Boolean).join(', ')}${plugs.length ? `<br><span class="small">${plugs.join(' · ')}</span>` : ''}`;
     })].filter(Boolean);
   return `<style>${hiddenColsCSS('.sheet')}</style>
-    ${rowsDmx.length ? `<div class="doc-block"><h3>DMX</h3>${tbl('dmx', [['universe', 'Universe'], ['address', 'Address'], ['fixture', 'Fixture'], ['unit', 'Unit'], ['label', 'Label'], ['to', 'Channels']],
-      rowsDmx.map(({ l, u, i }) => `<tr>${td('universe', num(u.u || 1))}${td('address', `<strong>${String(u.a).padStart(3, '0')}</strong>–${String(Number(u.a) + l.footprint - 1).padStart(3, '0')}`)}${td('fixture', esc(l.name))}${td('unit', '#' + (i + 1))}${td('label', esc(u.n || ''))}${td('to', num(l.footprint))}</tr>`).join(''))}</div>` : ''}
     ${rowsRf.length ? `<div class="doc-block"><h3>Radio frequencies</h3>${tbl('rf', [['mhz', 'MHz'], ['item', 'Item'], ['unit', 'Unit'], ['label', 'Label'], ['band', 'Band']],
       rowsRf.map(({ l, u, i }) => `<tr>${td('mhz', `<strong>${esc(u.f)}</strong>`)}${td('item', esc(l.name))}${td('unit', '#' + (i + 1))}${td('label', esc(u.n || ''))}${td('band', esc(l.band || ''))}</tr>`).join(''))}</div>` : ''}
     ${setup.length ? `<div class="doc-block"><h3>Audio setup</h3><p>${setup.join('<br>')}</p></div>` : ''}
@@ -7808,7 +8019,8 @@ Hire period: ${plural(job.hire_days || daysBetween(job.start_date, job.end_date)
 
   if (doc === 'plan') return head + planDocBody(planData);
   if (doc === 'terms') return head + termsDocBody(job, s);
-  if (doc === 'patch') return head + patchDocBody(planData);
+  if (doc === 'lighting') return head + lightingDocBody(planData);
+  if (doc === 'audio') return head + patchDocBody(planData);
   if (doc === 'picklist') {
     const items = job.items.filter((i) => i.kind !== 'service');
     const ids = new Set(items.map((i) => i.id));

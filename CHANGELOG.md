@@ -2,6 +2,18 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.36.0 — 2026-11-18 · Separate lighting and audio patches, DMX channel modes and a list of every barcode
+
+- Lighting and audio now have a patch each, with their own sheet to print: Documents → Lighting patch / Audio patch.
+- In Stock, say whether an item is audio, lighting or neither, and only the fields for it are shown. Lighting gets a DMX channel modes card (e.g. Standard 16 ch, Extended 24 ch); audio keeps radio frequencies and Inputs & outputs.
+- Add lights to the lighting patch: choose the light, how many, its mode and the universe, and they're given the next free addresses in order. If the universe is full you're asked whether to move the rest to another.
+- Change a light's address, universe or mode and, if it overlaps another, you're asked whether to use the next free address or move it to another universe.
+- Each light has its own channel mode on the patch, for fixtures with more than one.
+- Lights added to the patch go on the job, and so the prep list, unless the job already has them.
+- Stock → More → Every barcode in use: every barcode in the system and what it's on.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.35.1 — 2026-11-16 · Choosing an analogue box keeps the input you've picked
 
 - Choosing an analogue box channel for a line that already has an input (or output) no longer changes it: the box channel is plugged into what's already selected. The same goes for the routing matrix.

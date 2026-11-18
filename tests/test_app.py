@@ -1187,36 +1187,62 @@ class TestInvoicingAndZoho(ServerCase):
 
 
 class TestPatch(ServerCase):
-    def test_dmx_frequencies_and_audio(self):
-        _, light = self.c.post("/products", {"name": "Wash Light", "sku": "LX-T-WASH", "quantity": 8, "dmx_channels": 16})
-        _, mic = self.c.post("/products", {"name": "Radio Mic", "sku": "RF-T-MIC", "quantity": 4, "wireless": 1,
-                                           "rf_band": "G50 470–534 MHz"})
+    def test_lights_frequencies_and_audio(self):
+        c = self.c
+        _, light = c.post("/products", {"name": "Wash Light", "sku": "LX-T-WASH", "quantity": 8, "patch_kind": "lighting",
+                                        "dmx_modes": [{"name": "Standard", "channels": 16}, {"name": "Extended", "channels": 24}]})
+        self.assertEqual((light["patch_kind"], light["dmx_channels"]), ("lighting", 16))   # the first mode is its footprint
+        self.assertEqual(c.put(f"/products/{light['id']}", {"dmx_modes": [{"name": "Huge", "channels": 600}]})[0], 400)
+        _, spot = c.post("/products", {"name": "Spot", "sku": "LX-T-SPOT", "quantity": 4, "dmx_channels": 12})   # an older light: no modes
+        _, mic = c.post("/products", {"name": "Radio Mic", "sku": "RF-T-MIC", "quantity": 4, "wireless": 1, "patch_kind": "audio",
+                                      "rf_band": "G50 470–534 MHz"})
         job = self.new_job()
-        self.c.post(f"/jobs/{job['id']}/items", {"product_id": light["id"], "quantity": 3})
-        job = self.c.post(f"/jobs/{job['id']}/items", {"product_id": mic["id"], "quantity": 2})[1]
-        status, p = self.c.get(f"/jobs/{job['id']}/patch")
+        c.post(f"/jobs/{job['id']}/items", {"product_id": light["id"], "quantity": 2})
+        job = c.post(f"/jobs/{job['id']}/items", {"product_id": mic["id"], "quantity": 2})[1]
+        status, p = c.get(f"/jobs/{job['id']}/patch")
         self.assertEqual(status, 200, p)
-        self.assertEqual([(l["name"], l["footprint"], len(l["units"])) for l in p["dmx"]], [("Wash Light", 16, 3)])
+        fx = {f["id"]: f for f in p["fixtures"]}
+        self.assertEqual([m["channels"] for m in fx[light["id"]]["modes"]], [16, 24])
+        self.assertEqual(fx[spot["id"]]["modes"], [{"name": "12 ch", "channels": 12}])
+        self.assertEqual(len(p["lights"]), 2)                          # what's on the job, before anything is saved
+        self.assertEqual(p["on_job"], [{"product_id": light["id"], "name": "Wash Light", "count": 2}])
         self.assertEqual(p["rf"][0]["range"], [470.0, 534.0])
-        li, ri = p["dmx"][0]["item_id"], p["rf"][0]["item_id"]
-        status, p = self.c.put(f"/jobs/{job['id']}/patch", {
-            "dmx": [{"item_id": li, "footprint": 16, "units": [{"u": 1, "a": 1, "n": "FOH 1"}, {"u": 1, "a": 17}, {"u": 2, "a": 1}]}],
+        ri = p["rf"][0]["item_id"]
+        lights = [{"id": "L1", "product_id": light["id"], "mode": 0, "u": 1, "a": 1, "n": "FOH 1"},
+                  {"id": "L2", "product_id": light["id"], "mode": 1, "u": 1, "a": 17},
+                  {"id": "L3", "product_id": light["id"], "mode": 0, "u": 2, "a": 1},
+                  {"id": "L4", "product_id": spot["id"], "u": 2, "a": 17}]
+        status, p = c.put(f"/jobs/{job['id']}/patch", {
+            "lights": lights,
             "rf": [{"item_id": ri, "units": [{"f": "606.5", "n": "Presenter"}, {"f": ""}]}],
             "audio": {"inputs": [{"ch": "1", "source": "Kick", "mic": "Beta 91", "phantom": "Y"}, {"ch": "", "source": ""}],
                       "outputs": [{"out": "1", "dest": "Wedge 1"}]}})
         self.assertEqual(status, 200, p)
-        self.assertEqual([(u["u"], u["a"]) for u in p["dmx"][0]["units"]], [(1, 1), (1, 17), (2, 1)])
+        self.assertEqual([(x["u"], x["a"], x["mode"]) for x in p["lights"]], [(1, 1, 0), (1, 17, 1), (2, 1, 0), (2, 17, 0)])
+        self.assertEqual(p["lights"][0]["n"], "FOH 1")
         self.assertEqual(p["rf"][0]["units"][0]["f"], "606.500")
         self.assertEqual(len(p["audio"]["inputs"]), 1)                 # empty lines are dropped
         self.assertEqual(p["audio"]["outputs"][0]["dest"], "Wedge 1")
-        # the job's lines carry it, for the chips on the job page
-        line = next(i for i in self.c.get(f"/jobs/{job['id']}")[1]["items"] if i["id"] == li)
-        self.assertEqual(json.loads(line["patch"])["dmx"][0]["n"], "FOH 1")
-        for bad in ({"dmx": [{"item_id": li, "footprint": 16, "units": [{"u": 1, "a": 500}]}]},   # runs past 512
-                    {"dmx": [{"item_id": li, "footprint": 16, "units": [{"u": 1, "a": 0}]}]},
-                    {"rf": [{"item_id": ri, "units": [{"f": "loud"}]}]},
-                    {"dmx": [{"item_id": 999999, "units": []}]}):
-            self.assertEqual(self.c.put(f"/jobs/{job['id']}/patch", bad)[0], 400, bad)
+        # lights the job didn't have go on it (and so the prep list), on lines that follow the patch
+        def patch_lines():
+            return {it["product_id"]: it["quantity"] for it in c.get(f"/jobs/{job['id']}")[1]["items"]
+                    if json.loads(it.get("meta") or "{}").get("role") == "patch-light"}
+        self.assertEqual(patch_lines(), {light["id"]: 1, spot["id"]: 1})
+        c.put(f"/jobs/{job['id']}/patch", {"lights": lights[:2]})
+        self.assertEqual(patch_lines(), {})
+        for bad in ({"lights": [{"product_id": light["id"], "mode": 1, "u": 1, "a": 500}]},   # 24 channels from 500 runs past 512
+                    {"lights": [{"product_id": light["id"], "u": 1, "a": 0}]},
+                    {"lights": [{"product_id": 999999}]},
+                    {"rf": [{"item_id": ri, "units": [{"f": "loud"}]}]}):
+            self.assertEqual(c.put(f"/jobs/{job['id']}/patch", bad)[0], 400, bad)
+
+    def test_barcodes_list(self):
+        c = self.c
+        _, p = c.post("/products", {"name": "Barcode Speaker", "sku": "BC-SPK", "quantity": 0})
+        c.post(f"/products/{p['id']}/assets", {"asset_number": "BC-SPK-001"})
+        codes = {x["code"]: x for x in c.get("/barcodes/all")[1]}
+        self.assertEqual((codes["BC-SPK"]["kind"], codes["BC-SPK"]["product_id"]), ("item", p["id"]))
+        self.assertEqual((codes["BC-SPK-001"]["kind"], codes["BC-SPK-001"]["name"]), ("unit", "Barcode Speaker"))
 
 
 class TestAudioPatch(ServerCase):
