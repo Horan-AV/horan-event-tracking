@@ -236,6 +236,8 @@ The prep list keeps its own layout.
 ## Barcode labels
 
 **Print barcodes** is on every item's page, and on the Stock page (under **More**) for everything in the current list (filter by category, brand or search first).
+
+**Every barcode in use** (Stock → **More**) lists every barcode the system knows — each unit's, each item's own code, and the code that closes a flight case — with what it's on. Search it by code or item.
 - **What prints:** a label for each unit's own barcode, and the item code for items counted by quantity, as many copies as you like.
 - **Label stock:** A4 sheets (65, 24, 21 or 14 per page, e.g. Avery L7651, L7159, L7160, L7163) or label printer rolls (62 × 29, 57 × 32 or 50 × 25 mm).
 - **Part-used sheets:** skip the labels already used.
@@ -639,11 +641,18 @@ A client can have their own job number prefix and count. Edit the client and fil
 
 On a job, **Documents → Terms of hire** prints your terms for that job, with the client's name, the job's name, number, dates (and times) and venue filled in, and lines for both sides to sign. Write your terms once in **Settings → Company information → Documents → Terms of hire sheet**; these are filled in for each job: `{client}` `{company}` `{contact}` `{job_name}` `{job_number}` `{dates}` `{start}` `{end}` `{venue}` `{reference}` `{your_company}` `{today}`. The app comes with a short example — have your own terms checked by an adviser.
 
-## Patch: DMX addresses, radio frequencies and audio lines
+## Patch: lighting and audio
 
-On a job, **Documents → Patch** (or the **DMX** / **RF** tag on a line) opens the job's patch:
-- **Lighting:** every unit of each DMX fixture gets a universe, a start address and a label. Give the stock item its **DMX footprint** (channels in its usual mode) first; you can change the footprint for one job if a fixture runs in another mode. **Auto-address** fills the empty ones in order, moving to the next universe when one is full. Overlaps, and units that would run past 512, are flagged.
-- **Radio frequencies:** tick **Wireless** on radio mics, in-ears and transmitters in Stock (and add their **Radio band**, e.g. `K51 606–670 MHz`). Each unit gets a frequency in MHz and a label. The same frequency twice, two closer than 300 kHz, or one outside the band is flagged. It doesn't work out intermodulation — use your manufacturer's tools for that.
+A job has two patches, each with its own sheet to print: **Documents → Lighting patch** and **Documents → Audio patch** (or the **DMX** / **RF** tag on a line). The **Lighting / Audio** buttons at the top switch between them.
+
+**In Stock**, say whether an item is **audio, lighting or neither** (Edit → *Is it audio or lighting?*). Only what matters for it is shown: audio has *Wireless* and *Radio band*, and a desk or stage box its **Inputs & outputs** card; lighting has its **DMX channel modes** card on its page — each mode's name and how many channels it uses (e.g. Standard 16, Extended 24). The first mode is the one a light gets when it's added to a patch.
+
+**The lighting patch:**
+- **+ Add lights:** choose the light, how many, its channel mode, the universe and (if you like) the address to start from, and a label (e.g. "Wash" numbers them Wash 1, Wash 2…). They're given the next free addresses in that universe, in order, each taking its mode's channels. If the universe runs out of room you're asked whether to put the rest in the next universe with room, add them without an address, or cancel.
+- **Change anything:** type a different universe or address, or change a light's **Mode** (each light has its own, if the fixture has more than one). If that makes it overlap another light — or run past 512 — you're asked whether to use the next free address, move it to another universe, or keep it there (it's then flagged).
+- **On the prep list:** lights you add that aren't already on the job are added to it when you save, on a line marked **from the lighting patch** that follows the patch. Lights already on the job show on the patch by themselves; if more are added to the job later, the patch offers to **Patch** them.
+- **Auto-address** gives every light without an address the next free one; **Sort by address** puts the list in order.
+- **Radio frequencies (audio patch):** tick **Wireless** on radio mics, in-ears and transmitters in Stock (and add their **Radio band**, e.g. `K51 606–670 MHz`). Each unit gets a frequency in MHz and a label. The same frequency twice, two closer than 300 kHz, or one outside the band is flagged. It doesn't work out intermodulation — use your manufacturer's tools for that.
 - **Audio inputs and outputs:** a list of channels with the source, scribble strip, mic/DI, stand, analogue box, input, 48V and notes, and the outputs and where they go. **+ Add 8** adds eight channels at a time, numbered on from the last.
   - **Mics and DIs from stock:** start typing in **Mic / DI** and pick from your stock (a ✓ shows it's a stock item). When you save, they go on the job — and so the prep list — as many as the patch uses beyond what's already on the job, on a line marked **from the audio patch** that follows the patch as you change it. They're charged at the item's day rate; change the price on the line if you like.
   - **The desk and stage boxes:** give them **Inputs & outputs** in Stock (see below), add them to the job, then choose them under **Audio — desk & stage boxes**. Each input then has a list of physical inputs — e.g. Ch 1 = Local 1, Ch 2 = SB1 In 2 — and each output a list of the desk's outputs (Main L/R, Aux, Group, Matrix, FX) and its physical outputs. **Patch in order** gives every line without an input the next free one. An input used twice is flagged, as is having more inputs than the desk has channels.
@@ -653,7 +662,7 @@ On a job, **Documents → Patch** (or the **DMX** / **RF** tag on a line) opens 
   - **Columns:** each table has a **Columns** menu to hide what you don't need. It's remembered for you on that device, and the printed patch sheet leaves the same columns out.
 
 **Inputs & outputs (Stock).** On a mixing desk's or stage box's page, the **Inputs & outputs** card says what it is and lists its sockets: in or out, a name (e.g. "Local", or "In" on a stage box), the type (XLR, stereo line, AES…) and how many. A desk also has its number of input channels, how many characters its scribble strips show, and its number of Aux, Group, Matrix and FX outputs (plus Main L/R). **Start from** fills in a preset — Allen & Heath SQ-5, AR2412 or AB168 — to check against the manual and adjust.
-- **Print patch sheet** prints it all, sorted by universe and address, and by frequency. The lines on the job show what's set, e.g. **DMX 1.001…** or **RF · 2 to set**.
+- **Print lighting sheet** / **Print audio sheet** prints that patch: lights sorted by universe and address, with their mode; frequencies in order; and the audio setup, inputs and outputs.
 
 ## Calendar feed
 
@@ -881,4 +890,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.35.1 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.36.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)

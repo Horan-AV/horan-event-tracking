@@ -1064,3 +1064,12 @@ tr.foldable:hover td { background: color-mix(in srgb, var(--brand) 6%, var(--sur
 .patch-table[data-tbl="inputs"] .w-m { width: 170px; }
 .rig-row.an-row > input[data-k="name"], .rig-row.an-row > input[data-k="label"] { flex: 1 1 160px; }
 .patch-table select.via { font-style: normal; }
+
+/* lighting / audio patch tabs, and choice dialogs */
+.seg-tabs { display: inline-flex; }
+.seg-tabs .btn { border-radius: 0; }
+.seg-tabs .btn:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+.seg-tabs .btn:last-child { border-radius: 0 var(--radius) var(--radius) 0; margin-left: -1px; }
+.choice-foot { flex-wrap: wrap; gap: 8px; }
+.mono { font-family: var(--mono); }
+.filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

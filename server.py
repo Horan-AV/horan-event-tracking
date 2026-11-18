@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.35.1"
+VERSION = "1.36.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -225,6 +225,12 @@ CREATE TABLE IF NOT EXISTS package_excludes (
     PRIMARY KEY (package_item_id, product_id)
 );
 CREATE TABLE IF NOT EXISTS job_audio_patch (
+    job_id     INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    data       TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS job_light_patch (
     job_id     INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
     data       TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -573,7 +579,51 @@ PRODUCT_SPEC = {
     "inner_w": float_or_none, "inner_d": float_or_none, "inner_h": float_or_none, "case_for_id": int_or_none,
     "dmx_channels": as_int, "wireless": bool_int, "rf_band": as_str,
     "console": lambda v, f: console_field(v),
+    "patch_kind": lambda v, f: v if v in ("audio", "lighting") else "",
+    "dmx_modes": lambda v, f: dmx_modes_field(v),
 }
+
+
+def dmx_modes_field(v):
+    """A light's DMX channel modes, e.g. [{name: "Standard", channels: 16}, {name: "Extended", channels: 24}] (JSON)."""
+    if not v:
+        return ""
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except ValueError:
+            raise ApiError(400, "That isn't a list of channel modes")
+    if not isinstance(v, list) or len(v) > 32:
+        raise ApiError(400, "Up to 32 channel modes")
+    out = []
+    for x in v:
+        if not isinstance(x, dict):
+            continue
+        n = as_int(x.get("channels") or 0, "channels")
+        if not n:
+            continue
+        if not 1 <= n <= DMX_SLOTS:
+            raise ApiError(400, f"A channel mode uses 1 to {DMX_SLOTS} channels")
+        out.append({"name": as_str(x.get("name"), "mode name")[:40] or f"{n} ch", "channels": n})
+    return json.dumps(out) if out else ""
+
+
+def product_modes(p):
+    """A light's channel modes; one made from its DMX footprint if it has none of its own."""
+    try:
+        m = json.loads(p.get("dmx_modes") or "[]")
+    except ValueError:
+        m = []
+    m = [x for x in m if isinstance(x, dict) and (x.get("channels") or 0) > 0] if isinstance(m, list) else []
+    if not m and (p.get("dmx_channels") or 0) > 0:
+        m = [{"name": f"{p['dmx_channels']} ch", "channels": p["dmx_channels"]}]
+    return m
+
+
+def modes_footprint(data):
+    """Its first channel mode is a light's footprint (for anything that only knows one)."""
+    if data.get("dmx_modes"):
+        data["dmx_channels"] = json.loads(data["dmx_modes"])[0]["channels"]
 CONSOLE_PORT_TYPES = ("XLR", "TRS jack", "Stereo line", "AES", "ADAT", "Dante", "MADI", "Link (e.g. SLink)", "Headphones", "Other")
 CONSOLE_BUSES = ("main", "aux", "group", "matrix", "fx")
 
@@ -883,7 +933,7 @@ def load_items(conn, job_ids):
                        p.quantity AS product_quantity, p.weight_kg AS product_weight, p.brand AS product_brand,
                        p.sku AS product_sku, p.sub_hire AS product_sub_hire, p.vendor_id AS product_vendor_id,
                        v.name AS vendor_name, p.sub_hire_cost AS product_sub_hire_cost,
-                       p.dmx_channels AS product_dmx_channels, p.wireless AS product_wireless, p.rf_band AS product_rf_band,
+                       p.dmx_channels AS product_dmx_channels, p.dmx_modes AS product_dmx_modes, p.wireless AS product_wireless, p.rf_band AS product_rf_band,
                        p.console AS product_console,
                        COALESCE(sv.name, CASE WHEN ji.sub_vendor_id IS NULL THEN v.name END) AS sub_vendor_name
                 FROM job_items ji LEFT JOIN products p ON p.id = ji.product_id
@@ -4385,6 +4435,7 @@ def sync_cable(conn, parent_id):
 def api_products_post(req, conn):
     body = req.json() or {}
     data = clean(body, PRODUCT_SPEC)
+    modes_footprint(data)
     data.setdefault("item_type", "equipment")
     apply_power_input(conn, body, data)
     tidy_for_type(data, data["item_type"])
@@ -4917,20 +4968,39 @@ def rf_band_range(band):
     return (min(a, b), max(a, b)) if a != b else None
 
 
+def job_lights(conn, job):
+    """The lighting patch: one entry per light - {id, product_id, mode (which of its channel modes), u, a, n}."""
+    row = one(conn.execute("SELECT * FROM job_light_patch WHERE job_id = ?", (job["id"],)))
+    if row:
+        try:
+            lights = json.loads(row["data"]).get("lights") or []
+        except (ValueError, AttributeError):
+            lights = []
+        return lights, row
+    # before 1.36 addresses were kept on each job line
+    lights = []
+    for it in job["items"]:
+        if it["kind"] != "rental" or not it.get("product_id") or (it.get("product_dmx_channels") or 0) <= 0:
+            continue
+        p, qty = item_patch(it), max(0, int(round(it["quantity"] or 0)))
+        modes = product_modes({"dmx_modes": it.get("product_dmx_modes"), "dmx_channels": it["product_dmx_channels"]})
+        mi = next((i for i, m in enumerate(modes) if m["channels"] == p.get("fp")), 0)
+        units = p.get("dmx") or []
+        for i in range(qty):
+            u = units[i] if i < len(units) and isinstance(units[i], dict) else {}
+            lights.append({"id": f"L{len(lights) + 1}", "product_id": it["product_id"], "mode": mi,
+                           "u": u.get("u"), "a": u.get("a"), "n": u.get("n") or ""})
+    return lights, None
+
+
 def job_patch(conn, jid):
     job = job_detail(conn, jid)
-    dmx, rf = [], []
+    rf = []
     for it in job["items"]:
         if it["kind"] != "rental" or not it.get("product_id"):
             continue
         p = item_patch(it)
         qty = max(0, int(round(it["quantity"] or 0)))
-        if (it.get("product_dmx_channels") or 0) > 0:
-            units = (p.get("dmx") or [])[:qty]
-            units += [{"u": None, "a": None, "n": ""} for _ in range(qty - len(units))]
-            dmx.append({"item_id": it["id"], "name": it["description"] or it["product_name"], "quantity": qty,
-                        "footprint": int(p.get("fp") or it["product_dmx_channels"]),
-                        "product_footprint": it["product_dmx_channels"], "units": units})
         if it.get("product_wireless"):
             units = (p.get("rf") or [])[:qty]
             units += [{"f": "", "n": ""} for _ in range(qty - len(units))]
@@ -4955,9 +5025,25 @@ def job_patch(conn, jid):
         if con and it["kind"] == "rental":
             consoles.append({"item_id": it["id"], "product_id": it["product_id"], "name": it["description"] or it["product_name"],
                              "quantity": max(1, int(round(it["quantity"] or 1))), "console": con})
+    # lights: what's patched, the lights in stock (with their channel modes), and lights on the job not patched yet
+    lights, lrow = job_lights(conn, job)
+    used = {x.get("product_id") for x in lights}
+    fixtures = [{"id": r["id"], "name": r["name"], "brand": r["brand"] or "", "modes": product_modes(dict(r))}
+                for r in conn.execute("SELECT id, name, brand, dmx_modes, dmx_channels, archived, patch_kind FROM products "
+                                      "WHERE item_type = 'equipment' AND parent_id IS NULL ORDER BY name COLLATE NOCASE")
+                if r["id"] in used or (not r["archived"] and (r["patch_kind"] == "lighting" or (r["dmx_channels"] or 0) > 0))]
+    from collections import Counter
+    on_job = Counter()
+    for it in job["items"]:
+        if it["kind"] == "rental" and it.get("product_id") and (it.get("product_dmx_channels") or 0) > 0 \
+                and (json.loads(it.get("meta") or "{}") if (it.get("meta") or "").startswith("{") else {}).get("role") != "patch-light":
+            on_job[it["product_id"]] += int(round(it["quantity"] or 0))
+    names = {f["id"]: f["name"] for f in fixtures}
+    on_job = [{"product_id": pid, "name": names[pid], "count": n} for pid, n in on_job.items() if pid in names]
     return {"job": {k: job[k] for k in ("id", "number", "name", "start_date", "end_date", "start_time", "end_time", "venue")},
-            "dmx": dmx, "rf": rf, "audio": audio, "consoles": consoles,
-            "audio_updated": row and {"at": row["updated_at"], "by": row["updated_by"]}}
+            "rf": rf, "audio": audio, "consoles": consoles, "lights": lights, "fixtures": fixtures, "on_job": on_job,
+            "audio_updated": row and {"at": row["updated_at"], "by": row["updated_by"]},
+            "lights_updated": lrow and {"at": lrow["updated_at"], "by": lrow["updated_by"]}}
 
 
 @route("GET", r"/api/jobs/(\d+)/patch")
@@ -5038,19 +5124,18 @@ def _clean_audio_setup(a, items):
     return {"desk": desk, "boxes": boxes, "analogue": analogue}
 
 
-def sync_patch_mics(conn, jid, inputs):
-    """Mics and DIs chosen from stock in the audio patch go on the job (and so the prep list): as many as the patch
-    uses beyond what the job already has, on a line of their own that follows the patch."""
+def sync_patch_lines(conn, jid, want, role):
+    """Stock used by a patch (mics and DIs in the audio patch, lights in the lighting patch) goes on the job, and so the
+    prep list: as many as the patch uses beyond what the job already has, on a line of its own that follows the patch."""
     from collections import Counter
-    want = Counter(r["mic_pid"] for r in inputs if r.get("mic_pid"))
     normal, mine = Counter(), {}
     for it in rows(conn.execute("SELECT id, product_id, quantity, meta FROM job_items WHERE job_id = ? AND kind = 'rental' "
                                 "AND product_id IS NOT NULL", (jid,))):
         try:
-            role = (json.loads(it["meta"]) if it["meta"] else {}).get("role")
+            r_ = (json.loads(it["meta"]) if it["meta"] else {}).get("role")
         except ValueError:
-            role = None
-        if role == "patch-mic":
+            r_ = None
+        if r_ == role:
             mine[it["product_id"]] = it
         else:
             normal[it["product_id"]] += it["quantity"] or 0
@@ -5066,7 +5151,7 @@ def sync_patch_mics(conn, jid, inputs):
             sort = (conn.execute("SELECT COALESCE(MAX(sort), 0) FROM job_items WHERE job_id = ?", (jid,)).fetchone()[0] or 0) + 1
             new = insert(conn, "job_items", {"job_id": jid, "product_id": pid, "kind": "rental", "description": p["name"],
                                              "quantity": need, "unit_price": p["day_rate"], "sort": sort,
-                                             "meta": json.dumps({"role": "patch-mic"})})
+                                             "meta": json.dumps({"role": role})})
             add_accessories(conn, new)
         elif line:
             conn.execute("DELETE FROM job_items WHERE id = ? OR parent_item_id = ?", (line["id"], line["id"]))
@@ -5088,28 +5173,38 @@ def api_patch_put(req, conn, jid):
         except (TypeError, ValueError, KeyError):
             raise ApiError(400, "That line isn't on this job any more — reload the page")
         return it
-    for x in d.get("dmx") or []:
-        it = line(x)
-        fp = as_int(x.get("footprint") or 0, "footprint")
-        if not 0 <= fp <= DMX_SLOTS:
-            raise ApiError(400, f"A DMX footprint is 1 to {DMX_SLOTS} channels")
-        units = []
-        for i, u in enumerate((x.get("units") or [])[:1000]):
-            uni = int_or_none(u.get("u"), "universe")
-            addr = int_or_none(u.get("a"), "address")
+    if isinstance(d.get("lights"), list):
+        prods = {r["id"]: dict(r) for r in conn.execute("SELECT id, name, dmx_modes, dmx_channels FROM products")}
+        out, seen = [], set()
+        for i, x in enumerate(d["lights"][:2000]):
+            if not isinstance(x, dict):
+                continue
+            pid = int_or_none(x.get("product_id"), "light")
+            if pid not in prods:
+                raise ApiError(400, "A light on the patch isn't in your stock any more — reload the page")
+            modes = product_modes(prods[pid])
+            mi = int_or_none(x.get("mode"), "mode") or 0
+            mi = mi if 0 <= mi < len(modes) else 0
+            fp = modes[mi]["channels"] if modes else 1
+            uni, addr = int_or_none(x.get("u"), "universe"), int_or_none(x.get("a"), "address")
             if uni is not None and not 1 <= uni <= 32768:
                 raise ApiError(400, "A DMX universe is 1 or more")
             if addr is not None and not 1 <= addr <= DMX_SLOTS:
                 raise ApiError(400, f"A DMX address is 1 to {DMX_SLOTS}")
-            if addr is not None and fp and addr + fp - 1 > DMX_SLOTS:
-                raise ApiError(400, f"{it['description']} #{i + 1} at {addr} needs {fp} channels, past {DMX_SLOTS}. "
+            label = str(x.get("n") or "").strip()[:60]
+            if addr is not None and addr + fp - 1 > DMX_SLOTS:
+                raise ApiError(400, f"{label or prods[pid]['name']} at {addr} needs {fp} channels, past {DMX_SLOTS}. "
                                     "Give it a lower address or the next universe.")
-            units.append({"u": uni, "a": addr, "n": str(u.get("n") or "").strip()[:60]})
-        p = item_patch(it)
-        p["dmx"] = units
-        p["fp"] = fp or None
-        conn.execute("UPDATE job_items SET patch = ? WHERE id = ?", (json.dumps(p), it["id"]))
-        it["patch"] = json.dumps(p)
+            lid = str(x.get("id") or "")
+            if not re.match(r"^L\d{1,6}$", lid) or lid in seen:
+                lid = next(f"L{k}" for k in range(len(out) + 1, 10 ** 6) if f"L{k}" not in seen)
+            seen.add(lid)
+            out.append({"id": lid, "product_id": pid, "mode": mi, "u": uni, "a": addr, "n": label})
+        from collections import Counter
+        sync_patch_lines(conn, jid, Counter(x["product_id"] for x in out), "patch-light")
+        conn.execute("INSERT INTO job_light_patch(job_id, data, updated_at, updated_by) VALUES(?, ?, ?, ?) "
+                     "ON CONFLICT(job_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, "
+                     "updated_by = excluded.updated_by", (jid, json.dumps({"lights": out}), now_iso(), actor_name()))
     for x in d.get("rf") or []:
         it = line(x)
         units = []
@@ -5134,7 +5229,8 @@ def api_patch_put(req, conn, jid):
         data = {"inputs": _clean_rows(a.get("inputs") or [], AUDIO_IN_COLS, "input", stock),
                 "outputs": _clean_rows(a.get("outputs") or [], AUDIO_OUT_COLS, "output"),
                 **_clean_audio_setup(a, set(items))}
-        sync_patch_mics(conn, jid, data["inputs"])
+        from collections import Counter
+        sync_patch_lines(conn, jid, Counter(r["mic_pid"] for r in data["inputs"] if r.get("mic_pid")), "patch-mic")
         conn.execute("INSERT INTO job_audio_patch(job_id, data, updated_at, updated_by) VALUES(?, ?, ?, ?) "
                      "ON CONFLICT(job_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, "
                      "updated_by = excluded.updated_by", (jid, json.dumps(data), now_iso(), actor_name()))
@@ -5572,6 +5668,27 @@ def api_barcode_lookup(req, conn):
     raise ApiError(404, f"“{code}” doesn't match any barcode")
 
 
+@route("GET", "/api/barcodes/all")
+def api_barcodes_all(req, conn):
+    """Every barcode in use and what it's on: units, item codes and the code that closes a flight case."""
+    out = []
+    close = (get_settings(conn).get("case_close_code") or "").strip()
+    if close:
+        out.append({"code": close, "kind": "close", "name": "Closes a flight case", "product_id": None, "notes": ""})
+    for r in conn.execute("SELECT x.asset_number, x.serial_number, x.status, x.sub_hire, p.id, p.name, p.parent_id, p.category, "
+                          "p.archived, pp.name AS parent_name FROM assets x JOIN products p ON p.id = x.product_id "
+                          "LEFT JOIN products pp ON pp.id = p.parent_id"):
+        notes = [n for n in (r["serial_number"] and f"serial {r['serial_number']}", r["sub_hire"] and "sub-hired",
+                             r["status"] != "ok" and r["status"], r["archived"] and "archived") if n]
+        out.append({"code": r["asset_number"], "kind": "unit", "name": r["name"], "category": r["category"] or "",
+                    "product_id": r["parent_id"] or r["id"], "notes": ", ".join(notes)})
+    for r in conn.execute("SELECT id, name, sku, parent_id, category, archived, item_type FROM products WHERE sku != ''"):
+        out.append({"code": r["sku"], "kind": "item", "name": r["name"], "category": r["category"] or "",
+                    "product_id": r["parent_id"] or r["id"], "notes": "archived" if r["archived"] else ""})
+    out.sort(key=lambda x: x["code"].lower())
+    return out
+
+
 @route("GET", "/api/barcodes")
 def api_barcodes(req, conn):
     """Codes to print as labels: each item's own code and every unit's (a cable's are on its lengths)."""
@@ -5931,6 +6048,7 @@ def api_product_put(req, conn, pid):
         raise ApiError(404, "Product not found")
     body = req.json() or {}
     data = clean(body, PRODUCT_SPEC, partial=True)
+    modes_footprint(data)
     apply_power_input(conn, body, data)
     if data.get("sku") and data["sku"].lower() != (cur["sku"] or "").lower() and barcode_in_use(conn, data["sku"], skip_product=cur["id"]):
         raise ApiError(400, f"Code {data['sku']} is already {barcode_owner(conn, data['sku'], skip_product=cur['id'])}")
@@ -9222,7 +9340,9 @@ def init_db():
                              ("jobs", "invoice_terms", "TEXT"),
                              ("users", "username", "TEXT"),
                              ("users", "username_chosen", "INTEGER NOT NULL DEFAULT 0"),
-                             ("products", "console", "TEXT NOT NULL DEFAULT ''")):
+                             ("products", "console", "TEXT NOT NULL DEFAULT ''"),
+                             ("products", "patch_kind", "TEXT NOT NULL DEFAULT ''"),
+                             ("products", "dmx_modes", "TEXT NOT NULL DEFAULT ''")):
         if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():
@@ -9234,6 +9354,11 @@ def init_db():
     if not conn.execute("SELECT 1 FROM settings WHERE key = 'migrated_stock_types'").fetchone():
         migrate_stock_types(conn)
         conn.execute("INSERT INTO settings(key, value) VALUES('migrated_stock_types', '1')")
+    if not conn.execute("SELECT 1 FROM settings WHERE key = 'migrated_patch_kind'").fetchone():
+        # 1.36: stock is audio, lighting or neither - from what it was already set up with
+        conn.execute("UPDATE products SET patch_kind = 'lighting' WHERE dmx_channels > 0")
+        conn.execute("UPDATE products SET patch_kind = 'audio' WHERE patch_kind = '' AND (wireless = 1 OR console != '')")
+        conn.execute("INSERT INTO settings(key, value) VALUES('migrated_patch_kind', '1')")
     fill_equip_kinds(conn)
     fill_usernames(conn)
     if not conn.execute("SELECT 1 FROM settings WHERE key = 'instance_id'").fetchone():
