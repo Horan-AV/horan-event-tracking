@@ -1245,6 +1245,82 @@ class TestPatch(ServerCase):
         self.assertEqual((codes["BC-SPK-001"]["kind"], codes["BC-SPK-001"]["name"]), ("unit", "Barcode Speaker"))
 
 
+class TestDayRates(ServerCase):
+    def test_rules_usual_client_job_and_invoiced(self):
+        c = self.c
+        _, p = c.post("/products", {"name": "Rate Speaker", "sku": "RATE-SPK", "quantity": 4, "day_rate": 100})
+        rules = [{"from": 3, "to": 3, "type": "factor", "value": 0.75}, {"from": 7, "to": None, "type": "weekly", "value": 3},
+                 {"from": 4, "to": 6, "type": "days", "value": 3}]
+        self.assertEqual(c.put("/settings", {"rate_rules": json.dumps(rules)})[0], 200)
+        self.assertEqual(c.put("/settings", {"rate_rules": json.dumps([{"from": 1, "type": "factor", "value": 50}])})[0], 400)
+        def job(start, end, **kw):
+            j = self.new_job(start_date=start, end_date=end, **kw)
+            return c.post(f"/jobs/{j['id']}/items", {"product_id": p["id"], "quantity": 1})[1]
+        three = job("2030-03-01", "2030-03-03")                    # 3 days at 0.75 each
+        self.assertEqual((three["totals"]["charge_days"], three["totals"]["hire_days"], three["totals"]["rental"]), (2.25, 3, 225))
+        self.assertIn("0.75", three["totals"]["rate_note"])
+        week = job("2030-03-01", "2030-03-07")
+        self.assertEqual(week["totals"]["charge_days"], 3)
+        ten = job("2030-03-01", "2030-03-10")                      # a week (3) + 3 days at 0.75 (2.25)
+        self.assertEqual(ten["totals"]["charge_days"], 5.25)
+        one = job("2030-03-01", "2030-03-01")                      # no rule: every day
+        self.assertEqual(one["totals"]["charge_days"], 1)
+        # a client's own rules, and a job's own, win
+        _, cl = c.post("/contacts", {"name": "Rate Client"})
+        c.put(f"/contacts/{cl['id']}", {"rate_rules": [{"from": 7, "type": "days", "value": 2}]})
+        cw = job("2030-03-01", "2030-03-07", contact_id=cl["id"])
+        self.assertEqual((cw["totals"]["charge_days"], cw["totals"]["rate_from"]), (2, "client"))
+        cw = c.put(f"/jobs/{cw['id']}", {"rate_rules": []})[1]       # this job: every day
+        self.assertEqual((cw["totals"]["charge_days"], cw["totals"]["rate_from"]), (7, "job"))
+        cw = c.put(f"/jobs/{cw['id']}", {"rate_rules": "", "charge_days": 4})[1]   # set by hand beats any rule
+        self.assertEqual(cw["totals"]["charge_days"], 4)
+        # once invoiced, a job keeps the rules it was charged under
+        c.request("POST", "/api/invoices/pdf", {"ids": [week["id"]], "doc": "invoice"}, raw=True)
+        c.put("/settings", {"rate_rules": "[]"})
+        self.assertEqual(c.get(f"/jobs/{week['id']}")[1]["totals"]["charge_days"], 3)
+        self.assertEqual(c.get(f"/jobs/{three['id']}")[1]["totals"]["charge_days"], 3)   # not invoiced: follows Settings
+
+    def test_unit_barcodes_in_availability(self):
+        c = self.c
+        _, p = c.post("/products", {"name": "Scan Light", "sku": "SCAN-LX", "quantity": 0})
+        c.post(f"/products/{p['id']}/assets", {"asset_number": "SCAN-LX-007"})
+        av = c.get("/availability?start=2030-01-01&end=2030-01-02")[1]
+        self.assertEqual(next(x["codes"] for x in av if x["product_id"] == p["id"]), ["SCAN-LX-007"])
+
+
+class TestInvoiceNumbers(ServerCase):
+    def test_change_by_hand_and_by_rule(self):
+        c = self.c
+        c.put("/settings", {"invoice_prefix": "INV-"})
+        a, b = self.new_job(), self.new_job()
+        c.request("POST", "/api/invoices/pdf", {"ids": [a["id"], b["id"]], "doc": "invoice"}, raw=True)
+        num_a = c.get(f"/jobs/{a['id']}")[1]["invoice"]["number"]
+        self.assertEqual(num_a, f"INV-{a['number']}")
+        # by hand
+        status, j = c.put(f"/jobs/{a['id']}/invoice-number", {"number": "OLD-0042"})
+        self.assertEqual((status, j["invoice"]["number"], j["old_invoice_number"]), (200, "OLD-0042", num_a))
+        self.assertEqual(c.put(f"/jobs/{b['id']}/invoice-number", {"number": "old-0042"})[0], 400)   # taken (any case)
+        self.assertEqual(c.put(f"/jobs/{b['id']}/invoice-number", {"number": " "})[0], 400)
+        # the prefix changes: renumber them all to the rule (see the changes first)
+        c.put("/settings", {"invoice_prefix": "HAV-INV-"})
+        pre = c.post("/invoices/renumber", {})[1]
+        self.assertEqual(sorted(x["new"] for x in pre["changes"]), sorted([f"HAV-INV-{a['number']}", f"HAV-INV-{b['number']}"]))
+        self.assertEqual(c.get(f"/jobs/{a['id']}")[1]["invoice"]["number"], "OLD-0042")   # nothing changed yet
+        c.post("/invoices/renumber", {"apply": True})
+        self.assertEqual(c.get(f"/jobs/{a['id']}")[1]["invoice"]["number"], f"HAV-INV-{a['number']}")
+        # one job back to the rule; a job not issued yet keeps following the rule
+        c.put(f"/jobs/{b['id']}/invoice-number", {"number": "X-1"})
+        self.assertEqual(c.put(f"/jobs/{b['id']}/invoice-number", {"rule": True})[1]["invoice"]["number"], f"HAV-INV-{b['number']}")
+        n = self.new_job()
+        c.put(f"/jobs/{n['id']}/invoice-number", {"rule": True})
+        c.put("/settings", {"invoice_prefix": "Z-"})
+        self.assertEqual(c.get(f"/jobs/{n['id']}")[1]["invoice"]["number"], f"Z-{n['number']}")
+        # a number given by hand before it's issued stays when it is
+        c.put(f"/jobs/{n['id']}/invoice-number", {"number": "MANUAL-9"})
+        c.request("POST", "/api/invoices/pdf", {"ids": [n["id"]], "doc": "invoice"}, raw=True)
+        self.assertEqual(c.get(f"/jobs/{n['id']}")[1]["invoice"]["number"], "MANUAL-9")
+
+
 class TestAudioPatch(ServerCase):
     def test_desk_stage_boxes_and_mics_from_stock(self):
         c = self.c

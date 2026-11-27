@@ -2,6 +2,33 @@
   "_about": "Change log shown in Settings. Each version lists what changed. 'fulfils' lists the request IDs (from Export requests) it completes - those requests are marked done when this version is installed. A change with 'credit' shows who suggested it (from the optional Name/Alias and Company they gave). 'ai' says how the version was made: which AI model wrote it, as recorded in the development logs.",
   "versions": [
     {
+      "version": "1.37.0",
+      "date": "2026-11-27",
+      "title": "Day rate rules, changing invoice numbers, and scanning barcodes onto a job",
+      "changes": [
+        {
+          "text": "Fix: scanning a barcode (or typing its number) into a job's Add equipment box now finds the item — by any of its units' barcodes as well as its own code — and Enter adds it."
+        },
+        {
+          "text": "Day rate rules: charge hires by their length — e.g. a week as 3 days, a 3-day hire with each day at 0.75 × the day rate, or 3 days for each week. Set your usual rules in Settings → Company information → Day rates."
+        },
+        {
+          "text": "A client can have their own day rates (or be charged every day), from their page; a job can too — rules, every day, or a set number of days — from Change next to Charged days."
+        },
+        {
+          "text": "The job page shows which rule set its charged days. Invoiced jobs keep the rules they were charged under."
+        },
+        {
+          "text": "Change an invoice's number: on the job, Change next to Invoice number — type your own, or use the number the current rule gives it."
+        },
+        {
+          "text": "Settings → Invoices → Renumber issued invoices to this rule: after changing the prefix, see each invoice's old and new number, then change them."
+        }
+      ],
+      "fulfils": [],
+      "ai": "Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan"
+    },
+    {
       "version": "1.36.0",
       "date": "2026-11-18",
       "title": "Separate lighting and audio patches, DMX channel modes and a list of every barcode",

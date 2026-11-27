@@ -1073,3 +1073,6 @@ tr.foldable:hover td { background: color-mix(in srgb, var(--brand) 6%, var(--sur
 .choice-foot { flex-wrap: wrap; gap: 8px; }
 .mono { font-family: var(--mono); }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.rules-table td { vertical-align: middle; }
+.rules-table select { min-width: 210px; }
+.radio-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin: 8px 0; }

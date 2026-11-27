@@ -249,6 +249,8 @@ The prep list keeps its own layout.
 
 **Settings → Company information → Invoices** sets up how invoices are numbered:
 - **Invoice number prefix:** invoice numbers are the prefix plus the job number, e.g. `INV-HAV-1001`.
+  - **Change one invoice's number:** on the job, **Change** next to *Invoice number* — type your own (e.g. to match an old system), or go back to the number the current rule gives it. Two invoices can't share a number. A number you give before the invoice is issued is kept when it is.
+  - **Renumber issued invoices:** changed the prefix? **Renumber issued invoices to this rule…** (under the prefix) shows each invoice's old and new number, then changes them. Any that would clash with another invoice's number are left as they are. Invoices already in Zoho Books keep their old number there until you send them again.
 - **Payment terms (days):** set each invoice's due date.
 - A client can have their own **Invoice number prefix** and **Payment terms** (Due on receipt, Net 7 to Net 90, or Due end of next month): edit the client. Theirs are used instead of these. The terms show next to the due date on the invoice, and go into exports and Zoho.
 - **Payment details** and **Invoice terms** are printed on every invoice.
@@ -742,13 +744,17 @@ Linking only affects items added to a job *after* you set up the link.
 
 1. **Settings**: add your logo, company details, VAT number, terms and payment details.
 2. **Stock**: add items, or **More → Import CSV** from a Current RMS product export. Then link accessories.
-3. **New job**: you can also press `N` anywhere. Pick a client and dates (and start and end times if you like), then type in the "Add equipment" box. Each result shows how many are free for those dates and how many accessories are linked.
+3. **New job**: you can also press `N` anywhere. Pick a client and dates (and start and end times if you like), then type in the "Add equipment" box. Each result shows how many are free for those dates and how many accessories are linked. You can also scan (or type) a barcode — a unit's or the item's own code — and press Enter to add that item.
 4. Move the job through its statuses: Enquiry → Quotation → Provisional → Confirmed → On hire → Returned → Invoiced.
 
 ### How pricing works
 
 - A rental line costs quantity × day rate × days, less any line discount.
-- "Days" defaults to every day of the hire. To charge a week as three days, set **Chargeable days** on the job.
+- "Days" defaults to every day of the hire, unless your **day rate rules** say otherwise (below). To charge one job a set number of days, use **Change** next to *Charged days* on the job.
+- **Day rate rules** (Settings → Company information → **Day rates**) charge hires by their length. Each rule is for hires of so many days (e.g. 3 to 3, or 7 and longer) and charges them one of three ways: **as … days in all** (a 4–6 day hire charged as 3 days), **each day at … × the day rate** (a 3-day hire at 0.75 a day = 2.25 days), or **… days for each week** (3 days a week; days left over use the other rules, so 10 days = 3 + 3 × 0.75). The first rule that fits is used, and the card shows what 1, 2, 3… 28-day hires come to.
+  - **A client** can have rules of their own, or be charged every day: **Day rates → Change** on their page. Their jobs use them instead of yours.
+  - **A job** can have its own too — rules, every day, or a set number of days — from **Change** next to *Charged days*. The job page says which rule set the days.
+  - Once a job's invoice is issued it keeps the rules it was charged under, so changing your rules later doesn't change old invoices.
 - Labour/service lines and sale lines cost quantity × price.
 - The job discount comes off the subtotal, then VAT is added. Add it with **Add discount** under the job's **Totals**: a percentage, or a fixed amount (never more than the job). Change or remove it with the same button.
 - **Not VAT registered?** Untick **VAT registered** in Settings → Company information → Money & numbering. No VAT is added or shown on jobs, quotes, invoices, PDFs or Zoho invoices, accounting exports use the program's "No VAT" code, and your VAT number is left off documents. Ticking it again brings VAT back for every job, at your VAT rate.
@@ -890,4 +896,4 @@ On a Mac, drag the app from Applications to the Bin. On Linux (or a Terminal ins
 - **Your browser opens the wrong app.** Set a default browser in System Settings, or run `HORAN_RMS_BROWSER=firefox horan-rms`.
 
 ---
-Horan Event Tracking v1.36.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
+Horan Event Tracking v1.37.0 · © 2026 Horan AV (James Horan) · MIT licence · written with AI — see [AI_DISCLOSURE.md](AI_DISCLOSURE.md)
