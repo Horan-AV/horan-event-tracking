@@ -2,6 +2,15 @@
 
 Every version of Horan Event Tracking. The same list is in the app under **Settings → Change log**. The 🤖 line on each version says which AI model wrote it; see [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
+## 1.37.0 — 2026-11-27 · Day rate rules, and scanning barcodes onto a job
+
+- Fix: scanning a barcode (or typing its number) into a job's Add equipment box now finds the item — by any of its units' barcodes as well as its own code — and Enter adds it.
+- Day rate rules: charge hires by their length — e.g. a week as 3 days, a 3-day hire with each day at 0.75 × the day rate, or 3 days for each week. Set your usual rules in Settings → Company information → Day rates.
+- A client can have their own day rates (or be charged every day), from their page; a job can too — rules, every day, or a set number of days — from Change next to Charged days.
+- The job page shows which rule set its charged days. Invoiced jobs keep the rules they were charged under.
+
+🤖 Written by Claude (Anthropic) using Claude Code, directed and tested by James Horan
+
 ## 1.36.0 — 2026-11-18 · Separate lighting and audio patches, DMX channel modes and a list of every barcode
 
 - Lighting and audio now have a patch each, with their own sheet to print: Documents → Lighting patch / Audio patch.

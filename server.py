@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import parse_qs, urlencode, urlparse
 
-VERSION = "1.36.0"
+VERSION = "1.37.0"
 # Where "Update from GitHub" looks for new releases (owner/repository). Set this to your own repository
 # before publishing; it can also be changed in Settings > Software update.
 GITHUB_REPO = "Horan-AV/horan-event-tracking"
@@ -74,6 +74,7 @@ POWER_SUPPLIES = [
 SUPPLY_BY_KEY = {x["key"]: x for x in POWER_SUPPLIES}
 
 DEFAULT_SETTINGS = {
+    "rate_rules": "",   # day rate rules (JSON): e.g. a week's hire charged as 3 days; blank = every day charged
     "company_name": "Horan AV",
     "company_address": "",
     "company_email": "",
@@ -782,6 +783,7 @@ CONTACT_SPEC = {
     "address": as_str, "notes": as_str, "archived": bool_int, "account_ref": as_str,
     "job_prefix": as_str, "next_job_number": int_or_none,
     "invoice_prefix": as_str, "payment_terms": as_str,
+    "rate_rules": lambda v, f: rate_rules_field(v),
 }
 # Payment terms a client can have (blank = your usual terms from Settings). "eom" = due at the end of the next month.
 PAYMENT_TERMS = {"0": "Due on receipt", "7": "Net 7", "14": "Net 14", "21": "Net 21", "30": "Net 30", "45": "Net 45",
@@ -808,6 +810,7 @@ JOB_SPEC = {
     "charge_days": float_or_none, "status": status_field, "discount_pct": as_float, "discount_amount": as_float,
     "start_time": lambda v, f: time_field(v, f), "end_time": lambda v, f: time_field(v, f),
     "notes": as_str, "internal_notes": as_str, "power_supply": lambda v, f: supply_field(v, f),
+    "rate_rules": lambda v, f: rate_rules_field(v),
 }
 ITEM_SPEC = {
     "section_id": int_or_none,
@@ -849,10 +852,107 @@ def set_secret(conn, key, value):
 
 # ---------------------------------------------------------------- pricing
 
+RATE_RULE_TYPES = ("days", "factor", "weekly")
+
+
+def rate_rules_field(v):
+    """Day rate rules: which hires (by how many days) are charged how. Each is {from, to (or none = and longer),
+    type, value}: "days" = charge that many days in all, "factor" = each day at value x the day rate, "weekly" = that
+    many days for each full week (the days left over by the other rules). The first that fits a hire is used.
+    "" = no rules of its own (use the client's, or your usual ones); "[]" = none: every day is charged."""
+    if v is None or v == "":
+        return ""
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except ValueError:
+            raise ApiError(400, "Those aren't day rate rules")
+    if not isinstance(v, list) or len(v) > 30:
+        raise ApiError(400, "Up to 30 day rate rules")
+    out = []
+    for x in v:
+        if not isinstance(x, dict):
+            continue
+        lo = as_int(x.get("from") or 1, "from (days)")
+        hi = int_or_none(x.get("to"), "to (days)")
+        kind = x.get("type") if x.get("type") in RATE_RULE_TYPES else "days"
+        val = as_float(x.get("value") if x.get("value") not in (None, "") else 0, "charge")
+        if not 1 <= lo <= 3650 or (hi is not None and not lo <= hi <= 3650):
+            raise ApiError(400, "A day rate rule is for hires of 1 to 3650 days, and ‘to’ isn't before ‘from’")
+        if val < 0 or (kind == "factor" and val > 10) or (kind == "weekly" and val > 7) or val > 3650:
+            raise ApiError(400, "That charge doesn't look right — e.g. 3 days, 0.75 × each day, or 3 days a week")
+        out.append({"from": lo, "to": hi, "type": kind, "value": round(val, 4)})
+    return json.dumps(out)
+
+
+def parse_rules(v):
+    try:
+        r = json.loads(v) if v else None
+    except ValueError:
+        return None
+    return r if isinstance(r, list) else None
+
+
+def rule_for(days, rules, skip=None):
+    return next((r for r in rules if r is not skip and r["from"] <= days and (r.get("to") is None or days <= r["to"])), None)
+
+
+def apply_rate_rules(days, rules, skip=None):
+    """How many days a hire of `days` days is charged under these rules."""
+    d = int(round(days))
+    r = rule_for(d, rules, skip)
+    if not r:
+        return float(d)
+    if r["type"] == "days":
+        return float(r["value"])
+    if r["type"] == "factor":
+        return round(d * r["value"], 4)
+    weeks, rest = divmod(d, 7)   # weekly: so many days a week, and the days over by the other rules
+    return round(weeks * r["value"] + (apply_rate_rules(rest, [x for x in rules if x["type"] != "weekly"]) if rest else 0), 4)
+
+
+def rule_text(r):
+    span = f"{r['from']}+ days" if r.get("to") is None else (f"{r['from']} day{'s' if r['from'] != 1 else ''}" if r["to"] == r["from"]
+                                                             else f"{r['from']}–{r['to']} days")
+    v = fmt_num(r["value"])
+    how = {"days": f"charged as {v} day{'s' if r['value'] != 1 else ''}", "factor": f"each day at {v} × the day rate",
+           "weekly": f"{v} days a week"}[r["type"]]
+    return f"{span}: {how}"
+
+
+def attach_rules(conn, jobs):
+    """Which day rate rules each job uses: its own, else its client's, else your usual ones (Settings)."""
+    usual = parse_rules(get_settings(conn).get("rate_rules")) or []
+    need = {j["contact_id"] for j in jobs if j.get("contact_id") and "contact_rate_rules" not in j}
+    theirs = {}
+    if need:
+        theirs = {r[0]: r[1] for r in conn.execute(f"SELECT id, rate_rules FROM contacts WHERE id IN ({','.join('?' * len(need))})", list(need))}
+    for j in jobs:
+        if "contact_rate_rules" not in j:
+            j["contact_rate_rules"] = theirs.get(j.get("contact_id"), "")
+        own, client = parse_rules(j.get("rate_rules")), parse_rules(j.get("contact_rate_rules"))
+        j["_rules"], j["_rules_from"] = (own, "job") if own is not None else (client, "client") if client is not None else (usual, "usual")
+    return jobs
+
+
+def hire_days(job):
+    return float(inclusive_days(job["start_date"], job["end_date"]))
+
+
 def charge_days(job):
     if job.get("charge_days") not in (None, ""):
         return float(job["charge_days"])
-    return float(inclusive_days(job["start_date"], job["end_date"]))
+    return apply_rate_rules(hire_days(job), job.get("_rules") or [])
+
+
+def rate_note(job):
+    """What set the charged days, for the job page: e.g. "7+ days: 3 days a week (the client's rules)"."""
+    if job.get("charge_days") not in (None, ""):
+        return "set by hand"
+    r = rule_for(int(hire_days(job)), job.get("_rules") or [])
+    if not r:
+        return ""
+    return f"{rule_text(r)} ({ {'job': 'this job’s rules', 'client': 'the client’s rules', 'usual': 'your usual rules'}[job.get('_rules_from', 'usual')] })"
 
 
 def price_items(job, items):
@@ -906,6 +1006,9 @@ def totals(job, items, vat_rate, registered=True):
         "vat": round(vat, 2),
         "total": round(net + vat, 2),
         "charge_days": charge_days(job),
+        "hire_days": hire_days(job),
+        "rate_note": rate_note(job),
+        "rate_from": job.get("_rules_from", "usual"),
     }
 
 
@@ -1033,6 +1136,9 @@ def availability_summary(conn, start, end, exclude_job=None):
     use = usage_by_day(conn, start, end, exclude_job)
     subs = sub_units_by_day(conn, start, end)
     qmap = quarantined_map(conn)
+    codes = {}   # each item's unit barcodes, so scanning or typing one finds it
+    for pid, code in conn.execute("SELECT product_id, asset_number FROM assets"):
+        codes.setdefault(pid, []).append(code)
     out = []
     for p in conn.execute("SELECT id, name, brand, category, subcategory, quantity, day_rate, sku, cable_type, length_m, item_type, "
                           "sub_hire, (SELECT name FROM vendors v WHERE v.id = products.vendor_id) AS vendor_name, "
@@ -1057,7 +1163,7 @@ def availability_summary(conn, start, end, exclude_job=None):
             "available_after_provisional": free_b, "sub_units": sub_n,
             "accessory_count": p["acc"], "cable_type": p["cable_type"], "length_m": p["length_m"],
             "item_type": p["item_type"], "sub_hire": bool(p["sub_hire"]), "vendor_name": p["vendor_name"],
-            "image_id": p["image_id"],
+            "image_id": p["image_id"], "codes": codes.get(p["id"], []),
         })
     return out
 
@@ -1321,6 +1427,8 @@ def api_settings_put(req, conn):
             v = json.dumps(clean_doc_layout(v)) if v.strip() else ""
         if k == "doc_layout_shared" and v not in ("0", "1"):
             raise ApiError(400, "Document layout must be shared or separate")
+        if k == "rate_rules":
+            v = rate_rules_field(v)
         if k == "case_close_code":
             v = v.strip()
             if not v:
@@ -3528,6 +3636,11 @@ def issue_invoice(conn, job):
     number = f"{invoice_prefix_for(job, s)}{job['number']}"
     today = dt.date.today()
     _days, label, due = payment_terms_for(job, s, today)
+    if not job.get("rate_rules"):   # keep the day rate rules it was charged under, whatever happens to your usual ones
+        if "_rules" not in job:
+            attach_rules(conn, [job])
+        job["rate_rules"] = json.dumps(job["_rules"] or [])
+        conn.execute("UPDATE jobs SET rate_rules = ? WHERE id = ?", (job["rate_rules"], job["id"]))
     conn.execute("UPDATE jobs SET invoice_number = ?, invoice_date = ?, invoice_due = ?, invoice_terms = ? WHERE id = ?",
                  (number, today.isoformat(), due.isoformat(), label, job["id"]))
     job.update(invoice_number=number, invoice_date=today.isoformat(), invoice_due=due.isoformat(), invoice_terms=label)
@@ -4523,6 +4636,7 @@ def hire_history(conn, pid):
     out = {k: {"revenue": 0.0, "unit_days": 0.0, "list_value": 0.0, "jobs": 0} for k in ("all", "year", "ahead")}
     out["first_hire"] = None
     items = load_items(conn, [j["id"] for j in jobs])
+    attach_rules(conn, jobs)
     for j in jobs:
         priced = price_items(j, items[j["id"]])
         lines = [it for it in priced if it["product_id"] == pid and it["kind"] == "rental"]
@@ -6154,6 +6268,7 @@ def api_contact_delete(req, conn, cid):
 # ---- jobs
 
 def attach_totals(conn, jobs):
+    attach_rules(conn, jobs)
     items = load_items(conn, [j["id"] for j in jobs])
     vat, registered = vat_rate_of(conn), vat_registered(conn)
     for j in jobs:
@@ -6210,7 +6325,7 @@ def settle_discount(data):
         data["discount_pct"] = 0.0
 
 
-JOB_LIST_SQL = """SELECT j.*, c.name AS contact_name, c.company AS contact_company
+JOB_LIST_SQL = """SELECT j.*, c.name AS contact_name, c.company AS contact_company, c.rate_rules AS contact_rate_rules
                   FROM jobs j LEFT JOIN contacts c ON c.id = j.contact_id"""
 
 
@@ -6295,6 +6410,7 @@ def job_detail(conn, jid):
         job["contact"] = one(conn.execute("SELECT * FROM contacts WHERE id = ?", (job["contact_id"],)))
     else:
         job["contact"] = None
+    attach_rules(conn, [job])
     items = effective_sections(price_items(job, load_items(conn, [jid])[jid]))
     job["items"] = items
     job["sections"] = job_sections(conn, job, items)
@@ -6389,7 +6505,7 @@ def api_job_duplicate(req, conn, jid):
     body = req.json() or {}
     new = {k: src[k] for k in ("name", "contact_id", "venue", "reference", "start_date", "end_date",
                                "charge_days", "discount_pct", "discount_amount", "start_time", "end_time",
-                               "notes", "internal_notes")}
+                               "notes", "internal_notes", "rate_rules")}
     if body.get("start_date"):
         # Shift the job to the new start date, keeping the same length.
         length = (parse_date(src["end_date"]) - parse_date(src["start_date"])).days
@@ -9342,7 +9458,9 @@ def init_db():
                              ("users", "username_chosen", "INTEGER NOT NULL DEFAULT 0"),
                              ("products", "console", "TEXT NOT NULL DEFAULT ''"),
                              ("products", "patch_kind", "TEXT NOT NULL DEFAULT ''"),
-                             ("products", "dmx_modes", "TEXT NOT NULL DEFAULT ''")):
+                             ("products", "dmx_modes", "TEXT NOT NULL DEFAULT ''"),
+                             ("contacts", "rate_rules", "TEXT NOT NULL DEFAULT ''"),
+                             ("jobs", "rate_rules", "TEXT NOT NULL DEFAULT ''")):
         if col not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     for k, v in DEFAULT_SETTINGS.items():
@@ -9354,6 +9472,10 @@ def init_db():
     if not conn.execute("SELECT 1 FROM settings WHERE key = 'migrated_stock_types'").fetchone():
         migrate_stock_types(conn)
         conn.execute("INSERT INTO settings(key, value) VALUES('migrated_stock_types', '1')")
+    if not conn.execute("SELECT 1 FROM settings WHERE key = 'migrated_rate_rules'").fetchone():
+        # 1.37: jobs already invoiced stay charged for every day, whatever day rate rules are set up later
+        conn.execute("UPDATE jobs SET rate_rules = '[]' WHERE rate_rules = '' AND (status = 'invoiced' OR invoice_date IS NOT NULL)")
+        conn.execute("INSERT INTO settings(key, value) VALUES('migrated_rate_rules', '1')")
     if not conn.execute("SELECT 1 FROM settings WHERE key = 'migrated_patch_kind'").fetchone():
         # 1.36: stock is audio, lighting or neither - from what it was already set up with
         conn.execute("UPDATE products SET patch_kind = 'lighting' WHERE dmx_channels > 0")

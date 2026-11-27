@@ -526,6 +526,107 @@ function jobFields(contactOpts, { full } = {}) {
 function discountText(t) { return `Discount${t.discount_label ? ` (${t.discount_label})` : ''}`; }
 
 /** The discount off the whole job: a percentage or a fixed amount. */
+/* ---------------------------------------------------------------- day rate rules
+   e.g. a week's hire charged as 3 days, or a 3-day hire with each day at 0.75 x the day rate. Your usual rules
+   (Settings), a client's own, or a job's own; the first that fits the hire's length is used. */
+const RATE_TYPES = [['days', 'charge as … days in all'], ['factor', 'each day at … × the day rate'], ['weekly', '… days for each week']];
+function parseRules(v) {
+  try { const r = typeof v === 'string' ? JSON.parse(v || 'null') : v; return Array.isArray(r) ? r : null; } catch { return null; }
+}
+function ruleFor(d, rules, skip) { return (rules || []).find((r) => r !== skip && r.from <= d && (r.to == null || r.to === '' || d <= r.to)); }
+function applyRules(days, rules) {
+  const d = Math.round(days), r = ruleFor(d, rules);
+  if (!r) return d;
+  if (r.type === 'days') return Number(r.value) || 0;
+  if (r.type === 'factor') return Math.round(d * (Number(r.value) || 0) * 10000) / 10000;
+  const weeks = Math.floor(d / 7), rest = d % 7;
+  return Math.round((weeks * (Number(r.value) || 0) + (rest ? applyRules(rest, rules.filter((x) => x.type !== 'weekly')) : 0)) * 10000) / 10000;
+}
+function ruleText(r) {
+  const span = r.to == null || r.to === '' ? `${r.from}+ days` : Number(r.to) === Number(r.from) ? `${plural(r.from, 'day')}` : `${r.from}–${r.to} days`;
+  const v = num(r.value);
+  return `${span}: ${r.type === 'days' ? `charged as ${plural(r.value, 'day')}` : r.type === 'factor' ? `each day at ${v} × the day rate` : `${v} days a week`}`;
+}
+/** A list of rules to edit in `box`, with what some hires would be charged. Returns {get()}. */
+function rulesEditor(box, start, onChange) {
+  let rules = (start || []).map((r) => ({ ...r }));
+  const out = () => rules.filter((r) => Number(r.from) >= 1).map((r) => ({ from: Number(r.from), to: r.to === '' || r.to == null ? null : Number(r.to), type: r.type, value: Number(r.value) || 0 }));
+  const preview = () => {
+    const el = $('[data-rules-preview]', box); if (!el) return;
+    const rs = out();
+    el.innerHTML = rs.length ? `What a hire is charged: ${[1, 2, 3, 4, 5, 7, 10, 14, 21, 28].map((d) => `<span class="nowrap">${plural(d, 'day')} → <b>${num(applyRules(d, rs))}</b></span>`).join(' · ')}`
+      : 'No rules: every day of a hire is charged.';
+  };
+  const draw = () => {
+    box.innerHTML = `<div class="table-wrap"><table class="table compact rules-table"><thead><tr><th>Hires of</th><th></th><th>Charged</th><th class="n">…</th><th></th></tr></thead><tbody>
+      ${rules.map((r, i) => `<tr><td class="nowrap"><input data-rule="${i}" data-k="from" type="number" min="1" value="${esc(r.from ?? '')}" aria-label="From (days)" style="width:64px"> to
+          <input data-rule="${i}" data-k="to" type="number" min="1" value="${esc(r.to ?? '')}" placeholder="any" aria-label="To (days)" style="width:64px"> days</td><td></td>
+        <td><select data-rule="${i}" data-k="type" aria-label="How they're charged">${RATE_TYPES.map(([k, l]) => `<option value="${k}" ${r.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></td>
+        <td class="n"><input data-rule="${i}" data-k="value" type="number" min="0" step="any" value="${esc(r.value ?? '')}" aria-label="Value" style="width:80px"></td>
+        <td><button type="button" class="icon-btn" data-rule-del="${i}" aria-label="Remove">×</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty">No rules yet — every day is charged.</td></tr>'}
+      </tbody></table></div>
+      <div class="actions" style="margin-top:8px"><button type="button" class="btn small" data-rule-add>+ Add a rule</button></div>
+      <p class="muted small" data-rules-preview style="margin:8px 0 0"></p>
+      <p class="muted small" style="margin:4px 0 0">The first rule that fits a hire’s length is used. Leave “to” empty for “and longer”. With <b>… days for each week</b>, days left over are charged by the other rules.</p>`;
+    preview();
+  };
+  box.addEventListener('input', (e) => {
+    const t = e.target; if (t.dataset.rule === undefined) return;
+    rules[Number(t.dataset.rule)][t.dataset.k] = t.value;
+    preview(); if (onChange) onChange(out());
+  });
+  box.addEventListener('click', (e) => {
+    if (e.target.closest('[data-rule-add]')) {
+      const last = rules[rules.length - 1];
+      rules.push({ from: last ? (Number(last.to || last.from) + 1) : 7, to: '', type: 'days', value: last ? '' : 3 });
+      draw(); if (onChange) onChange(out()); return;
+    }
+    const d = e.target.closest('[data-rule-del]');
+    if (d) { rules.splice(Number(d.dataset.ruleDel), 1); draw(); if (onChange) onChange(out()); }
+  });
+  draw();
+  return { get: out };
+}
+
+/** A job's (or a client's) day rates: the usual ones, their own, or every day - and for a job, a set number of days. */
+function rateRulesModal({ title, own, inheritLabel, inheritRules, fixed, hireDays }) {
+  return new Promise((resolve) => {
+    const mode0 = fixed != null ? 'fixed' : own === null ? 'inherit' : own.length ? 'own' : 'none';
+    const m = openModal(`<header><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-x aria-label="Close">×</button></header>
+      <div class="modal-body">
+        <label class="check radio-line"><input type="radio" name="rmode" value="inherit" ${mode0 === 'inherit' ? 'checked' : ''}> ${esc(inheritLabel)}
+          <span class="muted small">${inheritRules.length ? inheritRules.map(ruleText).map(esc).join('; ') : 'every day charged'}</span></label>
+        <label class="check radio-line"><input type="radio" name="rmode" value="own" ${mode0 === 'own' ? 'checked' : ''}> Rules of its own</label>
+        <div data-own-rules style="margin:6px 0 10px 26px"></div>
+        <label class="check radio-line"><input type="radio" name="rmode" value="none" ${mode0 === 'none' ? 'checked' : ''}> Charge every day</label>
+        ${hireDays != null ? `<label class="check radio-line"><input type="radio" name="rmode" value="fixed" ${mode0 === 'fixed' ? 'checked' : ''}> A set number of days:
+          <input type="number" name="fixed" min="0" step="any" value="${fixed ?? ''}" style="width:80px" aria-label="Days to charge"></label>
+          <p class="banner info" data-rate-preview style="margin-top:10px"></p>` : ''}
+        <p class="form-error" hidden></p></div>
+      <footer><button class="btn" data-x>Cancel</button><button class="btn primary" data-ok>Save</button></footer>`, { wide: true });
+    const ed = rulesEditor($('[data-own-rules]', m.el), own && own.length ? own : [{ from: 7, to: '', type: 'weekly', value: 3 }], () => show());
+    const mode = () => ($('input[name=rmode]:checked', m.el) || {}).value;
+    const show = () => {
+      $('[data-own-rules]', m.el).hidden = mode() !== 'own';
+      const pv = $('[data-rate-preview]', m.el);
+      if (pv) {
+        const n = mode() === 'fixed' ? Number($('input[name=fixed]', m.el).value) || 0
+          : applyRules(hireDays, mode() === 'inherit' ? inheritRules : mode() === 'own' ? ed.get() : []);
+        pv.innerHTML = `This ${num(hireDays)}-day hire is charged as <b>${plural(n, 'day')}</b>.`;
+      }
+    };
+    m.el.addEventListener('input', show); m.el.addEventListener('change', show); show();
+    const done = (v) => { m.close(); resolve(v); };
+    m.wrap.addEventListener('cancel', () => done(null));
+    $$('[data-x]', m.el).forEach((b) => (b.onclick = () => done(null)));
+    $('[data-ok]', m.el).onclick = () => {
+      const md = mode();
+      done(md === 'fixed' ? { rate_rules: '', charge_days: Number($('input[name=fixed]', m.el).value) || 0 }
+        : { rate_rules: md === 'inherit' ? '' : md === 'none' ? [] : ed.get(), ...(hireDays != null ? { charge_days: null } : {}) });
+    };
+  });
+}
+
 async function discountModal(view) {
   const j = S.job, t = j.totals, cur = S.settings.currency ?? '£';
   const isAmount = (j.discount_amount || 0) > 0;
@@ -1507,7 +1608,8 @@ function drawJob(view) {
             <div><dt>Return</dt><dd>${esc(dateTime(j.end_date, j.end_time))}</dd></div>
             <div><dt>Venue</dt><dd>${esc(j.venue) || '<span class="muted">—</span>'}</dd></div>
             <div><dt>Reference</dt><dd>${esc(j.reference) || '<span class="muted">—</span>'}</dd></div>
-            <div><dt>Charged days</dt><dd>${num(t.charge_days)}${j.charge_days != null ? ' <span class="muted">(custom)</span>' : ''}</dd></div>
+            <div><dt>Charged days</dt><dd>${num(t.charge_days)}${t.charge_days !== t.hire_days ? ` <span class="muted">of ${plural(t.hire_days, 'day')}</span>` : ''}${t.rate_note ? `<br><span class="muted small">${esc(t.rate_note)}</span>` : ''}
+              ${canEditJob(j) ? ' <a href="#" data-rates>Change</a>' : ''}</dd></div>
             <div><dt>Weight</dt><dd>${num(j.total_weight_kg)} kg</dd></div>
             ${j.created_by ? `<div><dt>Created by</dt><dd>${esc(j.created_by)}</dd></div>` : ''}
             ${S.meta && S.meta.users_enabled ? `<div><dt>Who can edit</dt><dd>${j.edit_lock ? `🔒 ${esc([...(j.created_by ? [j.created_by] : []), ...j.editor_names.filter((n) => n !== j.created_by)].join(', ') || 'Its creator')} <span class="muted">and admins</span>` : 'Anyone'}
@@ -1981,10 +2083,15 @@ function pickMatches() {
   const words = q.split(/\s+/).filter(Boolean);
   const inJob = {};
   for (const it of S.job.items) if (it.kind === 'rental' && it.product_id) inJob[it.product_id] = (inJob[it.product_id] || 0) + it.quantity;
+  // a scanned (or typed) barcode: a unit's, or the item's own code - that item comes first, so Enter adds it
+  const code = (p) => (q && ((p.sku || '').toLowerCase() === q ? p.sku : (p.codes || []).find((c) => c.toLowerCase() === q))) || '';
+  const hay = (p) => `${p.name} ${p.brand || ''} ${p.vendor_name || ''} ${p.category} ${p.sku || ''} ${(p.codes || []).join(' ')}`.toLowerCase();
   return S.jobAvail
-    .filter((p) => words.every((w) => `${p.name} ${p.brand || ''} ${p.vendor_name || ''} ${p.category} ${p.sku}`.toLowerCase().includes(w)))
+    .map((p) => ({ p, hit: code(p) }))
+    .filter(({ p, hit }) => hit || words.every((w) => hay(p).includes(w)))
+    .sort((a, b) => (b.hit ? 1 : 0) - (a.hit ? 1 : 0))
     .slice(0, 60)
-    .map((p) => ({ ...p, free: p.available - (inJob[p.product_id] || 0), freeProv: p.available_after_provisional - (inJob[p.product_id] || 0) }));
+    .map(({ p, hit }) => ({ ...p, hit, free: p.available - (inJob[p.product_id] || 0), freeProv: p.available_after_provisional - (inJob[p.product_id] || 0) }));
 }
 
 function runSuggestion() {
@@ -2024,7 +2131,7 @@ function drawPicker() {
         <span class="pr">${money(p.day_rate)}/day</span>
         <span class="pa">${p.item_type === 'package' ? '<span class="badge ok" title="Adds everything in the package">Package</span>' : p.sub_hire ? `<span class="badge sub" title="Sub-hired — order it in">Sub-hire${p.vendor_name ? ` · ${esc(p.vendor_name)}` : ''}</span>`
           : `<span class="badge ${cls}" title="Free for these dates after firm bookings${p.freeProv !== p.free ? ` (${num(p.freeProv)} if provisionals confirm)` : ''}">${num(p.free)} of ${num(p.quantity)} free</span>`}</span>
-        <span class="pc">${esc([p.brand, catLabel(p), p.sku].filter(Boolean).join(' · '))}${p.accessory_count ? ` · <b>+${p.accessory_count} linked</b>` : ''}${p.quarantined ? ` · ${num(p.quarantined)} in quarantine` : ''}</span>
+        <span class="pc">${p.hit ? `<b>Barcode ${esc(p.hit)}</b> · ` : ''}${esc([p.brand, catLabel(p), p.sku].filter(Boolean).join(' · '))}${p.accessory_count ? ` · <b>+${p.accessory_count} linked</b>` : ''}${p.quarantined ? ` · ${num(p.quarantined)} in quarantine` : ''}</span>
       </button>`;
     }).join('');
     if (runRows) box.innerHTML = runRows + box.innerHTML;
@@ -2109,6 +2216,15 @@ function bindJob(view) {
         return;
       }
       if (t.closest('[data-discount]')) { await discountModal(view); return; }
+      if (t.closest('[data-rates]')) {
+        e.preventDefault();
+        const j = S.job, client = parseRules(j.contact_rate_rules), usual = parseRules(S.settings.rate_rules) || [];
+        const v = await rateRulesModal({ title: 'Day rates for this job', own: parseRules(j.rate_rules), fixed: j.charge_days,
+          inheritLabel: client ? `The client’s rules (${j.contact_name || 'client'})` : 'Your usual rules (Settings)', inheritRules: client || usual,
+          hireDays: j.totals.hire_days });
+        if (v) { S.job = await put(`/jobs/${j.id}`, v); drawJob(view); toast('Day rates saved', 'ok'); }
+        return;
+      }
       if (t.closest('[data-edit]')) {
         const opts = await contactOptions();
         const before = { start: S.job.start_date, end: S.job.end_date };
@@ -2230,9 +2346,11 @@ function bindJob(view) {
       else if (e.key === 'Enter') {
         e.preventDefault();
         const box = $('.pick-results');
-        if (res[S.pickIdx] && box && !box.hidden) {
-          try { await addProduct(res[S.pickIdx].product_id); } catch (ex) { toast(ex.message, 'error'); }
-        }
+        // a barcode scanner types the code and presses Enter: add what it's on, even if the list isn't showing
+        const pick = res[0] && res[0].hit ? res[0] : (box && !box.hidden ? res[S.pickIdx] : null);
+        if (pick) {
+          try { await addProduct(pick.product_id); if (pick.hit) toast(`${pick.hit} — ${pick.name} added`, 'ok'); } catch (ex) { toast(ex.message, 'error'); }
+        } else if (($('#pick-q').value || '').trim()) toast(`Nothing in your stock has the barcode or code “${$('#pick-q').value.trim()}”`, 'error');
       } else if (e.key === 'Escape') { $('.pick-results').hidden = true; }
     } else if (e.key === 'Enter' && e.target.matches('[data-f]')) {
       e.target.blur();
@@ -4474,6 +4592,8 @@ async function renderContact(view, id) {
         ${c.job_prefix ? `<dt>Job numbers</dt><dd><span class="mono">${esc(c.job_prefix)}${num(c.next_job_number || 1)}</span> <span class="muted small">next</span></dd>` : ''}
         ${c.invoice_prefix ? `<dt>Invoice prefix</dt><dd><span class="mono">${esc(c.invoice_prefix)}</span></dd>` : ''}
         ${c.payment_terms ? `<dt>Payment terms</dt><dd>${esc(({ 0: 'Due on receipt', eom: 'Due end of next month' })[c.payment_terms] || `Net ${c.payment_terms}`)}</dd>` : ''}
+        <dt>Day rates</dt><dd>${parseRules(c.rate_rules) === null ? 'Your usual rules' : parseRules(c.rate_rules).length ? esc(parseRules(c.rate_rules).map(ruleText).join('; ')) : 'Every day charged'}
+          <a href="#" data-rates>Change</a></dd>
         ${c.notes ? `<dt>Notes</dt><dd class="notes-text">${esc(c.notes)}</dd>` : ''}
       </dl>${!c.email && !c.phone && !c.address ? '<p class="muted">No contact details yet.</p>' : ''}</div></div>
     </div></div>`;
@@ -4482,6 +4602,14 @@ async function renderContact(view, id) {
   view.onclick = async (e) => {
     try {
       if (e.target.closest('[data-edit]')) { if (await contactModal(c)) renderContact(view, id); return; }
+      if (e.target.closest('[data-rates]')) {
+        e.preventDefault();
+        const st = await get('/settings');
+        const v = await rateRulesModal({ title: `Day rates for ${c.name}`, own: parseRules(c.rate_rules), inheritLabel: 'Your usual rules (Settings)',
+          inheritRules: parseRules(st.rate_rules) || [] });
+        if (v) { await put(`/contacts/${id}`, v); toast('Day rates saved — for their jobs that don’t have their own', 'ok'); renderContact(view, id); }
+        return;
+      }
       if (e.target.closest('[data-new-job]')) { newJob({ contact_id: c.id }); return; }
       if (e.target.closest('[data-remove]')) {
         if (await confirmModal(`Delete ${c.name}? If they have jobs they'll be archived instead.`)) {
@@ -5033,8 +5161,8 @@ const SETTINGS_TABS = [
     sub: 'Who can sign in, using the app from other devices, and reaching it from anywhere.' },
   { key: 'customise', label: 'Customisation', cards: ['logo', 'appearance', 'icons', 'sounds', 'doc-layout'], admin: true,
     sub: 'Logos, app icon, colours, light and dark mode, fonts, icons, scan sounds and the layout of quotes and invoices.' },
-  { key: 'company', label: 'Company information', cards: ['company', 'invoicing', 'money', 'jobs-settings', 'documents'], admin: true,
-    sub: 'Your details, invoices, VAT and numbering, jobs and documents.' },
+  { key: 'company', label: 'Company information', cards: ['company', 'invoicing', 'day-rates', 'money', 'jobs-settings', 'documents'], admin: true,
+    sub: 'Your details, invoices, day rates, VAT and numbering, jobs and documents.' },
   { key: 'electrical', label: 'Electrical', cards: ['power'], admin: true, sub: 'Venue supplies, voltage, safe load and cable runs.' },
   { key: 'external', label: 'External software', cards: ['zoho', 'accounting', 'calendar'], admin: true,
     sub: 'Zoho Books, invoice exports for QuickBooks, Xero, Sage and other accounting / MTD software, and a calendar feed.' },
@@ -5173,6 +5301,9 @@ async function renderSettings(view, tab = location.pathname.split('/')[2] || '')
           ${F('payment_details', 'Payment details (printed on invoices)', { type: 'textarea', rows: 3, placeholder: 'Bank, sort code, account number…' })}
           ${F('invoice_terms', 'Invoice terms', { type: 'textarea', rows: 2 })}
         </div></div>
+        <div class="card settings-section" id="day-rates"><header><h2>Day rates</h2></header><div class="body">
+          <p class="muted small" style="margin-top:0">How hires are charged by their length — e.g. a week charged as 3 days, or a 3-day hire with each day at 0.75 × the day rate. These are your usual rules; a client (on their page) or a job (its <b>Charged days</b>) can have its own. Invoiced jobs keep the rules they were charged under.</p>
+          <div data-rules-usual></div><input type="hidden" name="rate_rules" value="${esc(s.rate_rules || '')}"></div></div>
         <div class="card settings-section" id="accounting"><header><h2>Accounting software</h2><span class="muted small">invoice exports</span></header><div class="form-grid">
           <p class="muted small" style="flex-basis:100%;margin:0">Export invoices as a file your accounting or Making Tax Digital software imports — from <strong>Jobs → Invoices…</strong> or an invoice’s print page. Zoho Books can also be connected directly (above).</p>
           <label class="field half"><span>Accounting software</span><select name="accounting_software" data-acc-sw>
@@ -5280,6 +5411,11 @@ async function renderSettings(view, tab = location.pathname.split('/')[2] || '')
     const im = new Image();
     im.onload = () => { cap.textContent = `Saved at ${im.naturalWidth} × ${im.naturalHeight} px (${(im.naturalWidth / Math.max(1, im.naturalHeight)).toFixed(1)} : 1)`; };
     im.src = `/logo?variant=${vr}&v=${S.logoVersion || 0}`;
+  }
+  const rb = $('[data-rules-usual]', view);
+  if (rb) {
+    const hid = $('input[name="rate_rules"]', view);
+    rulesEditor(rb, parseRules(s.rate_rules) || [], (rs) => { hid.value = JSON.stringify(rs); hid.dispatchEvent(new Event('input', { bubbles: true })); });
   }
   if (!meta.is_admin) {  // only their own details and the change log are shown; the rest is for admins
     const sv = $('[data-save]', view); if (sv) sv.disabled = true;
