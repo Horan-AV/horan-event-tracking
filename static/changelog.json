@@ -4,7 +4,7 @@
     {
       "version": "1.37.0",
       "date": "2026-11-27",
-      "title": "Day rate rules, and scanning barcodes onto a job",
+      "title": "Day rate rules, changing invoice numbers, and scanning barcodes onto a job",
       "changes": [
         {
           "text": "Fix: scanning a barcode (or typing its number) into a job's Add equipment box now finds the item — by any of its units' barcodes as well as its own code — and Enter adds it."
@@ -17,6 +17,12 @@
         },
         {
           "text": "The job page shows which rule set its charged days. Invoiced jobs keep the rules they were charged under."
+        },
+        {
+          "text": "Change an invoice's number: on the job, Change next to Invoice number — type your own, or use the number the current rule gives it."
+        },
+        {
+          "text": "Settings → Invoices → Renumber issued invoices to this rule: after changing the prefix, see each invoice's old and new number, then change them."
         }
       ],
       "fulfils": [],

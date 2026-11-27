@@ -1867,7 +1867,7 @@ def job_of(conn, fn_name, groups):
         return None
     if fn_name in ("api_job_put", "api_job_delete", "api_section_post", "api_cable_run", "api_stage", "api_items_post",
                    "api_job_zoho", "api_job_zoho_unlink", "api_plan_put", "api_patch_put", "api_job_zoho_estimate",
-                   "api_job_zoho_estimate_unlink"):
+                   "api_job_zoho_estimate_unlink", "api_invoice_number"):
         return int(g)
     if fn_name in ("api_item_put", "api_item_delete", "api_stage_put", "api_item_swap", "api_item_subhire"):
         r = conn.execute("SELECT job_id FROM job_items WHERE id = ?", (g,)).fetchone()
@@ -2190,6 +2190,12 @@ def describe(fn_name, conn, req, groups, body, result, pre):
     r = result if isinstance(result, dict) else {}
     if fn_name == "api_jobs_post":
         return ("job", f"Created job {r.get('number', '')} {r.get('name', '')}".strip(), r.get("id"), None)
+    if fn_name == "api_invoice_number":
+        return ("job", f"Invoice number changed from {r.get('old_invoice_number', '')} to {(r.get('invoice') or {}).get('number', '')}", g[0], None)
+    if fn_name == "api_invoices_renumber":
+        if not r.get("applied"):
+            return None
+        return ("job", f"Renumbered {len(r.get('changes') or [])} invoice{'' if len(r.get('changes') or []) == 1 else 's'} to the current rule", None, None)
     if fn_name == "api_job_put":
         if "status" in body and pre and pre.get("status") != body["status"]:
             return ("job", f"Changed status {_status_label(pre['status'])} → {_status_label(body['status'])}", g[0], None)
@@ -3626,6 +3632,77 @@ def invoice_info(job, s):
             "issued": issued, "exported_at": job.get("exported_at"), "exported_to": job.get("exported_to")}
 
 
+def invoice_rule_number(job, s):
+    """The invoice number your rules give a job now: its client's prefix (or your usual one) and the job number."""
+    return f"{invoice_prefix_for(job, s)}{job['number']}"
+
+
+def invoice_number_owner(conn, number, jid):
+    """The job that already has this invoice number, if another has."""
+    r = conn.execute("SELECT number FROM jobs WHERE invoice_number = ? COLLATE NOCASE AND id != ?", (number, jid)).fetchone()
+    return r and r[0]
+
+
+@route("PUT", r"/api/jobs/(\d+)/invoice-number")
+def api_invoice_number(req, conn, jid):
+    """Change a job's invoice number: {number: "INV-0042"} by hand, or {rule: true} to the number your rules give it now
+    (its client's prefix, or your usual one, and the job number)."""
+    jid = int(jid)
+    job = job_detail(conn, jid)
+    d = req.json() or {}
+    old = job["invoice"]["number"]
+    if d.get("rule"):
+        number = invoice_rule_number(job, get_settings(conn))
+    else:
+        number = str(d.get("number") or "").strip()
+        if not number:
+            raise ApiError(400, "Give the invoice a number")
+        if len(number) > 40 or re.search(r"[\r\n\t]", number):
+            raise ApiError(400, "An invoice number is up to 40 characters, on one line")
+    other = invoice_number_owner(conn, number, jid)
+    if other:
+        raise ApiError(400, f"{number} is already the invoice number of job {other}")
+    # not issued yet and back to the rule: leave it unset, so it keeps following the rule until it's issued
+    stored = None if d.get("rule") and not job.get("invoice_date") else number
+    conn.execute("UPDATE jobs SET invoice_number = ?, updated_at = ? WHERE id = ?", (stored, now_iso(), jid))
+    conn.commit()
+    out = job_detail(conn, jid)
+    out["old_invoice_number"] = old
+    return out
+
+
+@route("POST", "/api/invoices/renumber")
+def api_invoices_renumber(req, conn):
+    """Give issued invoices the numbers your rules give them now. {apply: false} (the default) only lists the changes."""
+    require_admin(req, conn)
+    d = req.json() or {}
+    s = get_settings(conn)
+    jobs = rows(conn.execute("SELECT j.*, c.invoice_prefix AS c_prefix FROM jobs j LEFT JOIN contacts c ON c.id = j.contact_id "
+                             "WHERE j.invoice_number IS NOT NULL AND j.invoice_number != '' ORDER BY j.invoice_date, j.id"))
+    taken = {(j["invoice_number"] or "").lower(): j["id"] for j in jobs}
+    changes, clash = [], []
+    for j in jobs:
+        j["contact"] = {"invoice_prefix": j["c_prefix"] or ""}
+        new = invoice_rule_number(j, s)
+        if new == j["invoice_number"]:
+            continue
+        owner = taken.get(new.lower())
+        row = {"job_id": j["id"], "job": j["number"], "name": j["name"], "old": j["invoice_number"], "new": new,
+               "in_zoho": bool(j.get("zoho_invoice_id"))}
+        if owner not in (None, j["id"]):   # another invoice has that number already
+            row["clash"] = True
+            clash.append(row)
+            continue
+        changes.append(row)
+        taken.pop((j["invoice_number"] or "").lower(), None)
+        taken[new.lower()] = j["id"]
+    if d.get("apply"):
+        for c in changes:
+            conn.execute("UPDATE jobs SET invoice_number = ?, updated_at = ? WHERE id = ?", (c["new"], now_iso(), c["job_id"]))
+        conn.commit()
+    return {"changes": changes, "clashes": clash, "applied": bool(d.get("apply"))}
+
+
 def issue_invoice(conn, job):
     """Fix the invoice number and date the first time a job's invoice leaves the app."""
     if job.get("invoice_date"):
@@ -3633,7 +3710,7 @@ def issue_invoice(conn, job):
     s = get_settings(conn)
     if "contact" not in job:
         job["contact"] = one(conn.execute("SELECT * FROM contacts WHERE id = ?", (job.get("contact_id"),))) if job.get("contact_id") else None
-    number = f"{invoice_prefix_for(job, s)}{job['number']}"
+    number = job.get("invoice_number") or f"{invoice_prefix_for(job, s)}{job['number']}"   # one given by hand stays
     today = dt.date.today()
     _days, label, due = payment_terms_for(job, s, today)
     if not job.get("rate_rules"):   # keep the day rate rules it was charged under, whatever happens to your usual ones

@@ -249,6 +249,8 @@ The prep list keeps its own layout.
 
 **Settings → Company information → Invoices** sets up how invoices are numbered:
 - **Invoice number prefix:** invoice numbers are the prefix plus the job number, e.g. `INV-HAV-1001`.
+  - **Change one invoice's number:** on the job, **Change** next to *Invoice number* — type your own (e.g. to match an old system), or go back to the number the current rule gives it. Two invoices can't share a number. A number you give before the invoice is issued is kept when it is.
+  - **Renumber issued invoices:** changed the prefix? **Renumber issued invoices to this rule…** (under the prefix) shows each invoice's old and new number, then changes them. Any that would clash with another invoice's number are left as they are. Invoices already in Zoho Books keep their old number there until you send them again.
 - **Payment terms (days):** set each invoice's due date.
 - A client can have their own **Invoice number prefix** and **Payment terms** (Due on receipt, Net 7 to Net 90, or Due end of next month): edit the client. Theirs are used instead of these. The terms show next to the due date on the invoice, and go into exports and Zoho.
 - **Payment details** and **Invoice terms** are printed on every invoice.

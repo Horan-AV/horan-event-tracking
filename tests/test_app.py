@@ -1288,6 +1288,39 @@ class TestDayRates(ServerCase):
         self.assertEqual(next(x["codes"] for x in av if x["product_id"] == p["id"]), ["SCAN-LX-007"])
 
 
+class TestInvoiceNumbers(ServerCase):
+    def test_change_by_hand_and_by_rule(self):
+        c = self.c
+        c.put("/settings", {"invoice_prefix": "INV-"})
+        a, b = self.new_job(), self.new_job()
+        c.request("POST", "/api/invoices/pdf", {"ids": [a["id"], b["id"]], "doc": "invoice"}, raw=True)
+        num_a = c.get(f"/jobs/{a['id']}")[1]["invoice"]["number"]
+        self.assertEqual(num_a, f"INV-{a['number']}")
+        # by hand
+        status, j = c.put(f"/jobs/{a['id']}/invoice-number", {"number": "OLD-0042"})
+        self.assertEqual((status, j["invoice"]["number"], j["old_invoice_number"]), (200, "OLD-0042", num_a))
+        self.assertEqual(c.put(f"/jobs/{b['id']}/invoice-number", {"number": "old-0042"})[0], 400)   # taken (any case)
+        self.assertEqual(c.put(f"/jobs/{b['id']}/invoice-number", {"number": " "})[0], 400)
+        # the prefix changes: renumber them all to the rule (see the changes first)
+        c.put("/settings", {"invoice_prefix": "HAV-INV-"})
+        pre = c.post("/invoices/renumber", {})[1]
+        self.assertEqual(sorted(x["new"] for x in pre["changes"]), sorted([f"HAV-INV-{a['number']}", f"HAV-INV-{b['number']}"]))
+        self.assertEqual(c.get(f"/jobs/{a['id']}")[1]["invoice"]["number"], "OLD-0042")   # nothing changed yet
+        c.post("/invoices/renumber", {"apply": True})
+        self.assertEqual(c.get(f"/jobs/{a['id']}")[1]["invoice"]["number"], f"HAV-INV-{a['number']}")
+        # one job back to the rule; a job not issued yet keeps following the rule
+        c.put(f"/jobs/{b['id']}/invoice-number", {"number": "X-1"})
+        self.assertEqual(c.put(f"/jobs/{b['id']}/invoice-number", {"rule": True})[1]["invoice"]["number"], f"HAV-INV-{b['number']}")
+        n = self.new_job()
+        c.put(f"/jobs/{n['id']}/invoice-number", {"rule": True})
+        c.put("/settings", {"invoice_prefix": "Z-"})
+        self.assertEqual(c.get(f"/jobs/{n['id']}")[1]["invoice"]["number"], f"Z-{n['number']}")
+        # a number given by hand before it's issued stays when it is
+        c.put(f"/jobs/{n['id']}/invoice-number", {"number": "MANUAL-9"})
+        c.request("POST", "/api/invoices/pdf", {"ids": [n["id"]], "doc": "invoice"}, raw=True)
+        self.assertEqual(c.get(f"/jobs/{n['id']}")[1]["invoice"]["number"], "MANUAL-9")
+
+
 class TestAudioPatch(ServerCase):
     def test_desk_stage_boxes_and_mics_from_stock(self):
         c = self.c

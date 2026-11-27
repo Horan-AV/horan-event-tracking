@@ -1608,6 +1608,8 @@ function drawJob(view) {
             <div><dt>Return</dt><dd>${esc(dateTime(j.end_date, j.end_time))}</dd></div>
             <div><dt>Venue</dt><dd>${esc(j.venue) || '<span class="muted">—</span>'}</dd></div>
             <div><dt>Reference</dt><dd>${esc(j.reference) || '<span class="muted">—</span>'}</dd></div>
+            <div><dt>Invoice number</dt><dd><span class="mono">${esc(j.invoice.number)}</span>${j.invoice.issued ? '' : ' <span class="muted small">(not issued yet)</span>'}
+              ${canEditJob(j) ? ' <a href="#" data-inv-number>Change</a>' : ''}</dd></div>
             <div><dt>Charged days</dt><dd>${num(t.charge_days)}${t.charge_days !== t.hire_days ? ` <span class="muted">of ${plural(t.hire_days, 'day')}</span>` : ''}${t.rate_note ? `<br><span class="muted small">${esc(t.rate_note)}</span>` : ''}
               ${canEditJob(j) ? ' <a href="#" data-rates>Change</a>' : ''}</dd></div>
             <div><dt>Weight</dt><dd>${num(j.total_weight_kg)} kg</dd></div>
@@ -2216,6 +2218,23 @@ function bindJob(view) {
         return;
       }
       if (t.closest('[data-discount]')) { await discountModal(view); return; }
+      if (t.closest('[data-inv-number]')) {
+        e.preventDefault();
+        const j = S.job, c = j.contact || {}, rule = `${(c.invoice_prefix || '').trim() || S.settings.invoice_prefix || ''}${j.number}`;
+        const v = await formModal({
+          title: 'Invoice number', submitLabel: 'Change it',
+          intro: `It’s ${j.invoice.number} now${j.invoice.issued ? ', and the invoice has been issued' : ''}.${j.zoho_invoice_id ? ' It’s in Zoho Books too: send it to Zoho again afterwards to change it there.' : ''}`,
+          fields: [
+            { name: 'how', label: 'Give it', type: 'select', options: [['own', 'A number I type'], ['rule', `The current rule’s number: ${rule}`]] },
+            { name: 'number', label: 'Invoice number', placeholder: 'e.g. INV-0042', help: 'Up to 40 characters. Two invoices can’t share a number.' }],
+          values: { how: rule !== j.invoice.number ? 'rule' : 'own', number: j.invoice.number },
+          onInput: (ev, form) => { form.elements.number.closest('label').hidden = form.elements.how.value === 'rule'; },
+          after: (form) => { form.elements.number.closest('label').hidden = form.elements.how.value === 'rule'; },
+          onSubmit: (x) => put(`/jobs/${j.id}/invoice-number`, x.how === 'rule' ? { rule: true } : { number: x.number }),
+        });
+        if (v) { S.job = v; drawJob(view); toast(`Invoice number is now ${v.invoice.number}`, 'ok'); }
+        return;
+      }
       if (t.closest('[data-rates]')) {
         e.preventDefault();
         const j = S.job, client = parseRules(j.contact_rate_rules), usual = parseRules(S.settings.rate_rules) || [];
@@ -5300,6 +5319,8 @@ async function renderSettings(view, tab = location.pathname.split('/')[2] || '')
           ${F('payment_terms_days', 'Payment terms (days)', { type: 'number', min: 0, max: 365, step: 1, half: true, help: 'Sets each invoice’s due date.' })}
           ${F('payment_details', 'Payment details (printed on invoices)', { type: 'textarea', rows: 3, placeholder: 'Bank, sort code, account number…' })}
           ${F('invoice_terms', 'Invoice terms', { type: 'textarea', rows: 2 })}
+          <div class="field" style="flex-basis:100%"><div class="actions"><button type="button" class="btn small" data-renumber>Renumber issued invoices to this rule…</button></div>
+            <small>Changed the prefix? This gives invoices already issued the number the current rule (and each client’s own prefix) gives them. You see the changes first. A single invoice’s number can be changed on its job.</small></div>
         </div></div>
         <div class="card settings-section" id="day-rates"><header><h2>Day rates</h2></header><div class="body">
           <p class="muted small" style="margin-top:0">How hires are charged by their length — e.g. a week charged as 3 days, or a 3-day hire with each day at 0.75 × the day rate. These are your usual rules; a client (on their page) or a job (its <b>Charged days</b>) can have its own. Invoiced jobs keep the rules they were charged under.</p>
@@ -5411,6 +5432,26 @@ async function renderSettings(view, tab = location.pathname.split('/')[2] || '')
     const im = new Image();
     im.onload = () => { cap.textContent = `Saved at ${im.naturalWidth} × ${im.naturalHeight} px (${(im.naturalWidth / Math.max(1, im.naturalHeight)).toFixed(1)} : 1)`; };
     im.src = `/logo?variant=${vr}&v=${S.logoVersion || 0}`;
+  }
+  const rn = $('[data-renumber]', view);
+  if (rn) {
+    rn.onclick = async () => {
+      try {
+        const pre = await post('/invoices/renumber', {});
+        if (!pre.changes.length && !pre.clashes.length) { toast('Every issued invoice already has the number the rule gives it'); return; }
+        const row = (c) => `<tr><td><span class="mono">${esc(c.old)}</span></td><td>→ <span class="mono"><b>${esc(c.new)}</b></span></td><td class="muted small">${esc(c.job)} ${esc(c.name)}${c.in_zoho ? ' · in Zoho' : ''}${c.clash ? ' · <b>skipped: that number is taken</b>' : ''}</td></tr>`;
+        const m = openModal(`<header><h2>Renumber issued invoices</h2></header><div class="modal-body">
+          <p>${plural(pre.changes.length, 'invoice')} will get the number the current rule gives ${pre.changes.length === 1 ? 'it' : 'them'}. Save your settings first if you’ve just changed the prefix.</p>
+          <div class="table-wrap" style="max-height:340px"><table class="table compact"><tbody>${[...pre.changes, ...pre.clashes].map(row).join('')}</tbody></table></div>
+          ${pre.changes.some((c) => c.in_zoho) ? '<p class="muted small">Ones in Zoho Books keep their old number there until you send them to Zoho again.</p>' : ''}</div>
+          <footer><button class="btn" data-no>Cancel</button><button class="btn primary" data-yes ${pre.changes.length ? '' : 'disabled'}>Renumber ${plural(pre.changes.length, 'invoice')}</button></footer>`, { wide: true });
+        const ok = await new Promise((res) => { m.wrap.addEventListener('cancel', () => res(false)); $('[data-no]', m.el).onclick = () => res(false); $('[data-yes]', m.el).onclick = () => res(true); });
+        m.close();
+        if (!ok) return;
+        const r = await post('/invoices/renumber', { apply: true });
+        toast(`${plural(r.changes.length, 'invoice')} renumbered`, 'ok');
+      } catch (ex) { toast(ex.message, 'error'); }
+    };
   }
   const rb = $('[data-rules-usual]', view);
   if (rb) {
